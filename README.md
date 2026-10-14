@@ -94,7 +94,7 @@ Store 提供 `Acquire(ctx, runID)` 独占会话；同 RunID 立即返回 `ErrBus
 
 首期只支持非流式值，不支持 channel、持久等待或分布式运行管理。未确认节点可能再次产生外部副作用，需宿主提供幂等、事务、防重或 outbox；不承诺 deterministic replay 或 exactly-once。MemoryStore 只证明进程内协议；文件后端面向本机单宿主，其 OS 锁和退出/重启验证见 `filestore/` 与 `integration/`。
 
-所需 Pulse 桥接变更随对应 PR 评审，依赖修订由 `go.mod` 固定；本地联调可通过独立的 `go.work` 指向 Pulse 工作树。这不是桥接 API 已发布的声明，两仓发布由维护者决定。
+`go.mod` 固定通过联调的公开 Pulse 修订。独立验收使用 `GOWORK=off`，不依赖本机 `replace`；开发时可在独立测试工作区用 `go.work` 同时引用两仓。当前代码包含检查点桥接、Run/Resume 和本机文件恢复，发布版本仍以实际 tag/release 为准，由维护者决定。
 
 ```text
 go build ./...

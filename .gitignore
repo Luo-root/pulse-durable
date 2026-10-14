@@ -7,3 +7,6 @@ go.work.sum
 *.test
 *.test.exe
 *.out
+
+# Local editor settings
+.idea/

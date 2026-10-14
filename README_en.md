@@ -58,7 +58,7 @@ Every mutation clones a proposed record and updates runtime memory only after Sa
 
 The first phase supports non-streaming values. Channels, durable waits, and distributed run management are outside this phase. Unconfirmed nodes may repeat external effects; hosts need idempotency keys, transactions, deduplication, or an outbox. This library does not promise deterministic replay or exactly-once effects. MemoryStore validates the in-process protocol only. The file backend targets one local host; OS locking and actual process exit/restart validation belong to `filestore/` and `integration/`.
 
-The required Pulse bridge changes are reviewed in the corresponding PR, with the dependency revision pinned in `go.mod`. Local integration can point to a Pulse working tree through a separate `go.work`. This does not claim the bridge APIs have been released; releases remain the maintainer's decision.
+`go.mod` pins the public Pulse revision used for integration checks. Standalone validation uses `GOWORK=off` without a local `replace`; development can reference both repositories from a separate test workspace's `go.work`. The current code includes checkpoint bridging, Run/Resume and local file recovery. Published versions follow actual tags/releases and remain the maintainer's decision.
 
 ```text
 go build ./...
