@@ -14,7 +14,7 @@ import (
 // 实现须并发安全、同步完成、不修改业务值；相同值必须编码成相同字节，供输入指纹比较。
 // 修改编码语义必须升级 Version；Decode 必须返回可赋给 Type 的值。
 // typed nil 保留为 ready；声明为接口类型时 nil 接口也合法，缺失与 skip 由槽位状态区分。
-// 编解码错误及 panic 会转换为不含业务值或编码字节的错误。
+// 编解码错误及 panic 会转换为不含业务值或编码字节的错误；返回错误的原因保留给 errors.Is/As。
 type Codec interface {
 	Type() reflect.Type
 	ID() string
@@ -161,8 +161,8 @@ func (c *Codecs) snapshot() map[reflect.Type]codecEntry {
 
 func (c codecEntry) encode(v any) (data []byte, err error) {
 	defer func() {
-		if recover() != nil {
-			data, err = nil, fmt.Errorf("durable: codec %q encode panicked", c.id)
+		if rec := recover(); rec != nil {
+			data, err = nil, operationPanic(fmt.Sprintf("codec %q encode", c.id), rec)
 		}
 	}()
 	if !validBusinessValue(c.typ, v) {
@@ -170,20 +170,23 @@ func (c codecEntry) encode(v any) (data []byte, err error) {
 	}
 	data, err = c.codec.Encode(v)
 	if err != nil {
-		return nil, fmt.Errorf("durable: codec %q encode failed", c.id)
+		return nil, &operationError{op: fmt.Sprintf("codec %q encode", c.id), cause: err}
 	}
 	return append([]byte(nil), data...), nil
 }
 
 func (c codecEntry) decode(data []byte) (v any, err error) {
 	defer func() {
-		if recover() != nil {
-			v, err = nil, fmt.Errorf("durable: codec %q decode panicked", c.id)
+		if rec := recover(); rec != nil {
+			v, err = nil, operationPanic(fmt.Sprintf("codec %q decode", c.id), rec)
 		}
 	}()
 	v, err = c.codec.Decode(append([]byte(nil), data...))
-	if err != nil || !validBusinessValue(c.typ, v) {
-		return nil, fmt.Errorf("durable: codec %q decode failed", c.id)
+	if err != nil {
+		return nil, &operationError{op: fmt.Sprintf("codec %q decode", c.id), cause: err}
+	}
+	if !validBusinessValue(c.typ, v) {
+		return nil, fmt.Errorf("durable: codec %q decoded an invalid value type", c.id)
 	}
 	return v, nil
 }
