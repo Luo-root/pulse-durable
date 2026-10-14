@@ -60,7 +60,7 @@ func execute(ctx context.Context, store durable.Store, resume bool) (*pulse.Exec
 }
 ```
 
-`Run` 只创建新记录，重复 RunID 返回 `ErrConflict`。`Resume` 要求记录存在，并重供相同输入。两者阻塞到本次执行结束，并尽可能返回可查询的 Execution；成功后用 `pulse.ReadOutput(e, key)` 读取声明出口。`MemoryStore` 构造器是 `durable.NewMemoryStore()`。
+RunID 必须是非空有效 UTF-8 文本，Run/Resume 在访问 Store 之前拒绝非法 RunID，保持参数错误分类。`Run` 只创建新记录，重复 RunID 返回 `ErrConflict`。`Resume` 要求记录存在，并重供相同输入。两者阻塞到本次执行结束，并尽可能返回可查询的 Execution；成功后用 `pulse.ReadOutput(e, key)` 读取声明出口。`MemoryStore` 构造器是 `durable.NewMemoryStore()`。
 
 可直接复跑的示例：
 
@@ -86,9 +86,9 @@ go test -run TestCheckpointRecoveryAcrossProcessExit -v ./integration
 
 自定义类型使用 `durable.RegisterJSON[T](codecs, "稳定类型ID", "编码版本")` 或实现 `Codec`。注册按 `reflect.Type` 比较，重复类型或 ID 不替换。编码须确定、同步、并发安全且不修改业务值；接口类型（包括结构体或容器内的 interface）须用自定义 Codec 恢复其动态类型，JSON 便捷入口递归拒绝这类声明。JSON 字符串、嵌套字段及 map 键须为有效 UTF-8，防止静默替换及输入指纹碰撞；任意字节使用 []byte 或自定义 Codec。自定义 Codec 可以使用零字节编码，ready 状态与校验和仍须完整保存。`ready` 的 typed nil 和声明为 interface 的 nil 是值；零值也保持 ready。`skipped` 没有编码值，正常跳过不使运行失败。JSON `null` 对 pointer/slice/map 保留 typed nil，对标量拒绝。
 
-Store 提供 `Acquire(ctx, runID)` 独占会话；同 RunID 立即返回 `ErrBusy`。Session 的 `Save(ctx, record, expectedRevision)` 原子 CAS：新记录修订号 1 / expected 0，后续修订号必须为 expected+1。`Close()` 释放所有权。RunRecord 是可 JSON 存取的纯数据，值记录包含编码校验和，不保存业务错误文本。它不是加密容器，存储目录和备份的访问控制由宿主管理。
+Store 提供 `Acquire(ctx, runID)` 独占会话；同 RunID 立即返回 `ErrBusy`。Session 的 `Save(ctx, record, expectedRevision)` 原子 CAS：新记录修订号 1 / expected 0，后续修订号必须为 expected+1。`Close()` 释放所有权。RunRecord 是可 JSON 存取的纯数据，值记录包含编码校验和，不保存业务错误文本。文件 Store 要求全部元数据字符串和 map 键为有效 UTF-8：写前拒绝非法元数据，旧文件字节与 Revision 不变；读取也拒绝原始非法 UTF-8 和未配对的 JSON Unicode 代理项。合法 Unicode 原样保留，编码值的 `Data []byte` 是不透明字节，不受 UTF-8 限制。它不是加密容器，存储目录和备份的访问控制由宿主管理。
 
-每次变更先复制 proposed record，Save 成功才更新内存。Save 可能实际写成却报错：本次停止，不撤销、不自动重试，后续 Resume 重新读取权威记录。Store / Codec / 恢复回调错误或 panic 不能被父 Retry、业务 skip 或外层切面吞掉；宿主取消及可靠失败保留 active 尝试。`RunOptions.OnEvent` 同步报告 `EventRestored`，不携带值、不伪造 Pulse 业务耗时；回调需并发安全，错误或 panic 停止本次，已确认数据不回滚。
+每次变更先复制 proposed record，Save 成功才更新内存。Save 可能实际写成却报错：本次停止，不撤销、不自动重试，后续 Resume 重新读取权威记录。Store / Codec / 恢复回调的实际可靠故障统一为 `*pulse.CheckpointError`，根恢复前置操作与子图相同；参数错误、正常记录冲突与所有权占用仍保留原分类。Codec 和回调错误的公开正文脱敏，`errors.Is/As` 经 `Unwrap` 保留原原因，`panic(error)` 也保留 cause。可靠故障不能被父 Retry、业务 skip 或外层切面吞掉；宿主取消及可靠失败保留 active 尝试。业务清理节点 context 后返回真实错误，仍确认根失败，Resume 不补充根预算。`RunOptions.OnEvent` 同步报告 `EventRestored`，不携带值、不伪造 Pulse 业务耗时；回调需并发安全，错误或 panic 停止本次，已确认数据不回滚。
 
 ## 边界与验证
 
