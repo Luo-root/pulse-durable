@@ -1,67 +1,139 @@
-# pulse-durable
+<p align="center"><img src=".github/assets/logo.svg" alt="Pulse Durable" width="360"></p>
+
+# Pulse Durable
 
 [中文](README.md)
 
-`github.com/Luo-root/pulse-durable` is an independent checkpoint execution library for Pulse. Definitions remain reusable; every `Run` / `Resume` creates a fresh `pulse.Execution`. A complete node chain publishes its outputs after storage confirms its checkpoint. Recovery reuses confirmed results and restarts unconfirmed nodes from the beginning of their functions.
+Pulse Durable adds checkpoint storage and recovery to [Pulse](https://github.com/Luo-root/pulse) workflows. You continue to define graphs, nodes, and inputs and outputs with Pulse. Use Durable's `Run` to create a run and `Resume` to recover an existing run.
 
-The first implementation, plan A, persists Retry cursors and child graph scopes. An interrupted active parent attempt reclaims its scope and reuses confirmed child nodes. A failed parent Retry attempt invalidates its descendants; the next attempt gets a new scope. A root node chain has one complete execution budget: repeatedly calling Resume cannot replenish the Retry budget of a run that ended in a real failure.
+Outputs are published to downstream nodes after storage confirms the checkpoint for the complete node chain. Recovery reuses confirmed results in valid scopes and restarts unconfirmed nodes from the beginning of their functions. Durable does not save the Go call stack or automatically undo external effects such as database writes and HTTP requests.
 
-## Usage
+## Install
 
-Requires Go 1.25+. Use `durable.NewMemoryStore()` to exercise the protocol, or `filestore.New(dir)` / another persistent Store for recovery across processes. With an assembled graph and seeded `pulse.Inputs`:
+Requires **Go 1.25 or later**. Durable is currently a development version with no formal release. Pin the public development revision for reproducible installation:
+
+```sh
+go get github.com/Luo-root/pulse-durable@d9415114b739
+```
+
+That revision's `go.mod` pins Pulse `v0.4.2-0.20261014103213-1f67045d6c42`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
+
+## Minimal example
+
+This `main.go` declares an input and an outlet, runs an “add one” node, and reads the outlet from this execution. `MemoryStore` is used only for this minimal demonstration; use persistent storage for recovery across processes.
 
 ```go
-codecs := durable.NewCodecs()
-rt, err := durable.New(store, codecs)
-if err != nil {
-    return err
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/Luo-root/pulse"
+	durable "github.com/Luo-root/pulse-durable"
+)
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
 }
-options := durable.RunOptions{RunID: "order-123", Version: "business/1"}
-e, err := rt.Run(ctx, g, in, options)
-if err != nil {
-    return err
+
+func run() error {
+	runtime, err := durable.New(durable.NewMemoryStore(), durable.NewCodecs())
+	if err != nil {
+		return err
+	}
+	input := pulse.NewKey[int]("input")
+	output := pulse.NewKey[int]("output")
+	graph, err := pulse.New("quickstart", "Add one")
+	if err != nil {
+		return err
+	}
+	if err := graph.DeclareInput(pulse.NewPort(input)); err != nil {
+		return err
+	}
+	if err := graph.DeclareOutput(pulse.NewPort(output)); err != nil {
+		return err
+	}
+	if err := graph.Add(pulse.NewNode("add", "Add one",
+		pulse.Requires(input), pulse.Provides(output),
+		func(rc *pulse.RunCtx) error {
+			value, err := pulse.Get(rc, input)
+			if err != nil {
+				return err
+			}
+			return pulse.Set(rc, output, value+1)
+		})); err != nil {
+		return err
+	}
+	var inputs pulse.Inputs
+	if err := pulse.Seed(&inputs, input, 41); err != nil {
+		return err
+	}
+	execution, err := runtime.Run(context.Background(), graph, inputs,
+		durable.RunOptions{RunID: "quickstart-001", Version: "increment/1"})
+	if err != nil {
+		return err
+	}
+	value, state, err := pulse.ReadOutput(execution, output)
+	if err != nil {
+		return err
+	}
+	if state != pulse.SlotStateReady {
+		return fmt.Errorf("unexpected output state: %s", state)
+	}
+	fmt.Println("result:", value, state)
+	return nil
 }
-value, state, err := pulse.ReadOutput(e, output)
 ```
 
-For recovery, call `rt.Resume(ctx, g, in, options)` with the same RunID, business version, definition, and inputs. Both methods block until this execution finishes and return its handle when available, including on failure. RunID must be nonempty valid UTF-8 text; Run/Resume reject an invalid RunID as an argument error before accessing Store. Run requires a new record (`ErrConflict` if it exists); Resume requires an existing record (`ErrNotFound` otherwise). See the [Chinese README](README.md) for a complete graph assembly example.
+Run it in a module with the dependency installed:
 
-Runnable examples:
-
-- [Basic Run / Resume](example_test.go): uses MemoryStore to demonstrate reusing confirmed nodes and re-entering unconfirmed nodes.
-- [A parent workflow with a document-processing child](subgraph_example_test.go): uses a real filestore, creates an exclusive directory under the current directory and cleans it up afterward, and demonstrates `In` / `Out` wiring and reading a parent outlet.
-- [Actual process exit / restart validation](integration/recovery_test.go): a child process exits at a persistent boundary, then a new process rebuilds the Graph and resumes. It covers child graphs, Retry, and uncertain commits.
-
-The child graph example statically mounts C1 download → C2 extract → C3 summarize with `pulse.Sub`; string transformations stand in for business operations. The parent mount uses `Retry(3, 0)`. The first Run cancels the host context after C1/C2 checkpoints are confirmed and C3 has entered its body and read C2, producing body call counts of 1/1/1. It then rebuilds filestore, Runtime, and an equivalent Graph, supplies the same inputs, and calls Resume with the same RunID and Version. The parent Retry reclaims the original active attempt scope: Resume calls the bodies 0/0/1 times, for totals of 1/1/2. Finally, `pulse.ReadOutput` reads the summary from the parent's declared outlet.
-
-This example rebuilds objects within one process. Actual exit / restart evidence is in the integration test linked above. Unconfirmed bodies and their external effects may repeat; callers still need idempotency, transactions, or an outbox.
-
-Run from this repository's root:
-
-```text
-go test -run '^ExampleRuntime_Resume$' -v .
-go test -run ExampleRuntime_Resume_subgraph -v .
-go test -run TestCheckpointRecoveryAcrossProcessExit -v ./integration
+```sh
+go run .
 ```
 
-## Versions, codecs, and storage
-
-The explicit business `Version` is required. The definition fingerprint covers the entire Topology plus Codec IDs/versions resolved by the actual Go types of all node keys and ports. Functions, closures, fixed binding values, and Aspect ordering/parameters/semantics require a business version change. Opening a child scope also compares its actual bound input fingerprint.
-
-`NewCodecs` includes JSON codecs for bool, string, integer/float types, and []byte. Register business types with `durable.RegisterJSON[T](codecs, "stable-type-id", "codec-version")`, or implement `Codec`. Registration uses `reflect.Type`; duplicate types or IDs cannot replace existing entries. Encoding must be deterministic, synchronous, concurrency safe, and must not mutate business values. Interfaces, including nested fields and container elements, need a custom codec to reconstruct dynamic types; the JSON convenience entry rejects these declarations recursively. JSON strings, nested fields, and map keys must be valid UTF-8 to avoid silent replacement and input fingerprint collisions; use []byte or a custom codec for arbitrary bytes. A custom codec may use a zero-byte encoding, still confirmed with ready state and a checksum. Ready typed nil, nil for a declared interface, and zero values remain ready. Skipped outputs contain no encoded value, and normal skips do not fail the run. JSON null preserves typed nil for pointers/slices/maps and is rejected for scalar types.
-
-Store provides `Acquire(ctx, runID)` with exclusive ownership and immediate `ErrBusy` for an active session. Session provides `Load`, atomic CAS `Save(ctx, record, expectedRevision)`, and `Close`. The initial revision is 1 with expected 0; later revisions are expected+1. RunRecord contains only JSON data, including encoded value checksums and no automatically captured business error text. FileStore requires every metadata string and map key to be valid UTF-8: it rejects invalid metadata before writing and leaves the old file and Revision unchanged. Loading also rejects raw invalid UTF-8 and unpaired JSON Unicode surrogates. Valid Unicode is preserved, while encoded `Data []byte` remains opaque and unrestricted by UTF-8. The record is not encrypted; hosts manage access to storage and backups.
-
-Every mutation clones a proposed record and updates runtime memory only after Save succeeds. A Save may actually commit and then return an error: this execution stops without rollback or automatic retry; Resume reloads the authoritative record. Actual Store, Codec and recovery callback reliability failures are classified as `*pulse.CheckpointError`, consistently for root pre-start operations and children. Argument errors, normal record conflicts and ownership contention retain their original classification. Codec and callback error messages are sanitized, while `Unwrap` preserves `errors.Is/As` causes, including `panic(error)`. Reliability failures remain failures when they contain a skip sentinel or are swallowed by an outer Aspect. Host cancellation and reliability failures leave attempts active. A real business failure is still confirmed when the body cleans up its node context, so Resume cannot replenish the root budget. `RunOptions.OnEvent` reports `EventRestored` synchronously without values or invented Pulse business timings. It must be concurrency safe; an error or panic stops this execution without undoing confirmed data.
-
-## Scope and validation
-
-The first phase supports non-streaming values. Channels, durable waits, and distributed run management are outside this phase. Unconfirmed nodes may repeat external effects; hosts need idempotency keys, transactions, deduplication, or an outbox. This library does not promise deterministic replay or exactly-once effects. MemoryStore validates the in-process protocol only. The file backend targets one local host; OS locking and actual process exit/restart validation belong to `filestore/` and `integration/`.
-
-`go.mod` pins the public Pulse revision used for integration checks. Standalone validation uses `GOWORK=off` without a local `replace`; development can reference both repositories from a separate test workspace's `go.work`. The current code includes checkpoint bridging, Run/Resume and local file recovery. Published versions follow actual tags/releases and remain the maintainer's decision.
+Expected output:
 
 ```text
+result: 42 ready
+```
+
+[Quick start](site/en/guide/quickstart.md) includes every step from an empty directory. Continue with [Recovery after process exit](site/en/guide/recovery.md) to observe a real exit and restart using file storage and two separate processes.
+
+## Documentation map
+
+The documentation is readable in this repository. These links point to its source files.
+
+| Task | Documentation |
+| --- | --- |
+| Understand the purpose and reading order | [Guide overview](site/en/guide/index.md) |
+| Install the development version and inspect dependencies | [Installation](site/en/guide/installation.md) |
+| Complete the first run and read an outlet | [Quick start](site/en/guide/quickstart.md) |
+| Keep checkpoints and recover in a new process | [Recovery after process exit](site/en/guide/recovery.md) |
+| Compose child graphs and understand Retry recovery | [Subgraphs and retries](site/en/guide/subgraphs.md) |
+| Persist business structs and custom types | [Value codecs](site/en/guide/codecs.md) |
+| Use file storage or implement a Store | [Storage](site/en/guide/storage.md) |
+| Check API, record, and error rules | [Reference overview](site/en/reference/index.md), [Execution contract](site/en/reference/execution.md), [Data model](site/en/reference/data-model.md), [Error handling](site/en/reference/errors.md) |
+
+## Current boundaries
+
+- Supports non-streaming values, static child graphs, and persistence of built-in Retry attempt cursors. `Resume` continues the remaining budget; it does not replenish exhausted retries. Child results beneath a failed parent attempt are not reused.
+- `RunID` and business `Version` are required. Recovery needs the same definition, inputs, and encoding contract. Change the business version when changing functions, closures, or Aspect semantics.
+- `filestore` targets one local host and depends on exclusive file locking and atomic replacement within a directory. It does not provide distributed leases, dispatch across machines, or a durability guarantee for power loss. `MemoryStore` validates only the in-process protocol.
+- External effects from unconfirmed nodes may repeat. Applications need idempotency keys, transactions, deduplication, or an outbox. Durable does not promise exactly-once effects, deterministic replay, or durable waits. Channel, function, and `unsafe.Pointer` values are unsupported.
+- Checkpoints contain encoded business outputs and are not encrypted containers. The host manages storage access, backups, and retention.
+
+## Validate the repository
+
+From the repository root, with local workspace overrides disabled, run:
+
+```sh
 go build ./...
 go vet ./...
 go test -race -count=1 ./...
 ```
+
+Runnable examples are in [example_test.go](example_test.go) and [subgraph_example_test.go](subgraph_example_test.go). Actual process exit and restart tests are in [integration/recovery_test.go](integration/recovery_test.go).

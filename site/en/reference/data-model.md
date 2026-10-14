@@ -1,0 +1,149 @@
+# Data model
+
+This page defines persistent records, encoding states, and Store/Session contracts. Use it when implementing a backend, investigating recovery, or checking a custom Codec. For application procedures, see [Storage](../guide/storage.md) and [Value codecs](../guide/codecs.md).
+
+## RunRecord
+
+The current `RecordFormat` is `1`. RunRecord contains serializable data only, without functions, Go call stacks, or automatically captured business error text.
+
+| Field | Meaning |
+| --- | --- |
+| `Format int` | Record format version, which must be supported by the current recovery implementation |
+| `RunID string` | Business run identity, matching the Session and call |
+| `Revision uint64` | CAS revision, starting at `1`, never zero |
+| `Version string` | Host business semantics version |
+| `Definition string` | SHA-256 fingerprint of the complete definition |
+| `Inputs string` | SHA-256 fingerprint of root inputs; not an input copy from which business inputs can be reconstructed |
+| `RootScope string` | Persistent random identity of the root graph |
+| `Scopes map[string]ScopeRecord` | Graph scopes and complete node results |
+| `Attempts map[string]AttemptRecord` | Node root attempts and Retry cursors |
+
+RootScope and attempt identities are hexadecimal representations of 16 random bytes. They are persisted, not regenerated from graph paths, in-memory counters, or process startup order. The host must still supply original external inputs during recovery.
+
+## ScopeRecord
+
+| Field | Meaning |
+| --- | --- |
+| `Graph string`, `Path string` | Graph identity and static mount location in the definition |
+| `Inputs string` | Actual input fingerprint for this scope |
+| `Nodes map[string]NodeRecord` | Confirmed complete node results within the scope |
+
+The root scope input fingerprint matches RunRecord.Inputs. A child scope directly uses its parent node's deepest current Attempt identity. Mount paths describe locations; they do not replace the persistent identity of a particular parent attempt.
+
+The same child graph has different execution scopes at different mounts or in different parent attempts. After parent attempt failure, its old scope remains in the record but cannot serve a new attempt.
+
+## AttemptRecord
+
+| Field | Meaning |
+| --- | --- |
+| `Parent string` | Identity of this graph's Scope or the outer Attempt |
+| `NodeID string` | Associated node |
+| `Boundary string` | Empty for a root attempt; built-in Retry uses a fixed Aspect position as its boundary |
+| `Index int` | Attempt index at this layer, starting at `1` |
+| `Limit int` | Positive budget at this layer; Index must not exceed Limit |
+| `State AttemptState` | `active`, `failed`, or `confirmed` |
+
+| State | Meaning |
+| --- | --- |
+| `AttemptActive` | The same attempt can be reclaimed; inner success stays active until root commit |
+| `AttemptFailed` | The attempt has a real failure; all descendant results are invalid for reuse |
+| `AttemptConfirmed` | The node root attempt and complete NodeRecord were confirmed in the same Save |
+
+A node root attempt has an empty Boundary and Limit `1`. A Retry attempt points to an outer Attempt and stores its own index and limit. Within one Parent/NodeID/Boundary group, indexes are consecutive, limits match, and earlier attempts must have failed.
+
+Confirmation applies to the node root attempt. Inner Retry success does not independently become `confirmed`. Parent chains must reach the root scope without missing links, cycles, or mismatched nodes. A failed ancestor makes results logically invalid for reuse, not structurally corrupt. Recovery still validates old scopes for decodability and dependency completeness.
+
+## NodeRecord
+
+| Field | Meaning |
+| --- | --- |
+| `NodeID string` | Node in the definition |
+| `Attempt string` | Identity of this node's confirmed root attempt |
+| `Reason string` | Only `completed` or `skipped` |
+| `Outputs []ValueRecord` | Exactly all Provides of the node, without omissions or duplicates |
+
+NodeRecord represents confirmation of the complete node chain. It is not a marker for entering the body or calling Set. Real failures are recorded in Attempt state, not disguised as skipped NodeRecords.
+
+Recovery requires dependency closure: if a confirmed node requires an internally produced value, its producer must also have a confirmed record. The root attempt must match the Scope, NodeID, and NodeRecord, and be confirmed in the same Save.
+
+## ValueRecord
+
+| Field | Meaning |
+| --- | --- |
+| `Name string` | Output key name |
+| `TypeID string`, `Version string` | Codec contract for the actual Go type |
+| `State string` | Only `ready` or `skipped` |
+| `Digest string` | SHA-256 checksum of ready encoded bytes |
+| `Data []byte` | Opaque ready encoded bytes, persisted as a byte field in record JSON |
+
+`ready` and `skipped` distinguish a value from normal absence. Data length does not determine state:
+
+- Zero values, empty strings, and typed nil remain ready. A nil interface can also be ready for a declared interface type.
+- A custom Codec may return zero bytes. The checksum for that byte sequence must still be saved and validated.
+- skipped has no encoded value: Data length is zero and Digest is empty. Normal skip can complete the run successfully.
+- `pending` is not a node checkpoint output state. Pending optional pass-through outlets belong to the current Pulse execution's outlet semantics.
+
+Restoring ready values checks Codec ID/version, digest format, the actual byte checksum, and whether the decoded value is assignable to the declared type. The checksum detects missing or corrupt bytes; it is not encryption or tamper authentication.
+
+## Codec contract
+
+These public interface signatures need standard library `reflect`. They are not a complete application:
+
+```go
+type Codec interface {
+	Type() reflect.Type
+	ID() string
+	Version() string
+	Encode(any) ([]byte, error)
+	Decode([]byte) (any, error)
+}
+```
+
+Registration compares `reflect.Type`. Type, ID, and Version must be valid and nonempty. Duplicate types or IDs return `ErrConflict` without replacement. Zero-value `Codecs` accepts custom entries; `NewCodecs` additionally supplies built-in scalar and `[]byte` JSON codecs.
+
+Encode/Decode must be synchronous, concurrency safe, and not mutate business values. Equal values produce equal bytes. Decode must return a value assignable to Type. Channels, functions, and `unsafe.Pointer`, including nested declarations and interface dynamic values, are rejected.
+
+`RegisterJSON[T]` is for recursively concrete types. Interface fields or containers need a custom Codec because standard JSON does not reconstruct their dynamic Go types. JSON encoding requires valid UTF-8 strings, fields, and map keys. Use `[]byte` or custom encoding for arbitrary bytes. JSON `null` preserves typed nil for pointers/slices/maps and is rejected for scalars. Unknown struct fields, trailing content, and invalid raw UTF-8 are rejected. Other standard library JSON limitations still apply.
+
+## Store and Session
+
+These are the public interface signatures. Actual types live in package `durable`; `RunRecord` is the record described here, and `context` is the standard library package:
+
+```go
+type Store interface {
+	Acquire(context.Context, string) (Session, error)
+}
+
+type Session interface {
+	Load(context.Context) (RunRecord, error)
+	Save(context.Context, RunRecord, uint64) error
+	Close() error
+}
+```
+
+Store must be concurrency safe, with independent use of different RunIDs. Acquire immediately returns `ErrBusy` for an owned RunID. Session exclusively owns that run from Acquire until Close.
+
+Load returns an isolated copy, or `ErrNotFound` if no record exists. Save performs atomic compare-and-swap and checks that the record RunID matches the session:
+
+| Save | expectedRevision | New record Revision |
+| --- | --- | --- |
+| First | `0` | `1` |
+| Later | Current revision | Current revision plus `1` |
+
+Failed conditions return `ErrConflict` and leave the old record unchanged. Revisions must not overflow. Close releases ownership and permits repeated calls; Load/Save after close must return errors.
+
+For each mutation, Runtime copies a proposed record and advances its in-memory record only after Save succeeds. Save may commit and then return an error. Stop this execution without rollback or automatic retry; the next Resume must reload. A backend cannot replace CAS with an ordinary overwrite.
+
+## Concrete built-in Store guarantees
+
+MemoryStore's zero value is usable. Load/Save copy records. It provides only in-process locking and CAS, without cross-process ownership or persistence after exit.
+
+FileStore must be created with `filestore.New`. It uses one OS file lock per RunID, released on Close or process exit while the lock file remains. Lock implementations exist for Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, and DragonFly. Other platforms reject session acquisition rather than running without locks. The filesystem must still support the required locks and atomic replacement within a directory.
+
+File records are staged and synced in the same directory before replacement. Confirmation failure after replacement can make commit status uncertain. These single-host guarantees do not extend to distributed leases, fencing, or power-loss durability.
+
+All metadata strings and map keys must be valid UTF-8. Invalid metadata is rejected before writing, preserving the old file and Revision. Loading rejects invalid raw UTF-8 and unpaired JSON Unicode surrogates. Valid Unicode is preserved; Data bytes are not restricted by metadata UTF-8 rules.
+
+## Next steps
+
+Read [Error handling](errors.md) for corruption, conflicts, and uncertain saves. The [Storage](../guide/storage.md) guide provides a record inspection program; the [Execution contract](execution.md) defines business version and definition compatibility.
