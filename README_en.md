@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <a href="https://luo-root.github.io/pulse-durable/en/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="Bilingual documentation"></a>
 </p>
 
@@ -144,3 +145,11 @@ go test -race -count=1 ./...
 ```
 
 Runnable examples are in [example_test.go](example_test.go) and [subgraph_example_test.go](subgraph_example_test.go). Actual process exit and restart tests are in [integration/recovery_test.go](integration/recovery_test.go).
+
+## Contributing
+
+Read the [contribution guide](CONTRIBUTING.md) before submitting changes and follow the [Code of Conduct](CODE_OF_CONDUCT.md) in community discussions. Report vulnerabilities privately according to the [security policy](SECURITY.md).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE), Copyright © 2026 Luo-root. Font-derived logo assets retain their [third-party font license](.github/assets/FONT-LICENSE.txt).

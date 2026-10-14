@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <a href="https://luo-root.github.io/pulse-durable/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
 </p>
 
@@ -144,3 +145,11 @@ go test -race -count=1 ./...
 ```
 
 可运行示例见 [example_test.go](example_test.go) 和 [subgraph_example_test.go](subgraph_example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。
+
+## 参与项目
+
+提交修改前请阅读[贡献指南](CONTRIBUTING.md)，社区交流遵守[行为准则](CODE_OF_CONDUCT.md)。安全漏洞请按[安全政策](SECURITY.md)私密上报。
+
+## 许可
+
+本项目采用 [MIT 许可](LICENSE)，Copyright © 2026 Luo-root。Logo 中的字体轮廓素材保留[第三方字体许可](.github/assets/FONT-LICENSE.txt)。
