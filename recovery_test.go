@@ -367,7 +367,9 @@ func TestRecoveryEventPanicIsRedactedAndStops(t *testing.T) {
 	}
 	opts := testOptions("run")
 	opts.OnEvent = func(Event) error { panic("secret") }
-	if _, err := rt.Resume(context.Background(), g, pulse.Inputs{}, opts); err == nil || err.Error() != "durable: recovery event callback panicked" {
+	_, err := rt.Resume(context.Background(), g, pulse.Inputs{}, opts)
+	var checkpoint *pulse.CheckpointError
+	if !errors.As(err, &checkpoint) || checkpoint.Err.Error() != "durable: recovery event callback panicked" {
 		t.Fatalf("callback panic: %v", err)
 	}
 	if calls.Load() != 1 {
