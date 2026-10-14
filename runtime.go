@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/Luo-root/pulse"
 )
@@ -24,6 +25,7 @@ func New(store Store, codecs *Codecs) (*Runtime, error) {
 }
 
 // RunOptions 是本次执行的宿主契约。RunID 和 Version 显式必填。
+// RunID 是有效 UTF-8 文本；非法身份在访问 Store 之前按参数错误拒绝。
 // 函数、闭包、固定绑定值、Aspect 顺序/参数/语义变化由业务 Version 负责。
 type RunOptions struct {
 	RunID       string
@@ -68,19 +70,28 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 	if r == nil || opts.RunID == "" || opts.Version == "" {
 		return nil, fmt.Errorf("durable: runtime, run ID and business version are required")
 	}
+	if !utf8.ValidString(opts.RunID) {
+		return nil, fmt.Errorf("durable: run ID must be valid UTF-8")
+	}
 	d, err := inspectDefinition(g, r.codecs.snapshot())
 	if err != nil {
 		return nil, err
 	}
 	session, err := acquire(r.store, ctx, opts.RunID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrBusy) {
+			return nil, err
+		}
+		return nil, checkpointError("acquire run", err)
 	}
-	defer func() { err = errors.Join(err, closeSession(session)) }()
+	defer func() { err = errors.Join(err, checkpointError("close session", closeSession(session))) }()
 	stored, loadErr := load(session, ctx)
 	if resume {
 		if loadErr != nil {
-			return nil, loadErr
+			if errors.Is(loadErr, ErrNotFound) {
+				return nil, loadErr
+			}
+			return nil, checkpointError("load run", loadErr)
 		}
 		if stored.RunID != opts.RunID || stored.Version != opts.Version || stored.Definition != d.fingerprint {
 			return nil, fmt.Errorf("%w: run, business version or definition mismatch", ErrConflict)
@@ -90,7 +101,7 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 			return nil, fmt.Errorf("%w: run already exists", ErrConflict)
 		}
 		if !errors.Is(loadErr, ErrNotFound) {
-			return nil, loadErr
+			return nil, checkpointError("load run", loadErr)
 		}
 		id, idErr := randomID()
 		if idErr != nil {
@@ -109,31 +120,31 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 	defer execution.Cancel()
 	inputHash, err := d.inputsFingerprint(d.root, execution.CheckpointInputs())
 	if err != nil {
-		return execution, err
+		return execution, checkpointError("encode inputs", err)
 	}
 	if resume {
 		if stored.Inputs != inputHash {
 			return execution, fmt.Errorf("%w: input fingerprint mismatch", ErrConflict)
 		}
 		if err := state.validateLoaded(); err != nil {
-			return execution, err
+			return execution, checkpointError("validate restore", err)
 		}
 		records, err := state.decodeScope(stored.RootScope)
 		if err != nil {
-			return execution, err
+			return execution, checkpointError("decode root", err)
 		}
 		if err := execution.RestoreNodes(records); err != nil {
-			return execution, err
+			return execution, checkpointError("restore root", err)
 		}
 		if err := state.restored(stored.RootScope, records); err != nil {
-			return execution, err
+			return execution, checkpointError("recovery event", err)
 		}
 	} else {
 		proposed := cloneRecord(stored)
 		proposed.Inputs = inputHash
 		proposed.Scopes[stored.RootScope] = ScopeRecord{Graph: d.root.graph, Path: d.root.path, Inputs: inputHash, Nodes: make(map[string]NodeRecord)}
 		if err := state.save(ctx, proposed); err != nil {
-			return execution, err
+			return execution, checkpointError("initialize run", err)
 		}
 	}
 	if err := execution.Start(); err != nil {
@@ -142,13 +153,13 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 	return execution, execution.Wait()
 }
 
-type operationError struct {
-	op    string
-	cause error
+// checkpointError 只在可靠操作边界调用；参数、版本和运行身份冲突仍返回原分类。
+func checkpointError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &pulse.CheckpointError{Operation: op, Err: err}
 }
-
-func (e *operationError) Error() string { return "durable: " + e.op + " failed" }
-func (e *operationError) Unwrap() error { return e.cause }
 
 func acquire(store Store, ctx context.Context, runID string) (session Session, err error) {
 	defer func() {

@@ -282,8 +282,8 @@ func (s *runState) restored(scopeID string, records []pulse.NodeCheckpoint) (err
 	runID := s.record.RunID
 	s.mu.Unlock()
 	defer func() {
-		if recover() != nil {
-			err = fmt.Errorf("durable: recovery event callback panicked")
+		if rec := recover(); rec != nil {
+			err = operationPanic("recovery event callback", rec)
 		}
 	}()
 	for _, n := range records {
