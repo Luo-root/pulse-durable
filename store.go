@@ -1,0 +1,140 @@
+package durable
+
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotFound 表示 RunID 尚无记录。
+var ErrNotFound = errors.New("durable: run not found")
+
+// ErrBusy 表示同一 RunID 已有活动会话；Acquire 不等待它释放。
+var ErrBusy = errors.New("durable: run busy")
+
+// ErrConflict 表示 CAS 修订号、记录身份或已有运行发生冲突。
+var ErrConflict = errors.New("durable: revision or run conflict")
+
+// RecordFormat 是本版 RunRecord 的格式版本。
+const RecordFormat = 1
+
+// Store 为一个 RunID 提供独占会话。实现须并发安全，且不同 RunID 可独立使用。
+// 同一 RunID 已被持有时，Acquire 立即返回 ErrBusy；Close 释放所有权。
+// 跨进程互斥和持久性由具体后端声明，MemoryStore 不提供这两项保证。
+type Store interface {
+	Acquire(context.Context, string) (Session, error)
+}
+
+// Session 是同一 RunID 的独占读写会话。
+// Load 返回隔离副本，无记录时返回 ErrNotFound。
+// Save 必须原子比较并交换：首次 expectedRevision=0 且 Revision=1；
+// 后续 Revision=expectedRevision+1，RunID 必须等于该会话的 RunID。
+// 任意不符合条件的写入返回 ErrConflict，且不改变旧记录。
+// Save 可能实际写成却返回错误；调用方停止本次运行，Resume 必须重新 Load。
+// Close 可重复调用；关闭后的 Load/Save 必须返回错误。
+type Session interface {
+	Load(context.Context) (RunRecord, error)
+	Save(context.Context, RunRecord, uint64) error
+	Close() error
+}
+
+// RunRecord 只含可序列化数据，存储后端仅需 JSON 存取与 RunID/Revision 核对。
+// Definition 与 Inputs 是 SHA-256 指纹；记录不保存业务错误文本。
+// Scopes/Attempts 中的键是持久随机身份，不能由运行路径或内存计数重新派生。
+type RunRecord struct {
+	Format     int                      `json:"format"`
+	RunID      string                   `json:"run_id"`
+	Revision   uint64                   `json:"revision"`
+	Version    string                   `json:"version"`
+	Definition string                   `json:"definition"`
+	Inputs     string                   `json:"inputs"`
+	RootScope  string                   `json:"root_scope"`
+	Scopes     map[string]ScopeRecord   `json:"scopes"`
+	Attempts   map[string]AttemptRecord `json:"attempts"`
+}
+
+// ScopeRecord 保存一层图在某个持久作用域中的身份、输入指纹与完整节点成果。
+// 子图的作用域直接使用其父节点当前最深 Attempt 的身份。
+type ScopeRecord struct {
+	Graph  string                `json:"graph"`
+	Path   string                `json:"path"`
+	Inputs string                `json:"inputs"`
+	Nodes  map[string]NodeRecord `json:"nodes"`
+}
+
+// AttemptState 是尝试的持久状态。
+type AttemptState string
+
+const (
+	// AttemptActive 可在恢复时认回；内层成功在根提交之前仍处于此状态。
+	AttemptActive AttemptState = "active"
+	// AttemptFailed 使整个后代失效；记录保留但不能复用。
+	AttemptFailed AttemptState = "failed"
+	// AttemptConfirmed 与完整节点检查点在同一次 Save 中确认。
+	AttemptConfirmed AttemptState = "confirmed"
+)
+
+// AttemptRecord 记录某节点根尝试或内置 Retry 层的游标。
+// Boundary 为空且 Limit 为一表示节点根尝试；最终真实失败后不能通过 Resume 获得新预算。
+// Retry 使用固定切面位置和正数 Limit，Parent 指向本层图 Scope 或外层 Attempt。
+type AttemptRecord struct {
+	Parent   string       `json:"parent"`
+	NodeID   string       `json:"node_id"`
+	Boundary string       `json:"boundary"`
+	Index    int          `json:"index"`
+	Limit    int          `json:"limit"`
+	State    AttemptState `json:"state"`
+}
+
+// NodeRecord 是完整节点链确认后的终态，Attempt 必须指向该节点的已确认根尝试。
+// Reason 仅为 completed/skipped；Outputs 恰好覆盖节点全部 Provides。
+type NodeRecord struct {
+	NodeID  string        `json:"node_id"`
+	Attempt string        `json:"attempt"`
+	Reason  string        `json:"reason"`
+	Outputs []ValueRecord `json:"outputs"`
+}
+
+// ValueRecord 是一个非流式键的编码结果。State 仅为 ready/skipped。
+// skipped 没有 Data/Digest；ready 的 Data 由 TypeID/Version 指定的 Codec 解释，
+// Digest 是该字节串的 SHA-256 校验和，用于拒绝缺失或损坏的编码。
+type ValueRecord struct {
+	Name    string `json:"name"`
+	TypeID  string `json:"type_id"`
+	Version string `json:"version"`
+	State   string `json:"state"`
+	Digest  string `json:"digest,omitempty"`
+	Data    []byte `json:"data,omitempty"`
+}
+
+func cloneRecord(r RunRecord) RunRecord {
+	out := r
+	if r.Scopes != nil {
+		out.Scopes = make(map[string]ScopeRecord, len(r.Scopes))
+		for id, s := range r.Scopes {
+			s.Nodes = cloneNodes(s.Nodes)
+			out.Scopes[id] = s
+		}
+	}
+	if r.Attempts != nil {
+		out.Attempts = make(map[string]AttemptRecord, len(r.Attempts))
+		for id, a := range r.Attempts {
+			out.Attempts[id] = a
+		}
+	}
+	return out
+}
+
+func cloneNodes(nodes map[string]NodeRecord) map[string]NodeRecord {
+	if nodes == nil {
+		return nil
+	}
+	out := make(map[string]NodeRecord, len(nodes))
+	for id, n := range nodes {
+		n.Outputs = append([]ValueRecord(nil), n.Outputs...)
+		for i := range n.Outputs {
+			n.Outputs[i].Data = append([]byte(nil), n.Outputs[i].Data...)
+		}
+		out[id] = n
+	}
+	return out
+}

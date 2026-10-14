@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOWORK: "off"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download modules
+        run: go mod download
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: gofmt
+        shell: bash
+        run: |
+          mapfile -t files < <(git ls-files '*.go')
+          out="$("$(go env GOROOT)/bin/gofmt" -l "${files[@]}")"
+          if [ -n "$out" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$out"
+            exit 1
+          fi
+      - name: Test, including process exit and recovery
+        run: go test -race -count=1 -timeout=180s ./...

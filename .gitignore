@@ -1,0 +1,9 @@
+.env
+.env.*
+*.pem
+*.secrets
+go.work
+go.work.sum
+*.test
+*.test.exe
+*.out
