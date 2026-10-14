@@ -1,8 +1,15 @@
-<p align="center"><img src=".github/assets/logo.svg" alt="Pulse Durable" width="360"></p>
+[English](README_en.md) | [中文](README.md)
 
-# Pulse Durable
+<p align="center">
+  <img src=".github/assets/logo.svg" alt="Pulse Durable" width="360">
+</p>
 
-[English](README_en.md)
+<p align="center">Pulse 工作流的检查点存储与恢复</p>
+
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="https://luo-root.github.io/pulse-durable/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
+</p>
 
 Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检查点存储与恢复。你仍然使用 Pulse 定义图、节点和输入输出，通过 Durable 的 `Run` 创建一次运行，通过 `Resume` 恢复已有运行。
 
@@ -105,7 +112,7 @@ result: 42 ready
 
 ## 文档地图
 
-仓库内文档可以直接阅读；以下链接指向文档源文件。
+在线文档：[中文](https://luo-root.github.io/pulse-durable/) · [English](https://luo-root.github.io/pulse-durable/en/)。以下链接指向仓库内的文档源文件。
 
 | 任务 | 文档 |
 | --- | --- |

@@ -1,8 +1,15 @@
-<p align="center"><img src=".github/assets/logo.svg" alt="Pulse Durable" width="360"></p>
+[English](README_en.md) | [中文](README.md)
 
-# Pulse Durable
+<p align="center">
+  <img src=".github/assets/logo.svg" alt="Pulse Durable" width="360">
+</p>
 
-[中文](README.md)
+<p align="center">Checkpoint storage and recovery for Pulse workflows</p>
+
+<p align="center">
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="https://luo-root.github.io/pulse-durable/en/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="Bilingual documentation"></a>
+</p>
 
 Pulse Durable adds checkpoint storage and recovery to [Pulse](https://github.com/Luo-root/pulse) workflows. You continue to define graphs, nodes, and inputs and outputs with Pulse. Use Durable's `Run` to create a run and `Resume` to recover an existing run.
 
@@ -105,7 +112,7 @@ result: 42 ready
 
 ## Documentation map
 
-The documentation is readable in this repository. These links point to its source files.
+Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) · [中文](https://luo-root.github.io/pulse-durable/). The links below point to the source files in this repository.
 
 | Task | Documentation |
 | --- | --- |

@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: docs-${{ github.ref }}
+  group: docs-${{ github.event_name == 'pull_request' && github.ref || 'pages' }}
   cancel-in-progress: true
 
 jobs:
@@ -44,3 +44,22 @@ jobs:
           name: durable-docs-preview
           path: site/.vitepress/dist
           retention-days: 14
+      - name: Prepare GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/.vitepress/dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy documentation
+        id: deployment
+        uses: actions/deploy-pages@v4

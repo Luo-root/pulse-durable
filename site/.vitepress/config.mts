@@ -45,7 +45,7 @@ function locale(en: boolean) {
       outline: { level: [2, 3] as [number, number], label: en ? 'On this page' : '本页目录' },
       docFooter: { prev: en ? 'Previous' : '上一篇', next: en ? 'Next' : '下一篇' },
       editLink: { pattern: 'https://github.com/Luo-root/pulse-durable/edit/main/site/:path', text: en ? 'Edit this page on GitHub' : '在 GitHub 编辑此页' },
-      footer: { message: en ? 'Development documentation · Go 1.25+ · MIT' : '开发版文档 · Go 1.25+ · MIT', copyright: 'Copyright © 2026 Luo-root' },
+      footer: { message: en ? 'Development documentation · Go 1.25+' : '开发版文档 · Go 1.25+', copyright: 'Copyright © 2026 Luo-root' },
       ...(en ? {} : {
         darkModeSwitchLabel: '外观', lightModeSwitchTitle: '切换到浅色主题',
         darkModeSwitchTitle: '切换到深色主题', sidebarMenuLabel: '目录',
