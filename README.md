@@ -1,103 +1,139 @@
-# pulse-durable
+<p align="center"><img src=".github/assets/logo.svg" alt="Pulse Durable" width="360"></p>
+
+# Pulse Durable
 
 [English](README_en.md)
 
-`github.com/Luo-root/pulse-durable` 是独立的 Pulse 检查点执行库：定义仍可复用，`Run` / `Resume` 每次创建新的 `pulse.Execution`。完整节点链确认存储后才发布输出；恢复直接复用确认成果，未确认节点从函数开头重新进入。
+Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检查点存储与恢复。你仍然使用 Pulse 定义图、节点和输入输出，通过 Durable 的 `Run` 创建一次运行，通过 `Resume` 恢复已有运行。
 
-首期方案 A 保存 Retry 游标和子图作用域。父尝试未结束时，恢复认回原作用域并复用已经确认的子节点；父 Retry 明确失败后，新尝试使用新作用域，旧子成果不会复活。根完整链只有一次预算，最终真实失败的 RunID 不能通过反复 Resume 补充 Retry 次数。
+完整节点链的检查点被存储确认后，输出才会发布给下游。恢复会复用有效作用域内已确认的节点成果，未确认的节点从函数开头重新执行。Durable 不保存 Go 调用栈，也不自动撤销数据库写入、HTTP 请求等外部副作用。
 
-## 使用
+## 安装
 
-需要 Go 1.25+。以下示例用 MemoryStore 展示协议；跨进程恢复应使用 `filestore.New(dir)` 或另一个真正持久的 Store。
+需要 **Go 1.25 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
+
+```sh
+go get github.com/Luo-root/pulse-durable@d9415114b739
+```
+
+该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261014103213-1f67045d6c42`。完整的新模块操作见[安装](site/guide/installation.md)。
+
+## 最小示例
+
+下面的 `main.go` 声明一个输入和一个出口，运行“加一”节点，再读取本次执行的出口。`MemoryStore` 仅用于最小演示；跨进程恢复请使用持久存储。
 
 ```go
-package example
+package main
 
 import (
-    "context"
+	"context"
+	"fmt"
+	"log"
 
-    "github.com/Luo-root/pulse"
-    durable "github.com/Luo-root/pulse-durable"
+	"github.com/Luo-root/pulse"
+	durable "github.com/Luo-root/pulse-durable"
 )
 
-func execute(ctx context.Context, store durable.Store, resume bool) (*pulse.Execution, error) {
-    codecs := durable.NewCodecs() // bool、string、整数、浮点、[]byte
-    rt, err := durable.New(store, codecs)
-    if err != nil {
-        return nil, err
-    }
-    input := pulse.NewKey[int]("input")
-    output := pulse.NewKey[int]("output")
-    g, err := pulse.New("example", "加一")
-    if err != nil {
-        return nil, err
-    }
-    if err := g.DeclareInput(pulse.NewPort(input)); err != nil {
-        return nil, err
-    }
-    if err := g.DeclareOutput(pulse.NewPort(output)); err != nil {
-        return nil, err
-    }
-    if err := g.Add(pulse.NewNode("add", "加一", pulse.Requires(input), pulse.Provides(output),
-        func(rc *pulse.RunCtx) error {
-            v, err := pulse.Get(rc, input)
-            if err != nil {
-                return err
-            }
-            return pulse.Set(rc, output, v+1)
-        })); err != nil {
-        return nil, err
-    }
-    var in pulse.Inputs
-    if err := pulse.Seed(&in, input, 41); err != nil {
-        return nil, err
-    }
-    options := durable.RunOptions{RunID: "order-123", Version: "business/1"}
-    if resume {
-        return rt.Resume(ctx, g, in, options)
-    }
-    return rt.Run(ctx, g, in, options)
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	runtime, err := durable.New(durable.NewMemoryStore(), durable.NewCodecs())
+	if err != nil {
+		return err
+	}
+	input := pulse.NewKey[int]("input")
+	output := pulse.NewKey[int]("output")
+	graph, err := pulse.New("quickstart", "Add one")
+	if err != nil {
+		return err
+	}
+	if err := graph.DeclareInput(pulse.NewPort(input)); err != nil {
+		return err
+	}
+	if err := graph.DeclareOutput(pulse.NewPort(output)); err != nil {
+		return err
+	}
+	if err := graph.Add(pulse.NewNode("add", "Add one",
+		pulse.Requires(input), pulse.Provides(output),
+		func(rc *pulse.RunCtx) error {
+			value, err := pulse.Get(rc, input)
+			if err != nil {
+				return err
+			}
+			return pulse.Set(rc, output, value+1)
+		})); err != nil {
+		return err
+	}
+	var inputs pulse.Inputs
+	if err := pulse.Seed(&inputs, input, 41); err != nil {
+		return err
+	}
+	execution, err := runtime.Run(context.Background(), graph, inputs,
+		durable.RunOptions{RunID: "quickstart-001", Version: "increment/1"})
+	if err != nil {
+		return err
+	}
+	value, state, err := pulse.ReadOutput(execution, output)
+	if err != nil {
+		return err
+	}
+	if state != pulse.SlotStateReady {
+		return fmt.Errorf("unexpected output state: %s", state)
+	}
+	fmt.Println("result:", value, state)
+	return nil
 }
 ```
 
-RunID 必须是非空有效 UTF-8 文本，Run/Resume 在访问 Store 之前拒绝非法 RunID，保持参数错误分类。`Run` 只创建新记录，重复 RunID 返回 `ErrConflict`。`Resume` 要求记录存在，并重供相同输入。两者阻塞到本次执行结束，并尽可能返回可查询的 Execution；成功后用 `pulse.ReadOutput(e, key)` 读取声明出口。`MemoryStore` 构造器是 `durable.NewMemoryStore()`。
+在已安装依赖的模块中执行：
 
-可直接复跑的示例：
-
-- [基础 Run / Resume](example_test.go)：用 MemoryStore 展示已确认节点复用和未确认节点重进。
-- [父图挂载文档处理子图](subgraph_example_test.go)：用真实 filestore，在当前目录创建独占目录并在结束时清理，演示 `In` / `Out` 接线和父图出口读取。
-- [真实进程退出 / 重启验收](integration/recovery_test.go)：子进程在持久边界直接退出，新进程重建 Graph 并恢复，覆盖子图、Retry 和不确定提交等场景。
-
-子图示例通过 `pulse.Sub` 静态挂载 C1 下载 → C2 提取 → C3 摘要（用字符串变换模拟业务体），父挂载步骤安装 `Retry(3, 0)`。第一轮在 C1/C2 检查点已确认、C3 已进体并读到 C2 后取消宿主 context，各步执行次数为 1/1/1。随后重建 filestore、Runtime 和等价 Graph，重供相同输入，用相同 RunID 与 Version 调用 Resume：父 Retry 认回原 active 尝试作用域，恢复阶段次数为 0/0/1，累计为 1/1/2，最终用 `pulse.ReadOutput` 从父图声明出口取得摘要。
-
-该示例只在同一进程内重建对象；真正退出 / 重启的证据见上面的 integration 测试。未确认业务体及其外部副作用可能重做，调用方仍须提供幂等、事务或 outbox。
-
-在本仓库根目录执行：
-
-```text
-go test -run '^ExampleRuntime_Resume$' -v .
-go test -run ExampleRuntime_Resume_subgraph -v .
-go test -run TestCheckpointRecoveryAcrossProcessExit -v ./integration
+```sh
+go run .
 ```
 
-## 版本、编码与存储
-
-业务 `Version` 显式必填。结构指纹覆盖完整 Topology、全部节点与端口的真实类型所对应的 Codec ID/版本；函数、闭包、固定绑定值以及 Aspect 顺序/参数/语义变更由宿主升级业务版本。子图再次打开还会核对实际绑定输入，不能把新输入和旧输出混用。
-
-自定义类型使用 `durable.RegisterJSON[T](codecs, "稳定类型ID", "编码版本")` 或实现 `Codec`。注册按 `reflect.Type` 比较，重复类型或 ID 不替换。编码须确定、同步、并发安全且不修改业务值；接口类型（包括结构体或容器内的 interface）须用自定义 Codec 恢复其动态类型，JSON 便捷入口递归拒绝这类声明。JSON 字符串、嵌套字段及 map 键须为有效 UTF-8，防止静默替换及输入指纹碰撞；任意字节使用 []byte 或自定义 Codec。自定义 Codec 可以使用零字节编码，ready 状态与校验和仍须完整保存。`ready` 的 typed nil 和声明为 interface 的 nil 是值；零值也保持 ready。`skipped` 没有编码值，正常跳过不使运行失败。JSON `null` 对 pointer/slice/map 保留 typed nil，对标量拒绝。
-
-Store 提供 `Acquire(ctx, runID)` 独占会话；同 RunID 立即返回 `ErrBusy`。Session 的 `Save(ctx, record, expectedRevision)` 原子 CAS：新记录修订号 1 / expected 0，后续修订号必须为 expected+1。`Close()` 释放所有权。RunRecord 是可 JSON 存取的纯数据，值记录包含编码校验和，不保存业务错误文本。文件 Store 要求全部元数据字符串和 map 键为有效 UTF-8：写前拒绝非法元数据，旧文件字节与 Revision 不变；读取也拒绝原始非法 UTF-8 和未配对的 JSON Unicode 代理项。合法 Unicode 原样保留，编码值的 `Data []byte` 是不透明字节，不受 UTF-8 限制。它不是加密容器，存储目录和备份的访问控制由宿主管理。
-
-每次变更先复制 proposed record，Save 成功才更新内存。Save 可能实际写成却报错：本次停止，不撤销、不自动重试，后续 Resume 重新读取权威记录。Store / Codec / 恢复回调的实际可靠故障统一为 `*pulse.CheckpointError`，根恢复前置操作与子图相同；参数错误、正常记录冲突与所有权占用仍保留原分类。Codec 和回调错误的公开正文脱敏，`errors.Is/As` 经 `Unwrap` 保留原原因，`panic(error)` 也保留 cause。可靠故障不能被父 Retry、业务 skip 或外层切面吞掉；宿主取消及可靠失败保留 active 尝试。业务清理节点 context 后返回真实错误，仍确认根失败，Resume 不补充根预算。`RunOptions.OnEvent` 同步报告 `EventRestored`，不携带值、不伪造 Pulse 业务耗时；回调需并发安全，错误或 panic 停止本次，已确认数据不回滚。
-
-## 边界与验证
-
-首期只支持非流式值，不支持 channel、持久等待或分布式运行管理。未确认节点可能再次产生外部副作用，需宿主提供幂等、事务、防重或 outbox；不承诺 deterministic replay 或 exactly-once。MemoryStore 只证明进程内协议；文件后端面向本机单宿主，其 OS 锁和退出/重启验证见 `filestore/` 与 `integration/`。
-
-`go.mod` 固定通过联调的公开 Pulse 修订。独立验收使用 `GOWORK=off`，不依赖本机 `replace`；开发时可在独立测试工作区用 `go.work` 同时引用两仓。当前代码包含检查点桥接、Run/Resume 和本机文件恢复，发布版本仍以实际 tag/release 为准，由维护者决定。
+预期输出：
 
 ```text
+result: 42 ready
+```
+
+从空目录开始的完整步骤见[快速开始](site/guide/quickstart.md)。要观察真正退出进程再恢复的效果，请继续[进程退出后恢复](site/guide/recovery.md)；该教程使用文件存储和两个独立进程。
+
+## 文档地图
+
+仓库内文档可以直接阅读；以下链接指向文档源文件。
+
+| 任务 | 文档 |
+| --- | --- |
+| 了解定位与阅读顺序 | [指南概览](site/guide/index.md) |
+| 安装开发版本并检查依赖 | [安装](site/guide/installation.md) |
+| 完成第一次运行并读取出口 | [快速开始](site/guide/quickstart.md) |
+| 保留检查点并在新进程中恢复 | [进程退出后恢复](site/guide/recovery.md) |
+| 组合子图并理解 Retry 恢复 | [子图与重试](site/guide/subgraphs.md) |
+| 保存业务结构体与自定义类型 | [值编码](site/guide/codecs.md) |
+| 使用文件存储或实现 Store | [存储](site/guide/storage.md) |
+| 核对 API、记录和错误规则 | [参考概览](site/reference/index.md)、[执行契约](site/reference/execution.md)、[数据模型](site/reference/data-model.md)、[错误处理](site/reference/errors.md) |
+
+## 当前边界
+
+- 支持非流式值、静态子图，以及内置 Retry 尝试游标的保存与恢复。`Resume` 延续剩余预算，不补充已耗尽的重试次数；已失败的父尝试下的子成果不会复用。
+- `RunID` 和业务 `Version` 必填。恢复需要相同的定义、输入和编码契约；修改业务函数、闭包或切面语义时，需要升级业务版本。
+- `filestore` 面向本机单宿主，依赖文件系统的独占锁和同目录原子替换。它不提供分布式租约、跨机器调度或断电持久性保证。`MemoryStore` 只验证进程内协议。
+- 未确认节点的外部副作用可能重复。业务应使用幂等键、事务、去重或 outbox。Durable 不承诺 exactly-once、deterministic replay 或持久等待，不支持 channel、函数或 `unsafe.Pointer` 值。
+- 检查点包含编码后的业务输出，并非加密容器。存储访问控制、备份与数据保留由宿主管理。
+
+## 验证仓库
+
+在仓库根目录、未启用本地工作区替换的环境中执行：
+
+```sh
 go build ./...
 go vet ./...
 go test -race -count=1 ./...
 ```
+
+可运行示例见 [example_test.go](example_test.go) 和 [subgraph_example_test.go](subgraph_example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。

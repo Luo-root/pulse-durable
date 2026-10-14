@@ -1,0 +1,46 @@
+name: docs
+
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/assets/**'
+      - 'README*.md'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/assets/**'
+      - 'README*.md'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+      - name: Build bilingual documentation
+        working-directory: site
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: durable-docs-preview
+          path: site/.vitepress/dist
+          retention-days: 14
