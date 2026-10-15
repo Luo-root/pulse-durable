@@ -294,6 +294,10 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 
 // 旧 descriptor 可引用已提升代际的 completed 来源，但来源根成果及其确切终态必须存在。
 func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRecord) error {
+	// 每条历史引用先核自身状态，不能让缓存或稍后快照覆盖不可能的 stopped/false。
+	if !streamTerminal(ref.Terminal, ref.Stopped) {
+		return fmt.Errorf("durable: stream reference has an inconsistent terminal and reading group")
+	}
 	stream, ok := record.Streams[streamKey(ref.ID)]
 	if !ok || ref.ID.Generation > stream.Stream.ID.Generation || ref.ID.Generation == 0 {
 		return fmt.Errorf("durable: missing stream reference or future generation")
