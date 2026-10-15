@@ -295,6 +295,12 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 // 引用可以早于实际来源的成功终态、读取组 Stop 或恢复升代际；每条历史仍须
 // 匹配同一实际来源，已知终态不能倒退。active 来源有真实活跃根，成功来源有完整成果。
 func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRecord) error {
+	return s.checkStreamReferenceRecord(record, ref, false)
+}
+
+// historical 仅用于加载时的结构校验，不授权 Commit、Open 或建立恢复端点。
+// 旧别名可早于后来发生的来源失败；稳定来源和已经声明的终态仍须一致。
+func (s *runState) checkStreamReferenceRecord(record RunRecord, ref StreamDescriptorRecord, historical bool) error {
 	// 每条历史引用先核自身状态，不能让缓存或稍后快照覆盖不可能的 stopped/false。
 	if !streamTerminal(ref.Terminal, ref.Stopped) {
 		return fmt.Errorf("durable: stream reference has an inconsistent terminal and reading group")
@@ -304,7 +310,7 @@ func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRe
 		return fmt.Errorf("durable: missing stream reference or future generation")
 	}
 	expected := stream.Stream
-	if expected.Terminal == string(pulse.StreamFailed) || expected.Terminal == string(pulse.StreamCanceled) {
+	if !historical && (expected.Terminal == string(pulse.StreamFailed) || expected.Terminal == string(pulse.StreamCanceled)) {
 		return fmt.Errorf("durable: stream reference names a failed or canceled source")
 	}
 	expected.ID.Generation = ref.ID.Generation
@@ -325,9 +331,9 @@ func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRe
 		return fmt.Errorf("durable: stream reference has an invalid source root")
 	}
 	node, present := scope.Nodes[ref.ID.NodeID]
-	if stream.Stream.Terminal == "" {
-		if root.State != AttemptActive || present {
-			return fmt.Errorf("durable: active stream reference lacks an active source node")
+	if stream.Stream.Terminal == "" || stream.Stream.Terminal == string(pulse.StreamFailed) || stream.Stream.Terminal == string(pulse.StreamCanceled) {
+		if (root.State != AttemptActive && (!historical || root.State != AttemptFailed)) || present {
+			return fmt.Errorf("durable: unfinished stream reference has an invalid source node")
 		}
 		// Open 建立来源记录时已核过声明；恢复时 validateStreams 也逐条核声明。
 		return nil
