@@ -98,7 +98,7 @@ go mod tidy
 go run . -dir ../durable-recovery/checkpoints -run-id recovery-demo-001
 ```
 
-Expect run identity `recovery-demo-001`, format `1`, and a positive revision. After the recovery tutorial's simple graph completes, it contains one root scope and two node root attempts. The inspection tool prints metadata, not encoded business values, and does not call `Save`.
+Expect run identity `recovery-demo-001`, format `2`, and a positive revision. New ordinary and streaming runs both use format `2`; existing ordinary format `1` records remain readable and upgrade to `2` on their next save. After the recovery tutorial's simple graph completes, it contains one root scope and two node root attempts. The inspection tool prints metadata, not encoded business values, and does not call `Save`.
 
 Reading also needs an exclusive session. If the business process still owns the same RunID, inspection immediately returns `ErrBusy`. `filestore.New` creates a missing directory, so a mistyped path may produce an empty directory followed by `ErrNotFound`. Check the path; absence of a record does not mean business work completed.
 
