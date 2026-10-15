@@ -292,7 +292,8 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 	return s.save(ctx, proposed)
 }
 
-// 旧 descriptor 可引用已提升代际的 completed 来源，但来源根成果及其确切终态必须存在。
+// 引用可以早于实际来源的成功终态、读取组 Stop 或恢复升代际；每条历史仍须
+// 匹配同一实际来源，已知终态不能倒退。active 来源有真实活跃根，成功来源有完整成果。
 func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRecord) error {
 	// 每条历史引用先核自身状态，不能让缓存或稍后快照覆盖不可能的 stopped/false。
 	if !streamTerminal(ref.Terminal, ref.Stopped) {
@@ -303,18 +304,35 @@ func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRe
 		return fmt.Errorf("durable: missing stream reference or future generation")
 	}
 	expected := stream.Stream
+	if expected.Terminal == string(pulse.StreamFailed) || expected.Terminal == string(pulse.StreamCanceled) {
+		return fmt.Errorf("durable: stream reference names a failed or canceled source")
+	}
 	expected.ID.Generation = ref.ID.Generation
-	// Stop 可以在来源已确认后发生，不倒改历史节点成果。
+	// 较早的 Sub 引用不知道将来的终态和 Stop，但不能抹掉已经知道的事实。
+	if ref.Terminal == "" {
+		expected.Terminal = ""
+	}
 	if !ref.Stopped {
 		expected.Stopped = false
 	}
-	if ref != expected || ref.Terminal != string(pulse.StreamCompleted) && ref.Terminal != string(pulse.StreamStopped) {
+	if ref != expected {
 		return fmt.Errorf("durable: stream reference source or terminal mismatch")
 	}
 	root, ok := record.Attempts[ref.Attempt]
-	node, present := record.Scopes[ref.ID.Scope].Nodes[ref.ID.NodeID]
-	if !ok || !present || root.State != AttemptConfirmed || root.Boundary != "" || root.Parent != ref.ID.Scope ||
-		root.NodeID != ref.ID.NodeID || node.Attempt != ref.Attempt {
+	scope, scoped := record.Scopes[ref.ID.Scope]
+	if !ok || !scoped || root.Boundary != "" || root.Parent != ref.ID.Scope || root.NodeID != ref.ID.NodeID ||
+		scope.Graph != ref.Graph || scope.Path != ref.Path {
+		return fmt.Errorf("durable: stream reference has an invalid source root")
+	}
+	node, present := scope.Nodes[ref.ID.NodeID]
+	if stream.Stream.Terminal == "" {
+		if root.State != AttemptActive || present {
+			return fmt.Errorf("durable: active stream reference lacks an active source node")
+		}
+		// Open 建立来源记录时已核过声明；恢复时 validateStreams 也逐条核声明。
+		return nil
+	}
+	if !present || root.State != AttemptConfirmed || node.Attempt != ref.Attempt {
 		return fmt.Errorf("durable: stream reference lacks a confirmed source node")
 	}
 	found := false
@@ -322,6 +340,9 @@ func (s *runState) checkStreamReference(record RunRecord, ref StreamDescriptorRe
 		if value.Name == ref.ID.Key && value.Stream != nil {
 			known := *value.Stream
 			known.ID.Generation, known.Stopped = ref.ID.Generation, ref.Stopped
+			if ref.Terminal == "" {
+				known.Terminal = ""
+			}
 			found = known == ref
 		}
 	}

@@ -259,7 +259,12 @@ func (d *definition) decodeNode(loc location, node NodeRecord) (pulse.NodeCheckp
 				return pulse.NodeCheckpoint{}, err
 			}
 			if o.Stream != nil && o.Stream.Terminal != pulse.StreamCompleted && o.Stream.Terminal != pulse.StreamStopped {
-				return pulse.NodeCheckpoint{}, fmt.Errorf("durable: complete node references unfinished stream")
+				// Sub 保存的是实时别名；挂载点完成不承诺实际来源已经结束。
+				// 真正写端仍必须随自己的完整节点提交成功终态。
+				_, mount := s.children[node.NodeID]
+				if !mount || o.Stream.Terminal != "" {
+					return pulse.NodeCheckpoint{}, fmt.Errorf("durable: complete node references unfinished stream")
+				}
 			}
 		case pulse.SlotStateSkipped:
 			if len(v.Data) != 0 || v.Digest != "" || v.Stream != nil {
