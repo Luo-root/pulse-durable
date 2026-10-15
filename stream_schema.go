@@ -35,7 +35,7 @@ func (d *definition) encodeDescriptor(key pulse.CheckpointKey, value pulse.Check
 	}
 	id := value.ID
 	if key.Element == nil || key.Element != value.Element || !validIdentity(id.Scope) || id.NodeID == "" || id.Key == "" || id.Group == "" ||
-		id.Generation == 0 || !validIdentity(value.Attempt) || value.Graph == "" || value.Source.ID == "" || value.Capacity < 1 || !streamTerminal(string(value.Terminal)) {
+		id.Generation == 0 || !validIdentity(value.Attempt) || value.Graph == "" || value.Source.ID == "" || value.Capacity < 1 || !streamTerminal(string(value.Terminal), value.Stopped) {
 		return StreamDescriptorRecord{}, fmt.Errorf("durable: invalid stream descriptor")
 	}
 	return StreamDescriptorRecord{ID: streamID(id), Graph: value.Graph, Path: value.Path, Attempt: value.Attempt,
@@ -57,7 +57,11 @@ func (d *definition) decodeDescriptor(key pulse.CheckpointKey, record StreamDesc
 	return value, nil
 }
 
-func streamTerminal(terminal string) bool {
+func streamTerminal(terminal string, stopped bool) bool {
+	// stopped 是写端在读取组已停止后得出的终态，读取组 Stop 不能倒退。
+	if terminal == string(pulse.StreamStopped) && !stopped {
+		return false
+	}
 	return terminal == "" || terminal == string(pulse.StreamCompleted) || terminal == string(pulse.StreamStopped) ||
 		terminal == string(pulse.StreamFailed) || terminal == string(pulse.StreamCanceled)
 }
