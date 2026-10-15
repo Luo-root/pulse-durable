@@ -20,7 +20,7 @@ go version
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@d9415114b739
+go get github.com/Luo-root/pulse-durable@6c96a0afb793
 ```
 
 Durable 当前没有正式 release。这条命令固定到公开开发修订，Go 会将它解析为伪版本并写入 `go.mod`。不要将它当作已发布的 `v0.1`。
@@ -28,7 +28,7 @@ Durable 当前没有正式 release。这条命令固定到公开开发修订，G
 该修订固定依赖 Pulse：
 
 ```text
-v0.4.2-0.20261014103213-1f67045d6c42
+v0.4.2-0.20261015113730-990607e5593a
 ```
 
 通常不需要单独安装 Pulse。Go 模块的版本选择可能保留现有项目中更高的 Pulse 依赖；接入已有项目时，应核对实际解析版本，并验证该组合。
