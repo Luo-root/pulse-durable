@@ -21,7 +21,7 @@ func validMetadata(record durable.RunRecord) bool {
 				return false
 			}
 			for _, output := range node.Outputs {
-				if !validStrings(output.Name, output.TypeID, output.Version, output.State, output.Digest) {
+				if !validValueMetadata(output) {
 					return false
 				}
 			}
@@ -32,7 +32,52 @@ func validMetadata(record durable.RunRecord) bool {
 			return false
 		}
 	}
+	for id, stream := range record.Streams {
+		if !validStrings(id) || !validStreamMetadata(stream.Stream) {
+			return false
+		}
+		for _, message := range stream.Pending {
+			if !validValueMetadata(message.Value) {
+				return false
+			}
+		}
+		if stream.Cursor != nil && !validValueMetadata(*stream.Cursor) {
+			return false
+		}
+	}
+	for id, message := range record.Messages {
+		if !validStrings(id, message.Scope, message.Parent, message.NodeID, string(message.State)) || !validStreamIDMetadata(message.Input) {
+			return false
+		}
+	}
+	for id, managed := range record.Managed {
+		if !validStrings(id, managed.Scope, managed.Parent, managed.NodeID) {
+			return false
+		}
+		for _, state := range managed.State {
+			if !validValueMetadata(state) {
+				return false
+			}
+		}
+		for _, value := range managed.Values {
+			if !validValueMetadata(value) {
+				return false
+			}
+		}
+	}
 	return true
+}
+
+func validStreamIDMetadata(id durable.StreamIDRecord) bool {
+	return validStrings(id.Scope, id.NodeID, id.Key, id.Group)
+}
+
+func validStreamMetadata(stream durable.StreamDescriptorRecord) bool {
+	return validStreamIDMetadata(stream.ID) && validStrings(stream.Graph, stream.Path, stream.Attempt, stream.TypeID, stream.Version, stream.SourceID, stream.Terminal)
+}
+
+func validValueMetadata(value durable.ValueRecord) bool {
+	return validStrings(value.Name, value.TypeID, value.Version, value.State, value.Digest) && (value.Stream == nil || validStreamMetadata(*value.Stream))
 }
 
 func validStrings(values ...string) bool {

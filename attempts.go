@@ -36,6 +36,7 @@ func (s *runState) save(ctx context.Context, proposed RunRecord) (err error) {
 	if s.record.Revision == math.MaxUint64 {
 		return s.stop(fmt.Errorf("%w: revision exhausted", ErrConflict))
 	}
+	proposed.Format = RecordFormat
 	proposed.Revision = s.record.Revision + 1
 	defer func() {
 		if recover() != nil {

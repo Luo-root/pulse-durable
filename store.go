@@ -14,8 +14,9 @@ var ErrBusy = errors.New("durable: run busy")
 // ErrConflict 表示 CAS 修订号、记录身份或已有运行发生冲突。
 var ErrConflict = errors.New("durable: revision or run conflict")
 
-// RecordFormat 是本版 RunRecord 的格式版本。
-const RecordFormat = 1
+// RecordFormat 是新建 RunRecord 的格式版本。版本 2 包含增量流、消息预算和显式状态；
+// Runtime 仍读取不含这些字段的普通版本 1，后续写入升级为 2。旧 Runtime 拒绝版本 2。
+const RecordFormat = 2
 
 // Store 为一个 RunID 提供独占会话。实现须并发安全，且不同 RunID 可独立使用。
 // 同一 RunID 已被持有时，Acquire 立即返回 ErrBusy；Close 释放所有权。
@@ -41,15 +42,18 @@ type Session interface {
 // Definition 与 Inputs 是 SHA-256 指纹；记录不保存业务错误文本。
 // Scopes/Attempts 中的键是持久随机身份，不能由运行路径或内存计数重新派生。
 type RunRecord struct {
-	Format     int                      `json:"format"`
-	RunID      string                   `json:"run_id"`
-	Revision   uint64                   `json:"revision"`
-	Version    string                   `json:"version"`
-	Definition string                   `json:"definition"`
-	Inputs     string                   `json:"inputs"`
-	RootScope  string                   `json:"root_scope"`
-	Scopes     map[string]ScopeRecord   `json:"scopes"`
-	Attempts   map[string]AttemptRecord `json:"attempts"`
+	Format     int                             `json:"format"`
+	RunID      string                          `json:"run_id"`
+	Revision   uint64                          `json:"revision"`
+	Version    string                          `json:"version"`
+	Definition string                          `json:"definition"`
+	Inputs     string                          `json:"inputs"`
+	RootScope  string                          `json:"root_scope"`
+	Scopes     map[string]ScopeRecord          `json:"scopes"`
+	Attempts   map[string]AttemptRecord        `json:"attempts"`
+	Streams    map[string]StreamRecord         `json:"streams,omitempty"`
+	Messages   map[string]MessageAttemptRecord `json:"messages,omitempty"`
+	Managed    map[string]ManagedRecord        `json:"managed,omitempty"`
 }
 
 // ScopeRecord 保存一层图在某个持久作用域中的身份、输入指纹与完整节点成果。
@@ -59,6 +63,8 @@ type ScopeRecord struct {
 	Path   string                `json:"path"`
 	Inputs string                `json:"inputs"`
 	Nodes  map[string]NodeRecord `json:"nodes"`
+	// Bindings 区分稳定 In 绑定指纹与格式 1 的已到达输入值指纹。
+	Bindings bool `json:"bindings,omitempty"`
 }
 
 // AttemptState 是尝试的持久状态。
@@ -104,6 +110,8 @@ type ValueRecord struct {
 	State   string `json:"state"`
 	Digest  string `json:"digest,omitempty"`
 	Data    []byte `json:"data,omitempty"`
+	// Stream 引用独立流记录，与 Data/Digest 互斥；TypeID/Version 描述消息元素。
+	Stream *StreamDescriptorRecord `json:"stream,omitempty"`
 }
 
 func cloneRecord(r RunRecord) RunRecord {
@@ -121,6 +129,21 @@ func cloneRecord(r RunRecord) RunRecord {
 			out.Attempts[id] = a
 		}
 	}
+	out.Streams = cloneStreams(r.Streams)
+	if r.Messages != nil {
+		out.Messages = make(map[string]MessageAttemptRecord, len(r.Messages))
+		for id, message := range r.Messages {
+			out.Messages[id] = message
+		}
+	}
+	if r.Managed != nil {
+		out.Managed = make(map[string]ManagedRecord, len(r.Managed))
+		for id, managed := range r.Managed {
+			managed.State = cloneValues(managed.State)
+			managed.Values = cloneValues(managed.Values)
+			out.Managed[id] = managed
+		}
+	}
 	return out
 }
 
@@ -130,10 +153,7 @@ func cloneNodes(nodes map[string]NodeRecord) map[string]NodeRecord {
 	}
 	out := make(map[string]NodeRecord, len(nodes))
 	for id, n := range nodes {
-		n.Outputs = append([]ValueRecord(nil), n.Outputs...)
-		for i := range n.Outputs {
-			n.Outputs[i].Data = append([]byte(nil), n.Outputs[i].Data...)
-		}
+		n.Outputs = cloneValues(n.Outputs)
 		out[id] = n
 	}
 	return out
