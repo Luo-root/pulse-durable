@@ -20,7 +20,7 @@ go version
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@012e44fbd544
+go get github.com/Luo-root/pulse-durable@6c96a0afb793
 ```
 
 Durable 当前没有正式 release。这条命令固定到公开开发修订，Go 会将它解析为伪版本并写入 `go.mod`。不要将它当作已发布的 `v0.1`。

@@ -21,7 +21,7 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 需要 **Go 1.25 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
 
 ```sh
-go get github.com/Luo-root/pulse-durable@012e44fbd544
+go get github.com/Luo-root/pulse-durable@6c96a0afb793
 ```
 
 该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261015113730-990607e5593a`。完整的新模块操作见[安装](site/guide/installation.md)。

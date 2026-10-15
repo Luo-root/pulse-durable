@@ -20,7 +20,7 @@ Run these commands where you want to keep the example. You may choose a differen
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@012e44fbd544
+go get github.com/Luo-root/pulse-durable@6c96a0afb793
 ```
 
 Durable has no formal release yet. This command pins a public development revision. Go resolves it to a pseudo-version and writes that version to `go.mod`. It is not a released `v0.1`.
