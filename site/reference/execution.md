@@ -25,8 +25,9 @@
 | `Version string` | 必填，非空；标识宿主的业务语义版本，恢复时须与记录一致 |
 | `ExecOptions []pulse.ExecOption` | 本次执行使用的 Pulse 选项，例如本次 Observer |
 | `OnEvent func(Event) error` | 可选，同步报告 Durable 恢复事实；错误或 panic 停止本次执行 |
+| `BeforeStart func(*pulse.Execution) error` | 可选，在恢复装配后、Start 前登记宿主流订阅；错误或 panic 取消执行并释放 Session |
 
-context 必须非 nil；调用入口已取消或到期的 context 会被拒绝。图须有效，所有节点键及声明端口的真实类型都须有合适 Codec，流式声明不支持。
+context 必须非 nil；调用入口已取消或到期的 context 会被拒绝。图须有效，普通键、消息元素、游标和显式状态的真实类型须有合适 Codec；受管流端点只存 descriptor。宿主可在 BeforeStart 中 SubscribeStream 并启动读取任务，任务在 Start 后 Receive、Ack 或 Stop，并在执行取消时退出。Run/Resume 持续持有会话并等待读取义务完成。
 
 RunID 表示一项业务运行的身份，应保持稳定。新业务分配新 RunID；恢复旧业务保留原 RunID。不能借助更换 Version、输入或定义，把旧 RunID 当成另一项业务使用。
 
@@ -50,7 +51,7 @@ RunID 表示一项业务运行的身份，应保持稳定。新业务分配新 R
 
 ## 确认、重入与 Retry
 
-确认边界是完整节点链，包含切面。业务函数返回成功或执行了 `Set`，都不能单独证明节点已经确认。完整成果与节点根尝试的 `confirmed` 状态在同一次 Save 中保存，存储确认后输出才会发布。
+普通确认边界是完整节点链，包含切面。业务函数返回成功或执行了 `Set`，都不能单独证明节点已经确认。完整成果、节点根尝试的 `confirmed` 和写端成功终态在同一次 Save 中保存。受管流追加、`HandleMessage` 的输入确认/显式状态/成果另有增量事务；流消息在对应存储确认后才交付，不能等同于完整节点已经完成。消息贡献的普通值恢复到完整节点暂存外帧，仍等完整节点确认才发布；恢复不重做已 Ack 输入。
 
 恢复复用有效作用域中的已确认节点，不重新执行它们的完整链。未确认节点从函数开头执行，因此确认前发生的外部副作用可能重复。
 

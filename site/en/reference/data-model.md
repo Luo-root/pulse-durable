@@ -4,7 +4,7 @@ This page defines persistent records, encoding states, and Store/Session contrac
 
 ## RunRecord
 
-The current `RecordFormat` is `1`. RunRecord contains serializable data only, without functions, Go call stacks, or automatically captured business error text.
+The current `RecordFormat` is `2`, used for all new ordinary and streaming runs. Ordinary format `1` remains recoverable and upgrades on its next Save; it cannot contain incremental fields. Old Runtime versions reject the new format, preventing an overwrite after silently ignoring stream fields. RunRecord contains serializable data only, without functions, Go call stacks, or automatically captured business error text.
 
 | Field | Meaning |
 | --- | --- |
@@ -17,6 +17,9 @@ The current `RecordFormat` is `1`. RunRecord contains serializable data only, wi
 | `RootScope string` | Persistent random identity of the root graph |
 | `Scopes map[string]ScopeRecord` | Graph scopes and complete node results |
 | `Attempts map[string]AttemptRecord` | Node root attempts and Retry cursors |
+| `Streams map[string]StreamRecord` | Logical sources, reading groups, message logs, and acknowledgement frontiers |
+| `Messages map[string]MessageAttemptRecord` | Persistent per-input failure budgets and processing state |
+| `Managed map[string]ManagedRecord` | Explicit processor state and committed ordinary values |
 
 RootScope and attempt identities are hexadecimal representations of 16 random bytes. They are persisted, not regenerated from graph paths, in-memory counters, or process startup order. The host must still supply original external inputs during recovery.
 
@@ -27,6 +30,7 @@ RootScope and attempt identities are hexadecimal representations of 16 random by
 | `Graph string`, `Path string` | Graph identity and static mount location in the definition |
 | `Inputs string` | Actual input fingerprint for this scope |
 | `Nodes map[string]NodeRecord` | Confirmed complete node results within the scope |
+| `Bindings bool` | Child fingerprint uses stable In bindings and fixed values; false retains legacy input-value fingerprints |
 
 The root scope input fingerprint matches RunRecord.Inputs. A child scope directly uses its parent node's deepest current Attempt identity. Mount paths describe locations; they do not replace the persistent identity of a particular parent attempt.
 
@@ -64,7 +68,7 @@ Confirmation applies to the node root attempt. Inner Retry success does not inde
 
 NodeRecord represents confirmation of the complete node chain. It is not a marker for entering the body or calling Set. Real failures are recorded in Attempt state, not disguised as skipped NodeRecords.
 
-Recovery requires dependency closure: if a confirmed node requires an internally produced value, its producer must also have a confirmed record. The root attempt must match the Scope, NodeID, and NodeRecord, and be confirmed in the same Save.
+Ordinary values still require complete producer records. A managed stream dependency may refer to a durably opened source, including a source connected through static In/Out bindings, before its body completes. Its stable identity, source attempt, and all ancestors must be valid. The root attempt must still match the Scope, NodeID, and NodeRecord, and be confirmed in the same Save.
 
 ## ValueRecord
 
@@ -84,6 +88,18 @@ Recovery requires dependency closure: if a confirmed node requires an internally
 - `pending` is not a node checkpoint output state. Pending optional pass-through outlets belong to the current Pulse execution's outlet semantics.
 
 Restoring ready values checks Codec ID/version, digest format, the actual byte checksum, and whether the decoded value is assignable to the declared type. The checksum detects missing or corrupt bytes; it is not encryption or tamper authentication.
+
+## Incremental streams and message transactions
+
+`ValueRecord.Stream` contains a `StreamDescriptorRecord`, mutually exclusive with Data/Digest; TypeID/Version describe the element type. A descriptor records the source identity, actual writer root attempt, capacity, and confirmed terminal. Recovery uses Core's generic factory to rebuild endpoints without passing endpoints to a Codec.
+
+`StreamRecord` identifies Scope/NodeID/Key/Group plus Generation, and stores SourceID/Resumable, LastSequence, AckedThrough, Pending, and Cursor. Pending holds ordered messages with reading obligations; sparse acknowledgements do not mistake the highest acknowledged sequence for a continuous frontier. Recovery advances generation once; repeated Open calls in the same execution reclaim that generation. Old deliveries cannot acknowledge a new generation.
+
+Active sources must explicitly support continuation. Business code starts from `StreamWriter.Position()` and persists positions with `SendAt`. Completed sources retain their complete NodeRecord; recovery rebuilds their unacknowledged tails without rerunning the body. A confirmed source still permits tail acknowledgements. Failed sources, failed ancestors, forged references, and future generations are rejected.
+
+`MessageAttemptRecord` stores source/group/sequence, processing parent attempt, Index/Limit, and state; restarts do not replenish budgets. `ManagedRecord.State` is an explicit full snapshot; Values are arrived ordinary outputs. Input acknowledgement, state, ordinary values, and output messages commit in one whole-record CAS. Failure discards the proposed record; uncertain saves stop execution and Resume reloads authority. Stop explicitly ends reading obligations without pretending to acknowledge every message. External effects still require application idempotency, transactions, or an outbox.
+
+When messages are confirmed but their complete node remains active, root `CheckpointAttempt.Values` decodes ordinary ready or skipped results from ManagedRecord.Values with the same Scope/Parent/NodeID. Core restores them into the outer complete-chain staging frame and publishes execution slots after complete node Commit. Reclaiming does not advance revision or replay acknowledged inputs; failed ancestors prohibit recovery. Stream references, undeclared or duplicate keys, type/codec-version mismatches, and pending values are rejected. Retry and OpenMessage nested CheckpointAttempt.Values remain empty. This bridge adds no storage fields.
 
 ## Codec contract
 

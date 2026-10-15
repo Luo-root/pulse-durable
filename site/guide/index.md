@@ -40,6 +40,6 @@ Pulse 负责图定义、依赖调度、切面和本次执行的观测；Durable 
 
 ## 当前适用范围
 
-支持非流式值和静态子图。`filestore` 支持本机进程退出后的恢复；`MemoryStore` 仅在同一进程存活期间保存记录。Durable 不提供持久等待、分布式运行管理、deterministic replay 或 exactly-once 外部副作用保证。
+支持普通值、受管流、显式消息状态和静态子图；流的可靠边界见[数据模型](../reference/data-model.md)。`filestore` 支持本机进程退出后的恢复；`MemoryStore` 仅在同一进程存活期间保存记录。Durable 不提供持久等待、分布式运行管理、deterministic replay 或 exactly-once 外部副作用保证。
 
 下一步：[安装](installation.md)。

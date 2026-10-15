@@ -11,6 +11,10 @@ Think of a parent mount attempt as a work order. Child results belong to that sp
 
 Suppose a child has “prepare” and “finish” stages. Host cancellation after entering “finish” allows recovery to reuse “prepare.” If a real business error has already failed that parent attempt, the next parent attempt cannot borrow “prepare” from the previous work order.
 
+Managed-stream pass-through outlets have an independent completion relationship. An empty child can pass its inlet stream directly to its outlet and save the Sub result while the actual source continues producing. That result stores a reference and does not publish the writer's EOF. After process exit, the confirmed Sub does not rerun; a resumable source continues from its reliable Position, sharing one endpoint, generation, pending tail, and acknowledgement ledger with the restored outlet. Recovery rejects active sources that have not declared resumability. Completed sources only rebuild their unacknowledged tail.
+
+Loading still validates retained history from failed attempts, checking the source, generation, and known state. It neither requires those invalidated sources to remain resumable nor treats their later real failure as record corruption. Resumability and valid-ancestor requirements apply when preparing actual recovery for a valid scope. Nodes from failed old scopes do not run again.
+
 ## 1. Create an example module
 
 Requires Go 1.25 or later and a writable local directory.
@@ -19,7 +23,7 @@ Requires Go 1.25 or later and a writable local directory.
 mkdir durable-subgraphs
 cd durable-subgraphs
 go mod init example.com/durable-subgraphs
-go get github.com/Luo-root/pulse-durable@d9415114b739
+go get github.com/Luo-root/pulse-durable@6c96a0afb793
 ```
 
 The example uses a fixed RunID and `./checkpoints`. Start in a new directory without a record for this example. Assign a new RunID for a new demonstration rather than automatically deleting old records.
