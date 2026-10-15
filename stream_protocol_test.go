@@ -2,9 +2,10 @@ package durable
 
 import (
 	"context"
-	"github.com/Luo-root/pulse"
 	"reflect"
 	"testing"
+
+	"github.com/Luo-root/pulse"
 )
 
 type streamProtocol struct {
@@ -23,7 +24,7 @@ func newStreamProtocol(t *testing.T) streamProtocol {
 	testAdd(t, g, pulse.NewNode("source", "", nil, pulse.Provides(input), func(*pulse.RunCtx) error { return nil }))
 	testAdd(t, g, pulse.NewNode("processor", "", pulse.Requires(input), pulse.Deps(pulse.Provides(output), pulse.Provides(value)), func(*pulse.RunCtx) error { return nil }))
 	testAdd(t, g, pulse.NewNode("sink", "", pulse.Requires(output), nil, func(*pulse.RunCtx) error { return nil }))
-	def, err := inspectStreamDefinition(g, NewCodecs().snapshot())
+	def, err := inspectDefinition(g, NewCodecs().snapshot())
 	if err != nil {
 		t.Fatal(err)
 	}

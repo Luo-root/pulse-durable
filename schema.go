@@ -46,7 +46,7 @@ type portFingerprint struct {
 	Input, Output bool
 }
 
-func inspectStreamDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
+func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
 	if g == nil {
 		return nil, fmt.Errorf("durable: graph is required")
 	}
@@ -281,21 +281,4 @@ func digest(data []byte) string {
 func validDigest(s string) bool {
 	decoded, err := hex.DecodeString(s)
 	return err == nil && len(decoded) == sha256.Size
-}
-
-// 流处理器尚未接入 Runtime 时保留明确拒绝；包内协议测试可检查持久 schema。
-func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
-	for _, node := range g.CheckpointNodes() {
-		for _, key := range append(append([]pulse.CheckpointKey(nil), node.Requires...), node.Provides...) {
-			if key.Element != nil {
-				return nil, fmt.Errorf("durable: managed streams are not enabled")
-			}
-		}
-	}
-	for _, port := range g.CheckpointPorts() {
-		if port.Key.Element != nil {
-			return nil, fmt.Errorf("durable: managed streams are not enabled")
-		}
-	}
-	return inspectStreamDefinition(g, codecs)
 }

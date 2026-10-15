@@ -35,6 +35,9 @@ type RunOptions struct {
 	// 回调须并发安全；同步返回错误或 panic 会停止本次运行，已确认记录不回滚。
 	// 恢复回调在相应图启动前发出，不得同步等待同一个执行完成。
 	OnEvent func(Event) error
+	// BeforeStart 在恢复计划装配后、Start 前调用。宿主可 SubscribeStream 并启动读取 goroutine；
+	// goroutine 须等待执行启动后再 Receive，并在执行取消时退出。回调错误或 panic 会取消执行、释放会话。
+	BeforeStart func(*pulse.Execution) error
 }
 
 // Event 是 Durable 自身的恢复事实，不伪造 Pulse Waiting/Running 或业务耗时。
@@ -147,10 +150,27 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 			return execution, checkpointError("initialize run", err)
 		}
 	}
+	if opts.BeforeStart != nil {
+		if err := beforeStart(opts.BeforeStart, execution); err != nil {
+			return execution, err
+		}
+	}
 	if err := execution.Start(); err != nil {
 		return execution, err
 	}
 	return execution, execution.Wait()
+}
+
+func beforeStart(callback func(*pulse.Execution) error, execution *pulse.Execution) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = operationPanic("before start callback", rec)
+		}
+	}()
+	if err := callback(execution); err != nil {
+		return &operationError{op: "before start callback", cause: err}
+	}
+	return nil
 }
 
 // checkpointError 只在可靠操作边界调用；参数、版本和运行身份冲突仍返回原分类。

@@ -186,14 +186,16 @@ func (s *runState) decodeScope(scopeID string) ([]pulse.NodeCheckpoint, error) {
 			if err != nil {
 				return nil, err
 			}
-			for _, output := range node.Outputs {
+			for i, output := range node.Outputs {
 				if output.Stream != nil {
 					if !s.streamComesFrom(scopeID, output.Name, output.Stream.ID, make(map[string]bool)) {
 						return nil, fmt.Errorf("durable: node output references an unrelated source")
 					}
-					if err := s.checkStreamReference(s.record, *output.Stream); err != nil {
+					descriptor, err := s.restoreStreamReference(decoded.Outputs[i].Key, *output.Stream)
+					if err != nil {
 						return nil, err
 					}
+					decoded.Outputs[i].Stream = &descriptor
 				}
 			}
 			out = append(out, decoded)
