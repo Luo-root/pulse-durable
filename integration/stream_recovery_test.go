@@ -19,7 +19,7 @@ import (
 )
 
 func TestStreamRecoveryAcrossProcessExit(t *testing.T) {
-	for _, scenario := range []string{"append-before", "append-after", "commit-before", "commit-after", "finish-before", "finish-after", "completed-tail", "uncertain-append", "uncertain-commit", "message-failed", "message-budget", "nested-stream", "ordinary-commit-after"} {
+	for _, scenario := range []string{"append-before", "append-after", "commit-before", "commit-after", "finish-before", "finish-after", "completed-tail", "uncertain-append", "uncertain-commit", "message-failed", "message-budget", "nested-stream", "ordinary-commit-after", "ordinary-first-write"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			err := streamRecoveryProcess(t, dir, scenario, "run")
@@ -29,22 +29,22 @@ func TestStreamRecoveryAcrossProcessExit(t *testing.T) {
 			}
 			before := loadStreamRecord(t, dir)
 			assertStreamTransactions(t, before)
-			if scenario == "ordinary-commit-after" {
+			if strings.HasPrefix(scenario, "ordinary-") {
 				if _, complete := before.Scopes[before.RootScope].Nodes["processor"]; complete {
 					t.Fatal("ordinary-value crash occurred after complete node confirmation")
 				}
-				found := false
+				var persisted string
 				for _, managed := range before.Managed {
 					if managed.NodeID == "processor" {
 						for _, value := range managed.Values {
-							if value.Name == "ordinary" && string(value.Data) == "42" {
-								found = true
+							if value.Name == "ordinary" {
+								persisted = string(value.Data)
 							}
 						}
 					}
 				}
-				if !found {
-					t.Fatal("ordinary value was not part of the confirmed message transaction")
+				if want := fmt.Sprint(ordinaryRecoveryValue(scenario)); persisted != want {
+					t.Fatalf("confirmed ordinary value=%q, want effective first write %q", persisted, want)
 				}
 			}
 			if err := streamRecoveryProcess(t, dir, scenario, "resume"); err != nil {
@@ -67,7 +67,7 @@ func TestStreamRecoveryAcrossProcessExit(t *testing.T) {
 			if scenario == "message-failed" && string(trace) != "1\n2\n2\n3\n" {
 				t.Fatalf("wrong input replay order: %q", trace)
 			}
-			if scenario == "ordinary-commit-after" && string(trace) != "1\n2\n3\n" {
+			if strings.HasPrefix(scenario, "ordinary-") && string(trace) != "1\n2\n3\n" {
 				t.Fatalf("restoring ordinary values replayed confirmed input: %q", trace)
 			}
 			if scenario == "message-budget" {
@@ -229,12 +229,19 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scenario == "ordinary-commit-after" {
+	if strings.HasPrefix(scenario, "ordinary-") {
 		value, state, err := pulse.ReadOutput(e, pulse.NewKey[int]("ordinary"))
-		if err != nil || state != pulse.SlotStateReady || value != 42 {
+		if err != nil || state != pulse.SlotStateReady || value != ordinaryRecoveryValue(scenario) {
 			t.Fatalf("message value lost across process exit: value=%d state=%s err=%v", value, state, err)
 		}
 	}
+}
+
+func ordinaryRecoveryValue(scenario string) int {
+	if scenario == "ordinary-first-write" {
+		return 11
+	}
+	return 42
 }
 
 func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
@@ -254,7 +261,7 @@ func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
 		}
 	}
 	processorProvides := pulse.Provides(output)
-	if scenario == "ordinary-commit-after" {
+	if strings.HasPrefix(scenario, "ordinary-") {
 		processorProvides = pulse.Deps(processorProvides, pulse.Provides(ordinary))
 		if err := g.DeclareOutput(pulse.NewPort(ordinary)); err != nil {
 			t.Fatal(err)
@@ -292,6 +299,11 @@ func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
 		if err != nil {
 			return err
 		}
+		if scenario == "ordinary-first-write" {
+			if err := pulse.Set(rc, ordinary, 11); err != nil {
+				return err
+			}
+		}
 		for {
 			delivery, err := stream.Receive(rc)
 			if err == io.EOF {
@@ -326,8 +338,12 @@ func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
 				if err := writer.Send(sum + value); err != nil {
 					return err
 				}
-				if scenario == "ordinary-commit-after" && value == 2 {
-					if err := pulse.Set(rc, ordinary, 42); err != nil {
+				if strings.HasPrefix(scenario, "ordinary-") && value == 2 {
+					ordinaryValue := 42
+					if scenario == "ordinary-first-write" {
+						ordinaryValue = 22
+					}
+					if err := pulse.Set(rc, ordinary, ordinaryValue); err != nil {
 						return err
 					}
 				}
@@ -408,12 +424,14 @@ func (s *streamInjectedSession) Save(ctx context.Context, record durable.RunReco
 					match = true
 				}
 			}
-		case "commit-before", "commit-after", "uncertain-commit", "nested-stream", "ordinary-commit-after":
+		case "commit-before", "commit-after", "uncertain-commit", "nested-stream", "ordinary-commit-after", "ordinary-first-write":
 			for _, attempt := range record.Messages {
 				if attempt.Sequence == 2 && attempt.State == durable.AttemptConfirmed {
 					match = true
 				}
 			}
+		case "live-sub":
+			_, match = record.Scopes[record.RootScope].Nodes["mount"]
 		case "sugar-stop":
 			// Ack 和显式 Stop 是两个可靠边界；只在 Stop 已持久化后证明它能跨进程保留。
 			stopped, committed := false, false

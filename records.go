@@ -214,6 +214,12 @@ func (s *runState) checkDependencies(scopeID string, nodes map[string]NodeRecord
 	if !ok {
 		return fmt.Errorf("durable: checkpoint node is unknown")
 	}
+	// Sub 的 Requires 描述 In 接线，不是整节点的到达门。未使用的入口仍可
+	// pending，而独立子图成果已经完整提交；不能额外要求它的生产者先确认。
+	// 实际业务节点仍在各自作用域按下面的规则核依赖，普通输出也仍须完整提交。
+	if _, mount := gs.children[nodeID]; mount {
+		return nil
+	}
 	for _, k := range n.Requires {
 		if producer, internal := gs.producers[k.Name]; internal {
 			if _, exists := nodes[producer]; !exists {
