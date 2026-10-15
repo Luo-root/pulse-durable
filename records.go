@@ -161,6 +161,10 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 			if err := s.checkStreamReference(proposed, *value.Stream); err != nil {
 				return err
 			}
+			// 保存新别名不能借用失败祖先下的旧来源；历史解码仍按结构保留旧成果。
+			if err := s.ancestry(value.Stream.Attempt, false); err != nil {
+				return err
+			}
 		}
 	}
 	return s.save(ctx, proposed)
