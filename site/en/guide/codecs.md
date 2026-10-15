@@ -26,7 +26,7 @@ Requires Go 1.25 or later. Create a new module:
 mkdir durable-codecs
 cd durable-codecs
 go mod init example.com/durable-codecs
-go get github.com/Luo-root/pulse-durable@443f0cfedbfb
+go get github.com/Luo-root/pulse-durable@53e6f7fa88e2
 ```
 
 Save this complete program as `main.go`. It registers `Document`, runs once, then restores from the same in-process Store and reads a struct outlet.

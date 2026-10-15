@@ -20,7 +20,7 @@ Run these commands where you want to keep the example. You may choose a differen
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@443f0cfedbfb
+go get github.com/Luo-root/pulse-durable@53e6f7fa88e2
 ```
 
 Durable has no formal release yet. This command pins a public development revision. Go resolves it to a pseudo-version and writes that version to `go.mod`. It is not a released `v0.1`.
@@ -28,7 +28,7 @@ Durable has no formal release yet. This command pins a public development revisi
 The revision pins Pulse:
 
 ```text
-v0.4.2-0.20261015072252-be2d5c637d0d
+v0.4.2-0.20261015103043-d21714d1af84
 ```
 
 You normally do not need to install Pulse separately. Go module version selection can retain a higher Pulse dependency already present in your project. For an existing application, inspect the resolved version and validate that combination.

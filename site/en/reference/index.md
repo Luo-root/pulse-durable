@@ -25,7 +25,7 @@ Normal skip means no business value and can finish successfully. Reliable storag
 
 ## Version and scope
 
-This documentation describes the API included in public development revision `443f0cfedbfb`. Durable has no formal release yet. That revision depends on Pulse `v0.4.2-0.20261015072252-be2d5c637d0d` and requires Go 1.25 or later.
+This documentation describes the API included in public development revision `53e6f7fa88e2`. Durable has no formal release yet. That revision depends on Pulse `v0.4.2-0.20261015103043-d21714d1af84` and requires Go 1.25 or later.
 
 Supports ordinary values, managed streams, explicit state, static child graphs, and built-in Retry and message budgets. MemoryStore provides only the in-process protocol; FileStore targets one local host. Durable does not provide durable waits, distributed run management, deterministic replay, or exactly-once external effects.
 
