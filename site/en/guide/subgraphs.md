@@ -11,6 +11,8 @@ Think of a parent mount attempt as a work order. Child results belong to that sp
 
 Suppose a child has “prepare” and “finish” stages. Host cancellation after entering “finish” allows recovery to reuse “prepare.” If a real business error has already failed that parent attempt, the next parent attempt cannot borrow “prepare” from the previous work order.
 
+Managed-stream pass-through outlets have an independent completion relationship. An empty child can pass its inlet stream directly to its outlet and save the Sub result while the actual source continues producing. That result stores a reference and does not publish the writer's EOF. After process exit, the confirmed Sub does not rerun; a resumable source continues from its reliable Position, sharing one endpoint, generation, pending tail, and acknowledgement ledger with the restored outlet. Recovery rejects active sources that have not declared resumability. Completed sources only rebuild their unacknowledged tail.
+
 ## 1. Create an example module
 
 Requires Go 1.25 or later and a writable local directory.
