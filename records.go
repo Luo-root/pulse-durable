@@ -171,6 +171,12 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 }
 
 func (s *runState) decodeScope(scopeID string) ([]pulse.NodeCheckpoint, error) {
+	return s.decodeScopeRecords(scopeID, true)
+}
+
+// validateLoaded 还要检查失败祖先下的旧成果，但不为它们准备运行恢复，
+// 不要求旧活跃来源可续读，也不将旧来源的真实失败当成格式损坏。
+func (s *runState) decodeScopeRecords(scopeID string, restore bool) ([]pulse.NodeCheckpoint, error) {
 	scope, ok := s.record.Scopes[scopeID]
 	if !ok {
 		return nil, fmt.Errorf("durable: unknown checkpoint scope")
@@ -194,6 +200,12 @@ func (s *runState) decodeScope(scopeID string) ([]pulse.NodeCheckpoint, error) {
 				if output.Stream != nil {
 					if !s.streamComesFrom(scopeID, output.Name, output.Stream.ID, make(map[string]bool)) {
 						return nil, fmt.Errorf("durable: node output references an unrelated source")
+					}
+					if !restore {
+						if err := s.checkStreamReferenceRecord(s.record, *output.Stream, true); err != nil {
+							return nil, err
+						}
+						continue
 					}
 					descriptor, err := s.restoreStreamReference(decoded.Outputs[i].Key, *output.Stream)
 					if err != nil {
@@ -321,7 +333,7 @@ func (s *runState) validateLoaded() error {
 			}
 		}
 		// 失败祖先下的旧成果也必须可解码且依赖闭合，但运行时永不复用它们。
-		if _, err := s.decodeScope(id); err != nil {
+		if _, err := s.decodeScopeRecords(id, false); err != nil {
 			return err
 		}
 	}
