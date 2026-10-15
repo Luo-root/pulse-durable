@@ -4,7 +4,7 @@
 
 ## RunRecord
 
-当前 `RecordFormat` 为 `1`。RunRecord 只包含可序列化数据，不保存函数、Go 调用栈或自动采集的业务错误文本。
+当前 `RecordFormat` 为 `2`，新建普通与流式运行均使用该版本。普通格式 `1` 仍可恢复，下一次 Save 升级为 `2`；格式 `1` 不允许携带增量字段。旧 Runtime 会拒绝新格式，避免忽略流字段后覆盖。RunRecord 只包含可序列化数据，不保存函数、Go 调用栈或自动采集的业务错误文本。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -17,6 +17,9 @@
 | `RootScope string` | 根图的持久随机身份 |
 | `Scopes map[string]ScopeRecord` | 图作用域及其完整节点成果 |
 | `Attempts map[string]AttemptRecord` | 节点根尝试与 Retry 尝试游标 |
+| `Streams map[string]StreamRecord` | 逻辑来源、读取组、消息日志及确认前沿 |
+| `Messages map[string]MessageAttemptRecord` | 每条输入的持久失败预算与处理状态 |
+| `Managed map[string]ManagedRecord` | 处理节点显式状态及已提交普通值 |
 
 RootScope 与尝试身份是 16 字节随机数的十六进制表示。它们保存在记录中，不能按图路径、内存计数或进程启动顺序重新生成。恢复仍须由宿主提供原始外部输入。
 
@@ -27,6 +30,7 @@ RootScope 与尝试身份是 16 字节随机数的十六进制表示。它们保
 | `Graph string`、`Path string` | 定义中的图身份与静态挂载位置 |
 | `Inputs string` | 该作用域实际输入的指纹 |
 | `Nodes map[string]NodeRecord` | 此作用域中已经确认的完整节点成果 |
+| `Bindings bool` | 子图指纹按稳定 In 绑定与固定值生成；false 保留原格式的输入值指纹 |
 
 根作用域的输入指纹与 RunRecord.Inputs 一致。子图作用域直接使用父节点当前最深 Attempt 的身份，挂载路径仅描述位置，不能代替一次父尝试的持久身份。
 
@@ -64,7 +68,7 @@ RootScope 与尝试身份是 16 字节随机数的十六进制表示。它们保
 
 NodeRecord 代表完整节点链的确认成果，不是“函数已经进入”或“调用过 Set”的标记。真实失败保存在 Attempt 状态中，不会伪造成 skipped NodeRecord。
 
-恢复要求记录的依赖闭合：如果一个已确认节点依赖图内上游产物，则其上游节点也须有确认记录。根尝试必须与 Scope、NodeID 及 NodeRecord 正确关联，并在同一次 Save 中确认。
+普通值恢复仍要求上游完整节点记录闭合。受管流依赖允许引用已可靠打开的来源，包括沿静态 In/Out 接线传递的来源，不要求来源业务体已经完成；其稳定身份、来源尝试和全部祖先须有效。根尝试仍须与 Scope、NodeID 及 NodeRecord 正确关联，并在同一次 Save 中确认。
 
 ## ValueRecord
 
@@ -84,6 +88,18 @@ NodeRecord 代表完整节点链的确认成果，不是“函数已经进入”
 - `pending` 不是节点检查点的输出状态；可选透传出口的 pending 是本次 Pulse 执行的出口语义。
 
 ready 恢复时会核对 Codec ID/版本、摘要格式与实际字节校验和，并验证解码值可赋给声明类型。校验和用于检测缺失与损坏，不是加密或防篡改认证。
+
+## 增量流与消息事务
+
+`ValueRecord.Stream` 是与 Data/Digest 互斥的 `StreamDescriptorRecord`，TypeID/Version 描述元素类型。descriptor 保存来源身份、真实写端根尝试、容量和已确认终态；恢复用 Core 的泛型 factory 重建端点，不把端点交给 Codec。
+
+`StreamRecord` 的身份由 Scope/NodeID/Key/Group 和 Generation 构成，另存 SourceID/Resumable、LastSequence、AckedThrough、Pending 和 Cursor。Pending 按序保存仍需确认的消息，稀疏 Ack 不会把最大序号误当连续前沿。恢复一次提升一个代际，同轮重复 Open 认回同一代际；旧交付不能确认新代际。
+
+活跃来源必须显式可续读，业务从 `StreamWriter.Position()` 返回的位置开始并用 `SendAt` 保存新位置。completed 来源保留完整 NodeRecord，恢复只重建未确认尾部；已确认来源的尾部仍可 Ack。失败来源、失败祖先、伪造引用和未来代际均拒绝。
+
+`MessageAttemptRecord` 保存输入来源/组/序号、处理父尝试、Index/Limit 和状态；重启不补预算。`ManagedRecord.State` 是显式完整快照，Values 是已到达普通值。消息输入 Ack、状态、普通值和输出消息在一次整记录 CAS 中确认；失败只丢弃 proposed record，保存结果不确定时停止并由 Resume 重读。Stop 显式结束读取义务，不伪装逐条 Ack。外部副作用仍需要业务幂等、事务或 outbox。
+
+消息已确认、完整节点仍 active 时，根 `CheckpointAttempt.Values` 从同 Scope/Parent/NodeID 的 ManagedRecord.Values 解码普通成果（ready 或 skipped），恢复进 Core 的完整链暂存外帧，完整节点 Commit 后才发布执行槽。认回不增加修订号、不重新处理已 Ack 输入；失败祖先不允许认回。流引用、未声明或重复键、类型/编码版本错误和 pending 都被拒绝；Retry 及 OpenMessage 的嵌套 CheckpointAttempt.Values 始终为空。此接缝不增加存储字段。
 
 ## Codec 契约
 

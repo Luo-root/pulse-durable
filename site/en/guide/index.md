@@ -40,6 +40,6 @@ When a call fails, identify its error category first. A storage save may report 
 
 ## Current scope
 
-Supports non-streaming values and static child graphs. `filestore` supports recovery after local process exit; `MemoryStore` retains records only while the same process is alive. Durable does not provide durable waits, distributed run management, deterministic replay, or exactly-once external effects.
+Supports ordinary values, managed streams, explicit message state, and static child graphs. See the [Data model](../reference/data-model.md) for reliable stream boundaries. `filestore` supports recovery after local process exit; `MemoryStore` retains records only while the same process is alive. Durable does not provide durable waits, distributed run management, deterministic replay, or exactly-once external effects.
 
 Next: [Installation](installation.md).

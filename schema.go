@@ -46,7 +46,7 @@ type portFingerprint struct {
 	Input, Output bool
 }
 
-func inspectStreamDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
+func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
 	if g == nil {
 		return nil, fmt.Errorf("durable: graph is required")
 	}
@@ -259,7 +259,12 @@ func (d *definition) decodeNode(loc location, node NodeRecord) (pulse.NodeCheckp
 				return pulse.NodeCheckpoint{}, err
 			}
 			if o.Stream != nil && o.Stream.Terminal != pulse.StreamCompleted && o.Stream.Terminal != pulse.StreamStopped {
-				return pulse.NodeCheckpoint{}, fmt.Errorf("durable: complete node references unfinished stream")
+				// Sub 保存的是实时别名；挂载点完成不承诺实际来源已经结束。
+				// 真正写端仍必须随自己的完整节点提交成功终态。
+				_, mount := s.children[node.NodeID]
+				if !mount || o.Stream.Terminal != "" {
+					return pulse.NodeCheckpoint{}, fmt.Errorf("durable: complete node references unfinished stream")
+				}
 			}
 		case pulse.SlotStateSkipped:
 			if len(v.Data) != 0 || v.Digest != "" || v.Stream != nil {
@@ -281,21 +286,4 @@ func digest(data []byte) string {
 func validDigest(s string) bool {
 	decoded, err := hex.DecodeString(s)
 	return err == nil && len(decoded) == sha256.Size
-}
-
-// 流处理器尚未接入 Runtime 时保留明确拒绝；包内协议测试可检查持久 schema。
-func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
-	for _, node := range g.CheckpointNodes() {
-		for _, key := range append(append([]pulse.CheckpointKey(nil), node.Requires...), node.Provides...) {
-			if key.Element != nil {
-				return nil, fmt.Errorf("durable: managed streams are not enabled")
-			}
-		}
-	}
-	for _, port := range g.CheckpointPorts() {
-		if port.Key.Element != nil {
-			return nil, fmt.Errorf("durable: managed streams are not enabled")
-		}
-	}
-	return inspectStreamDefinition(g, codecs)
 }

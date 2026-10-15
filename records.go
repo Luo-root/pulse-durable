@@ -48,17 +48,24 @@ func (s *runState) openChildLocked(ctx context.Context, req pulse.CheckpointChil
 	if !ok || childLoc.graph != req.Graph || childLoc != (location{req.Site.Graph, req.Site.Path}) {
 		return nil, fmt.Errorf("durable: child graph does not match static mount")
 	}
-	inputHash, err := s.def.inputsFingerprint(childLoc, req.Inputs)
+	inputHash, err := s.childFingerprint(childLoc, req, root.Parent)
 	if err != nil {
 		return nil, err
 	}
 	if scope, exists := s.record.Scopes[req.Attempt]; exists {
+		if !scope.Bindings && len(req.Bindings) > 0 {
+			// 格式 1 的 In 当时全到齐后按值编码，允许该原契约继续恢复。
+			inputHash, err = s.def.inputsFingerprint(childLoc, req.Inputs)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if scope.Graph != childLoc.graph || scope.Path != childLoc.path || scope.Inputs != inputHash {
 			return nil, fmt.Errorf("%w: child scope identity or input mismatch", ErrConflict)
 		}
 	} else {
 		proposed := cloneRecord(s.record)
-		proposed.Scopes[req.Attempt] = ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash, Nodes: make(map[string]NodeRecord)}
+		proposed.Scopes[req.Attempt] = ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash, Nodes: make(map[string]NodeRecord), Bindings: len(req.Bindings) > 0}
 		if err := s.save(ctx, proposed); err != nil {
 			return nil, err
 		}
@@ -98,20 +105,79 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 	if _, err := s.def.decodeNode(loc, node); err != nil {
 		return err
 	}
-	if err := s.checkDependencies(loc, scope.Nodes, req.Node.NodeID); err != nil {
+	if err := s.checkDependencies(req.Scope, scope.Nodes, req.Node.NodeID, false); err != nil {
 		return err
 	}
 	proposed := cloneRecord(s.record)
+	finished := make(map[string]bool)
+	for _, finish := range req.Streams {
+		key := streamKey(streamID(finish.Stream))
+		if finish.Attempt != req.Attempt || finish.Stream.Scope != req.Scope || finish.Stream.NodeID != req.Node.NodeID || finished[key] {
+			return fmt.Errorf("durable: node commit cannot finish another source")
+		}
+		finished[key] = true
+		if err := s.applyFinish(&proposed, finish, true); err != nil {
+			return err
+		}
+	}
+	for key, stream := range proposed.Streams {
+		if stream.Stream.Attempt == req.Attempt && stream.Stream.Terminal == "" && !finished[key] {
+			return fmt.Errorf("durable: node commit omits an owned source finish")
+		}
+	}
+	for _, managed := range proposed.Managed {
+		if managed.Scope != req.Scope || managed.NodeID != req.Node.NodeID {
+			continue
+		}
+		root, rootID, err := s.rootAttempt(managed.Parent)
+		if err != nil {
+			return err
+		}
+		if rootID != req.Attempt || root.State == AttemptFailed {
+			continue
+		}
+		for _, committed := range managed.Values {
+			found := false
+			for _, value := range values {
+				if value.Name == committed.Name {
+					found = equalValue(value, committed)
+				}
+			}
+			if !found {
+				return fmt.Errorf("durable: node commit lost a confirmed message value")
+			}
+		}
+	}
 	ps := proposed.Scopes[req.Scope]
 	ps.Nodes[node.NodeID] = node
 	proposed.Scopes[req.Scope] = ps
 	a.State = AttemptConfirmed
 	proposed.Attempts[req.Attempt] = a
+	for _, value := range values {
+		if value.Stream != nil {
+			if !s.streamComesFrom(req.Scope, value.Name, value.Stream.ID, make(map[string]bool)) {
+				return fmt.Errorf("durable: node output references an unrelated source")
+			}
+			if err := s.checkStreamReference(proposed, *value.Stream); err != nil {
+				return err
+			}
+			// 保存新别名不能借用失败祖先下的旧来源；历史解码仍按结构保留旧成果。
+			if err := s.ancestry(value.Stream.Attempt, false); err != nil {
+				return err
+			}
+		}
+	}
 	return s.save(ctx, proposed)
 }
 
-func (s *runState) decodeScope(id string) ([]pulse.NodeCheckpoint, error) {
-	scope, ok := s.record.Scopes[id]
+func (s *runState) decodeScope(scopeID string) ([]pulse.NodeCheckpoint, error) {
+	return s.decodeScopeRecords(scopeID, true)
+}
+
+// validateLoaded 还要检查失败祖先下的旧成果，但不为它们准备运行恢复，
+// 不要求旧活跃来源可续读，也不将旧来源的真实失败当成格式损坏。
+func (s *runState) decodeScopeRecords(scopeID string, restore bool) ([]pulse.NodeCheckpoint, error) {
+	scope, ok := s.record.Scopes[scopeID]
 	if !ok {
 		return nil, fmt.Errorf("durable: unknown checkpoint scope")
 	}
@@ -123,12 +189,30 @@ func (s *runState) decodeScope(id string) ([]pulse.NodeCheckpoint, error) {
 	out := make([]pulse.NodeCheckpoint, 0, len(scope.Nodes))
 	for _, id := range gs.order {
 		if node, exists := scope.Nodes[id]; exists {
-			if err := s.checkDependencies(loc, scope.Nodes, id); err != nil {
+			if err := s.checkDependencies(scopeID, scope.Nodes, id, true); err != nil {
 				return nil, err
 			}
 			decoded, err := s.def.decodeNode(loc, node)
 			if err != nil {
 				return nil, err
+			}
+			for i, output := range node.Outputs {
+				if output.Stream != nil {
+					if !s.streamComesFrom(scopeID, output.Name, output.Stream.ID, make(map[string]bool)) {
+						return nil, fmt.Errorf("durable: node output references an unrelated source")
+					}
+					if !restore {
+						if err := s.checkStreamReferenceRecord(s.record, *output.Stream, true); err != nil {
+							return nil, err
+						}
+						continue
+					}
+					descriptor, err := s.restoreStreamReference(decoded.Outputs[i].Key, *output.Stream)
+					if err != nil {
+						return nil, err
+					}
+					decoded.Outputs[i].Stream = &descriptor
+				}
 			}
 			out = append(out, decoded)
 		}
@@ -139,15 +223,25 @@ func (s *runState) decodeScope(id string) ([]pulse.NodeCheckpoint, error) {
 	return out, nil
 }
 
-func (s *runState) checkDependencies(loc location, nodes map[string]NodeRecord, nodeID string) error {
-	gs := s.def.graphs[loc]
+func (s *runState) checkDependencies(scopeID string, nodes map[string]NodeRecord, nodeID string, historical bool) error {
+	scope := s.record.Scopes[scopeID]
+	gs := s.def.graphs[location{scope.Graph, scope.Path}]
 	n, ok := gs.nodes[nodeID]
 	if !ok {
 		return fmt.Errorf("durable: checkpoint node is unknown")
 	}
+	// Sub 的 Requires 描述 In 接线，不是整节点的到达门。未使用的入口仍可
+	// pending，而独立子图成果已经完整提交；不能额外要求它的生产者先确认。
+	// 实际业务节点仍在各自作用域按下面的规则核依赖，普通输出也仍须完整提交。
+	if _, mount := gs.children[nodeID]; mount {
+		return nil
+	}
 	for _, k := range n.Requires {
 		if producer, internal := gs.producers[k.Name]; internal {
 			if _, exists := nodes[producer]; !exists {
+				if k.Element != nil && s.hasIncrementalSource(scopeID, k.Name, historical) {
+					continue
+				}
 				return fmt.Errorf("durable: checkpoint set lacks a required producer")
 			}
 		}
@@ -162,22 +256,6 @@ func (s *runState) validateLoaded() error {
 		(location{root.Graph, root.Path}) != s.def.root || root.Inputs != r.Inputs || !validDigest(r.Inputs) ||
 		r.Scopes == nil || r.Attempts == nil {
 		return fmt.Errorf("durable: invalid run record header or root scope")
-	}
-
-	if len(r.Streams)+len(r.Messages)+len(r.Managed) != 0 {
-		return fmt.Errorf("durable: stream checkpoints are not enabled")
-	}
-	for _, scope := range r.Scopes {
-		if r.Format == 1 && scope.Bindings {
-			return fmt.Errorf("durable: format 1 cannot contain binding fingerprints")
-		}
-		for _, node := range scope.Nodes {
-			for _, value := range node.Outputs {
-				if value.Stream != nil {
-					return fmt.Errorf("durable: stream checkpoints are not enabled")
-				}
-			}
-		}
 	}
 	if _, collision := r.Attempts[r.RootScope]; collision {
 		return fmt.Errorf("durable: root scope collides with an attempt")
@@ -255,11 +333,11 @@ func (s *runState) validateLoaded() error {
 			}
 		}
 		// 失败祖先下的旧成果也必须可解码且依赖闭合，但运行时永不复用它们。
-		if _, err := s.decodeScope(id); err != nil {
+		if _, err := s.decodeScopeRecords(id, false); err != nil {
 			return err
 		}
 	}
-	return nil
+	return s.validateStreams()
 }
 
 // validateAncestry 校验结构（包括失败祖先后面的部分），不把逻辑失效误报成格式损坏。

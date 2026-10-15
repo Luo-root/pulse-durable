@@ -18,10 +18,14 @@ type runState struct {
 	record  RunRecord
 	stopped error
 	event   func(Event) error
+	opened  map[string]bool
+	// 同一 Resume 的各层恢复计划共用首次核验的权威描述符，后续 Open 升代际
+	// 不得为晚装配的子图别名制造另一份本地消息账。
+	restoreStreams map[string]StreamDescriptorRecord
 }
 
 func (s *runState) hooks() pulse.CheckpointHooks {
-	return pulse.CheckpointHooks{OpenAttempt: s.openAttempt, FailAttempt: s.failAttempt, OpenChild: s.openChild, Commit: s.commit}
+	return pulse.CheckpointHooks{OpenAttempt: s.openAttempt, FailAttempt: s.failAttempt, OpenChild: s.openChild, Commit: s.commit, StreamHooks: s.streamHooks()}
 }
 
 // save 的调用方串行持有 mu，首次保存发生在业务启动前。
@@ -114,7 +118,18 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	if latestID != "" {
 		switch latest.State {
 		case AttemptActive:
-			return pulse.CheckpointAttempt{Scope: latestID, Index: latest.Index}, nil
+			attempt := pulse.CheckpointAttempt{Scope: latestID, Index: latest.Index}
+			if req.Boundary == "" {
+				if err := s.activeAttempt(latestID); err != nil {
+					return pulse.CheckpointAttempt{}, err
+				}
+				values, err := s.restoreAttemptValues(req.Parent, latestID, req.NodeID)
+				if err != nil {
+					return pulse.CheckpointAttempt{}, err
+				}
+				attempt.Values = values
+			}
+			return attempt, nil
 		case AttemptFailed:
 			if latest.Index >= req.Limit {
 				return pulse.CheckpointAttempt{Scope: latestID, Index: latest.Index, Exhausted: true}, nil
@@ -234,7 +249,8 @@ func (s *runState) newID() (string, error) {
 		}
 		_, scopeExists := s.record.Scopes[id]
 		_, attemptExists := s.record.Attempts[id]
-		if !scopeExists && !attemptExists {
+		_, messageExists := s.record.Messages[id]
+		if !scopeExists && !attemptExists && !messageExists {
 			return id, nil
 		}
 	}
