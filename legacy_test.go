@@ -3,8 +3,9 @@ package durable
 import (
 	"context"
 	"encoding/json"
-	"github.com/Luo-root/pulse"
 	"testing"
+
+	"github.com/Luo-root/pulse"
 )
 
 // 固定脱敏样例由 Durable b4805d5 + Pulse 1f67045d6c42 生成。
@@ -58,5 +59,13 @@ func TestResumeFixedFormatOneRecord(t *testing.T) {
 	}
 	if value, state, err := pulse.ReadOutput(e, answer); err != nil || value != 42 || state != pulse.SlotStateReady {
 		t.Fatalf("legacy value=%d state=%s err=%v", value, state, err)
+	}
+}
+
+func TestFormatOneRejectsIncrementalFields(t *testing.T) {
+	p := newStreamProtocol(t)
+	p.s.record.Format = 1
+	if err := p.s.validateLoaded(); err == nil {
+		t.Fatal("format 1 accepted incremental stream fields")
 	}
 }

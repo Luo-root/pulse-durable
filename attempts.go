@@ -18,6 +18,7 @@ type runState struct {
 	record  RunRecord
 	stopped error
 	event   func(Event) error
+	opened  map[string]bool
 }
 
 func (s *runState) hooks() pulse.CheckpointHooks {
