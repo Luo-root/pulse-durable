@@ -20,6 +20,7 @@ type graphSchema struct {
 	outputs   map[string]pulse.CheckpointKey
 	producers map[string]string
 	children  map[string]location
+	binds     map[string][]pulse.BindShape
 }
 
 type definition struct {
@@ -31,6 +32,7 @@ type definition struct {
 
 type keyFingerprint struct {
 	Name, TypeID, Version string
+	Stream                bool `json:",omitempty"`
 }
 
 type nodeFingerprint struct {
@@ -44,7 +46,7 @@ type portFingerprint struct {
 	Input, Output bool
 }
 
-func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
+func inspectStreamDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
 	if g == nil {
 		return nil, fmt.Errorf("durable: graph is required")
 	}
@@ -56,13 +58,14 @@ func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*def
 	var walk func(*pulse.Topology)
 	walk = func(t *pulse.Topology) {
 		s := &graphSchema{nodes: make(map[string]pulse.CheckpointNode), inputs: make(map[string]pulse.CheckpointKey),
-			outputs: make(map[string]pulse.CheckpointKey), producers: make(map[string]string), children: make(map[string]location)}
+			outputs: make(map[string]pulse.CheckpointKey), producers: make(map[string]string), children: make(map[string]location), binds: make(map[string][]pulse.BindShape)}
 		for _, n := range t.Nodes {
 			s.order = append(s.order, n.ID)
 			for _, k := range n.Provides {
 				s.producers[k.Name] = n.ID
 			}
 			if n.Sub != nil {
+				s.binds[n.ID] = append([]pulse.BindShape(nil), n.Binds...)
 				s.children[n.ID] = location{n.Sub.Graph.ID, n.Sub.Graph.Path}
 				walk(n.Sub)
 			}
@@ -73,8 +76,8 @@ func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*def
 	var nodes []nodeFingerprint
 	for _, n := range g.CheckpointNodes() {
 		s, ok := d.graphs[location{n.Graph, n.Path}]
-		if !ok || n.Stream != "" {
-			return nil, fmt.Errorf("durable: stream or unknown checkpoint declaration at %q", n.Path)
+		if !ok {
+			return nil, fmt.Errorf("durable: unknown checkpoint declaration at %q", n.Path)
 		}
 		if _, exists := s.nodes[n.ID]; exists {
 			return nil, fmt.Errorf("durable: duplicate checkpoint node declaration")
@@ -132,16 +135,20 @@ func (d *definition) keyFingerprints(keys []pulse.CheckpointKey) ([]keyFingerpri
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, keyFingerprint{Name: k.Name, TypeID: c.id, Version: c.version})
+		out = append(out, keyFingerprint{Name: k.Name, TypeID: c.id, Version: c.version, Stream: k.Element != nil})
 	}
 	return out, nil
 }
 
 func (d *definition) codec(k pulse.CheckpointKey) (codecEntry, error) {
-	if k.Name == "" || !supportedType(k.Type, make(map[reflect.Type]bool)) {
+	typ := k.Type
+	if k.Element != nil {
+		typ = k.Element
+	}
+	if k.Name == "" || k.Type == nil || !supportedType(typ, make(map[reflect.Type]bool)) {
 		return codecEntry{}, fmt.Errorf("durable: key %q has a non-persistable type", k.Name)
 	}
-	c, ok := d.codecs[k.Type]
+	c, ok := d.codecs[typ]
 	if !ok {
 		return codecEntry{}, fmt.Errorf("durable: key %q has no registered codec", k.Name)
 	}
@@ -163,13 +170,27 @@ func (d *definition) encodeOutputs(outputs []pulse.CheckpointOutput) ([]ValueRec
 		v := ValueRecord{Name: o.Key.Name, TypeID: c.id, Version: c.version, State: string(o.State)}
 		switch o.State {
 		case pulse.SlotStateReady:
-			v.Data, err = c.encode(o.Value)
-			if err != nil {
-				return nil, err
+			if o.Key.Element != nil {
+				if o.Value != nil || o.Stream == nil {
+					return nil, fmt.Errorf("durable: stream output requires only a descriptor")
+				}
+				descriptor, err := d.encodeDescriptor(o.Key, *o.Stream)
+				if err != nil {
+					return nil, err
+				}
+				v.Stream = &descriptor
+			} else {
+				if o.Stream != nil {
+					return nil, fmt.Errorf("durable: ordinary output carries a stream descriptor")
+				}
+				v.Data, err = c.encode(o.Value)
+				if err != nil {
+					return nil, err
+				}
+				v.Digest = digest(v.Data)
 			}
-			v.Digest = digest(v.Data)
 		case pulse.SlotStateSkipped:
-			if o.Value != nil {
+			if o.Value != nil || o.Stream != nil {
 				return nil, fmt.Errorf("durable: skipped output contains a value")
 			}
 		default:
@@ -233,15 +254,15 @@ func (d *definition) decodeNode(loc location, node NodeRecord) (pulse.NodeCheckp
 		o := pulse.CheckpointOutput{Key: k, State: pulse.SlotState(v.State)}
 		switch o.State {
 		case pulse.SlotStateReady:
-			if !validDigest(v.Digest) || digest(v.Data) != v.Digest {
-				return pulse.NodeCheckpoint{}, fmt.Errorf("durable: encoded output checksum mismatch")
-			}
-			o.Value, err = c.decode(v.Data)
+			o, err = d.decodeValue(k, v)
 			if err != nil {
 				return pulse.NodeCheckpoint{}, err
 			}
+			if o.Stream != nil && o.Stream.Terminal != pulse.StreamCompleted && o.Stream.Terminal != pulse.StreamStopped {
+				return pulse.NodeCheckpoint{}, fmt.Errorf("durable: complete node references unfinished stream")
+			}
 		case pulse.SlotStateSkipped:
-			if len(v.Data) != 0 || v.Digest != "" {
+			if len(v.Data) != 0 || v.Digest != "" || v.Stream != nil {
 				return pulse.NodeCheckpoint{}, fmt.Errorf("durable: skipped record contains encoded data")
 			}
 		default:
@@ -260,4 +281,21 @@ func digest(data []byte) string {
 func validDigest(s string) bool {
 	decoded, err := hex.DecodeString(s)
 	return err == nil && len(decoded) == sha256.Size
+}
+
+// 流处理器尚未接入 Runtime 时保留明确拒绝；包内协议测试可检查持久 schema。
+func inspectDefinition(g *pulse.Graph, codecs map[reflect.Type]codecEntry) (*definition, error) {
+	for _, node := range g.CheckpointNodes() {
+		for _, key := range append(append([]pulse.CheckpointKey(nil), node.Requires...), node.Provides...) {
+			if key.Element != nil {
+				return nil, fmt.Errorf("durable: managed streams are not enabled")
+			}
+		}
+	}
+	for _, port := range g.CheckpointPorts() {
+		if port.Key.Element != nil {
+			return nil, fmt.Errorf("durable: managed streams are not enabled")
+		}
+	}
+	return inspectStreamDefinition(g, codecs)
 }

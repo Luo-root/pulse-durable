@@ -158,10 +158,26 @@ func (s *runState) checkDependencies(loc location, nodes map[string]NodeRecord, 
 func (s *runState) validateLoaded() error {
 	r := s.record
 	root, ok := r.Scopes[r.RootScope]
-	if r.Format != RecordFormat || r.Revision == 0 || !validIdentity(r.RootScope) || !ok ||
+	if (r.Format != 1 && r.Format != RecordFormat) || r.Revision == 0 || !validIdentity(r.RootScope) || !ok ||
 		(location{root.Graph, root.Path}) != s.def.root || root.Inputs != r.Inputs || !validDigest(r.Inputs) ||
 		r.Scopes == nil || r.Attempts == nil {
 		return fmt.Errorf("durable: invalid run record header or root scope")
+	}
+
+	if len(r.Streams)+len(r.Messages)+len(r.Managed) != 0 {
+		return fmt.Errorf("durable: stream checkpoints are not enabled")
+	}
+	for _, scope := range r.Scopes {
+		if r.Format == 1 && scope.Bindings {
+			return fmt.Errorf("durable: format 1 cannot contain binding fingerprints")
+		}
+		for _, node := range scope.Nodes {
+			for _, value := range node.Outputs {
+				if value.Stream != nil {
+					return fmt.Errorf("durable: stream checkpoints are not enabled")
+				}
+			}
+		}
 	}
 	if _, collision := r.Attempts[r.RootScope]; collision {
 		return fmt.Errorf("durable: root scope collides with an attempt")
