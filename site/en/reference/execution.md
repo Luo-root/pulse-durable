@@ -25,8 +25,9 @@ Both return `(*pulse.Execution, error)`. A preflight failure may occur before an
 | `Version string` | Required and nonempty; identifies the host's business semantics version and must match the record on recovery |
 | `ExecOptions []pulse.ExecOption` | Pulse options for this execution, such as its Observer |
 | `OnEvent func(Event) error` | Optional synchronous callback for Durable recovery facts; an error or panic stops this execution |
+| `BeforeStart func(*pulse.Execution) error` | Optional host stream registration after restore assembly and before Start; errors or panics cancel execution and release the Session |
 
-The context must be non-nil. A context already canceled or expired at entry is rejected. The graph must be valid, all node keys and declared ports need codecs for their actual Go types, and streaming declarations are unsupported.
+The context must be non-nil. A context already canceled or expired at entry is rejected. The graph must be valid. Ordinary keys, message elements, cursors, and explicit state need codecs for their actual Go types; managed endpoints persist only descriptors. In BeforeStart, the host can SubscribeStream and launch a reader that receives after Start, acknowledges or stops, and exits on execution cancellation. Run/Resume retain the Session and wait for reading obligations.
 
 RunID identifies one business run and should remain stable. Allocate a new RunID for new work; retain the original RunID for recovery. Changing Version, inputs, or the definition does not let an old RunID represent different work.
 
@@ -50,7 +51,7 @@ Input encoding must be deterministic: equal values produce equal bytes every tim
 
 ## Confirmation, re-entry, and Retry
 
-Confirmation covers the complete node chain, including Aspects. Returning success from a body or calling `Set` does not by itself prove node confirmation. Complete results and the node root attempt's `confirmed` state are saved together in one Save. Outputs are published after storage confirms the save.
+Ordinary confirmation covers the complete node chain, including Aspects. Returning success or calling `Set` does not by itself prove node confirmation. Complete results, the node root attempt's `confirmed` state, and successful writer terminals share one Save. Managed appends and `HandleMessage` input acknowledgements, explicit state, and results use separate incremental transactions. Stream delivery follows the corresponding storage confirmation; it does not mean the complete node has finished. Ordinary message values restore into the outer complete-node staging frame and publish after complete node confirmation, without replaying acknowledged inputs.
 
 Recovery reuses confirmed nodes in valid scopes without executing their complete chains again. Unconfirmed nodes restart from the beginning of their functions, so external effects occurring before confirmation may repeat.
 

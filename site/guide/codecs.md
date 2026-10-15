@@ -26,7 +26,7 @@
 mkdir durable-codecs
 cd durable-codecs
 go mod init example.com/durable-codecs
-go get github.com/Luo-root/pulse-durable@d9415114b739
+go get github.com/Luo-root/pulse-durable@443f0cfedbfb
 ```
 
 将以下完整程序保存为 `main.go`。它注册 `Document`，运行一次，再从同一进程内的存储恢复并读取结构体出口。

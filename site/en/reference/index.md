@@ -17,7 +17,7 @@ Use this section to check APIs, persistent records, and error semantics. Start w
 
 ## Three core rules
 
-1. **Publish after complete confirmation**: save after the full node chain, including Aspects, finishes. Publish outputs downstream after storage confirms the checkpoint.
+1. **Publish after reliable confirmation**: ordinary results confirm after the full node chain, including Aspects. Managed appends and message transactions have separate incremental boundaries. Publish each result after its storage confirmation.
 2. **Restore valid results**: confirmed nodes in valid scopes are not re-entered. Unconfirmed nodes restart from the beginning of their functions. Child results beneath a failed parent attempt cannot serve a new attempt.
 3. **Reload the authority**: a save error may occur after commit. Stop this execution and reload the authoritative record during recovery; the returned error alone cannot prove the write did not commit.
 
@@ -25,9 +25,9 @@ Normal skip means no business value and can finish successfully. Reliable storag
 
 ## Version and scope
 
-This documentation describes the API included in public development revision `d9415114b739`. Durable has no formal release yet. That revision depends on Pulse `v0.4.2-0.20261014103213-1f67045d6c42` and requires Go 1.25 or later.
+This documentation describes the API included in public development revision `443f0cfedbfb`. Durable has no formal release yet. That revision depends on Pulse `v0.4.2-0.20261015072252-be2d5c637d0d` and requires Go 1.25 or later.
 
-Supports non-streaming values, static child graphs, and built-in Retry cursors. MemoryStore provides only the in-process protocol; FileStore targets one local host. Durable does not provide durable waits, distributed run management, deterministic replay, or exactly-once external effects.
+Supports ordinary values, managed streams, explicit state, static child graphs, and built-in Retry and message budgets. MemoryStore provides only the in-process protocol; FileStore targets one local host. Durable does not provide durable waits, distributed run management, deterministic replay, or exactly-once external effects.
 
 ## Next steps
 

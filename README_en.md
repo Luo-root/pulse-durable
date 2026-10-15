@@ -21,10 +21,10 @@ Outputs are published to downstream nodes after storage confirms the checkpoint 
 Requires **Go 1.25 or later**. Durable is currently a development version with no formal release. Pin the public development revision for reproducible installation:
 
 ```sh
-go get github.com/Luo-root/pulse-durable@d9415114b739
+go get github.com/Luo-root/pulse-durable@443f0cfedbfb
 ```
 
-That revision's `go.mod` pins Pulse `v0.4.2-0.20261014103213-1f67045d6c42`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
+That revision's `go.mod` pins Pulse `v0.4.2-0.20261015072252-be2d5c637d0d`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
 
 ## Minimal example
 
@@ -128,10 +128,13 @@ Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) ·
 
 ## Current boundaries
 
-- Supports non-streaming values, static child graphs, and persistence of built-in Retry attempt cursors. `Resume` continues the remaining budget; it does not replenish exhausted retries. Child results beneath a failed parent attempt are not reused.
+- Supports ordinary values, managed `pulse.Stream[T]`, static child graphs, and persistent node Retry and message retry budgets. `Resume` continues remaining budgets; child results beneath a failed parent attempt are not reused.
+- Messages are durably appended before delivery. `HandleMessage` confirms its input, explicit `SetMessageState` snapshot, and outputs in one Save. Recovery reclaims ordinary message values into complete-node staging; publication still waits for complete node confirmation without replaying acknowledged inputs. Active sources must declare `WithStreamSource(id, true)` and continue through `StreamWriter.Position()` and `SendAt`. Completed sources rebuild unacknowledged tails without rerunning the source body.
 - `RunID` and business `Version` are required. Recovery needs the same definition, inputs, and encoding contract. Change the business version when changing functions, closures, or Aspect semantics.
 - `filestore` targets one local host and depends on exclusive file locking and atomic replacement within a directory. It does not provide distributed leases, dispatch across machines, or a durability guarantee for power loss. `MemoryStore` validates only the in-process protocol.
 - External effects from unconfirmed nodes may repeat. Applications need idempotency keys, transactions, deduplication, or an outbox. Durable does not promise exactly-once effects, deterministic replay, or durable waits. Channel, function, and `unsafe.Pointer` values are unsupported.
+- New records use format `2`. Ordinary format `1` records remain recoverable and upgrade on their next Save. Old Runtime versions reject the new format. Codecs encode message elements, cursors, and explicit state, never stream endpoints; nested channel values remain unsupported.
+- `RunOptions.BeforeStart` lets the host register `pulse.SubscribeStream` and start its reader before Start. Run/Resume still block in Wait and own the Session; readers must acknowledge messages or explicitly stop.
 - Checkpoints contain encoded business outputs and are not encrypted containers. The host manages storage access, backups, and retention.
 
 ## Validate the repository
