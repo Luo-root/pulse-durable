@@ -3,10 +3,16 @@ package durable
 import (
 	"context"
 	"fmt"
-	"github.com/Luo-root/pulse"
 	"reflect"
 	"sort"
+
+	"github.com/Luo-root/pulse"
 )
+
+func (s *runState) streamHooks() *pulse.CheckpointStreamHooks {
+	return &pulse.CheckpointStreamHooks{Open: s.openStream, Append: s.appendStream, Commit: s.commitMessage,
+		OpenMessage: s.openMessage, FailMessage: s.failMessage, Finish: s.finishStream}
+}
 
 func (s *runState) streamDeclaration(id StreamIDRecord) (pulse.CheckpointKey, error) {
 	scope, ok := s.record.Scopes[id.Scope]

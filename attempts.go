@@ -235,7 +235,8 @@ func (s *runState) newID() (string, error) {
 		}
 		_, scopeExists := s.record.Scopes[id]
 		_, attemptExists := s.record.Attempts[id]
-		if !scopeExists && !attemptExists {
+		_, messageExists := s.record.Messages[id]
+		if !scopeExists && !attemptExists && !messageExists {
 			return id, nil
 		}
 	}

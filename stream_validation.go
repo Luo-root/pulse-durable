@@ -25,9 +25,6 @@ func (s *runState) hasIncrementalSource(scope, key string, historical bool) bool
 
 func (s *runState) validateStreams() error {
 	r := s.record
-	if len(r.Messages)+len(r.Managed) != 0 {
-		return fmt.Errorf("durable: message checkpoints are not enabled")
-	}
 	if r.Format == 1 {
 		if len(r.Streams)+len(r.Messages)+len(r.Managed) != 0 {
 			return fmt.Errorf("durable: format 1 cannot contain incremental records")
@@ -85,6 +82,100 @@ func (s *runState) validateStreams() error {
 			}
 		} else if owner.State == AttemptConfirmed {
 			return fmt.Errorf("durable: confirmed source has no successful stream terminal")
+		}
+	}
+	groups := make(map[string]map[int]MessageAttemptRecord)
+	for id, message := range r.Messages {
+		if !validIdentity(id) || !validIdentity(message.Parent) || message.NodeID == "" || message.Index < 1 || message.Limit < message.Index ||
+			(message.State != AttemptActive && message.State != AttemptFailed && message.State != AttemptConfirmed) {
+			return fmt.Errorf("durable: invalid persisted message attempt")
+		}
+		if _, collision := r.Attempts[id]; collision {
+			return fmt.Errorf("durable: message identity collides with node attempt")
+		}
+		if _, collision := r.Scopes[id]; collision {
+			return fmt.Errorf("durable: message identity collides with graph scope")
+		}
+		root, _, err := s.rootAttempt(message.Parent)
+		if err != nil || root.Parent != message.Scope || root.NodeID != message.NodeID {
+			return fmt.Errorf("durable: message processing association mismatch")
+		}
+		if !s.nodeReadsStream(message.Scope, message.NodeID, message.Input) {
+			return fmt.Errorf("durable: message record refers to an unrelated input")
+		}
+		stream, ok := r.Streams[streamKey(message.Input)]
+		if !ok || message.Input.Generation == 0 || message.Input.Generation > stream.Stream.ID.Generation || message.Sequence == 0 || message.Sequence > stream.LastSequence {
+			return fmt.Errorf("durable: message input identity or position mismatch")
+		}
+		pending := false
+		for _, value := range stream.Pending {
+			if value.Sequence == message.Sequence {
+				pending = true
+			}
+		}
+		if message.State == AttemptConfirmed && pending {
+			return fmt.Errorf("durable: confirmed message still has its input pending")
+		}
+		key := managedKey(message.Scope, message.Parent, fmt.Sprintf("%s/%s/%d", message.NodeID, streamKey(message.Input), message.Sequence))
+		if groups[key] == nil {
+			groups[key] = make(map[int]MessageAttemptRecord)
+		}
+		if _, duplicate := groups[key][message.Index]; duplicate {
+			return fmt.Errorf("durable: duplicate persisted message index")
+		}
+		groups[key][message.Index] = message
+	}
+	for _, group := range groups {
+		latest := group[len(group)]
+		stream := r.Streams[streamKey(latest.Input)]
+		pending := false
+		for _, message := range stream.Pending {
+			if message.Sequence == latest.Sequence {
+				pending = true
+			}
+		}
+		if latest.State != AttemptConfirmed && !pending && !stream.Stream.Stopped {
+			return fmt.Errorf("durable: latest message attempt lost its pending input")
+		}
+		for i := 1; i <= len(group); i++ {
+			message, ok := group[i]
+			if !ok || message.Limit != group[1].Limit || i < len(group) && message.State != AttemptFailed {
+				return fmt.Errorf("durable: invalid persisted message budget sequence")
+			}
+		}
+	}
+	for key, managed := range r.Managed {
+		root, _, err := s.rootAttempt(managed.Parent)
+		if err != nil || root.Parent != managed.Scope || root.NodeID != managed.NodeID || key != managedKey(managed.Scope, managed.Parent, managed.NodeID) {
+			return fmt.Errorf("durable: managed state association mismatch")
+		}
+		confirmed := false
+		for _, message := range r.Messages {
+			if message.Scope == managed.Scope && message.Parent == managed.Parent && message.NodeID == managed.NodeID && message.State == AttemptConfirmed {
+				confirmed = true
+			}
+		}
+		if !confirmed {
+			return fmt.Errorf("durable: managed state has no confirmed message")
+		}
+		if _, err := s.decodeManagedState(managed.State); err != nil {
+			return err
+		}
+		scope := r.Scopes[managed.Scope]
+		node := s.def.graphs[location{scope.Graph, scope.Path}].nodes[managed.NodeID]
+		keys := make(map[string]pulse.CheckpointKey)
+		for _, key := range node.Provides {
+			keys[key.Name] = key
+		}
+		for _, value := range managed.Values {
+			key, ok := keys[value.Name]
+			if !ok || key.Element != nil {
+				return fmt.Errorf("durable: duplicate or undeclared managed value")
+			}
+			delete(keys, value.Name)
+			if _, err := s.def.decodeValue(key, value); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

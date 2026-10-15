@@ -125,6 +125,29 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 			return fmt.Errorf("durable: node commit omits an owned source finish")
 		}
 	}
+	for _, managed := range proposed.Managed {
+		if managed.Scope != req.Scope || managed.NodeID != req.Node.NodeID {
+			continue
+		}
+		root, rootID, err := s.rootAttempt(managed.Parent)
+		if err != nil {
+			return err
+		}
+		if rootID != req.Attempt || root.State == AttemptFailed {
+			continue
+		}
+		for _, committed := range managed.Values {
+			found := false
+			for _, value := range values {
+				if value.Name == committed.Name {
+					found = equalValue(value, committed)
+				}
+			}
+			if !found {
+				return fmt.Errorf("durable: node commit lost a confirmed message value")
+			}
+		}
+	}
 	ps := proposed.Scopes[req.Scope]
 	ps.Nodes[node.NodeID] = node
 	proposed.Scopes[req.Scope] = ps
