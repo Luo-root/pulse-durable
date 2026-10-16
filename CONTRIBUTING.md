@@ -60,7 +60,7 @@ CI runs build, vet, formatting and race tests on **Linux and Windows**, includin
 
 - The root package owns `Runtime`, Run/Resume, Store records and Codec contracts; it imports Pulse.
 - `filestore/` implements the local persistent backend; `integration/` checks real process interruption and recovery.
-- `example_test.go` and `subgraph_example_test.go` provide executable examples.
+- `example_test.go` collects executable node, subgraph and managed-stream examples.
 - `site/` holds the bilingual documentation and VitePress site; `.github/assets/` holds the brand sources.
 
 Keep the dependency direction **Durable → Pulse**. Changes to graph execution primitives belong in Pulse and require their own review; do not duplicate the engine inside Durable.
@@ -151,7 +151,7 @@ CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包
 
 - 根包维护 `Runtime`、Run/Resume、Store 记录与 Codec 契约，依赖 Pulse。
 - `filestore/` 是本地持久化后端；`integration/` 验证真实进程中断与恢复。
-- `example_test.go` 与 `subgraph_example_test.go` 提供可执行示例。
+- `example_test.go` 集中提供节点、子图和受管流的可执行示例。
 - `site/` 保存双语文档与 VitePress 站点；`.github/assets/` 保存品牌源文件。
 
 依赖方向保持 **Durable → Pulse**。图执行原语应在 Pulse 中单独评审，不能在 Durable 中复制一套引擎。
