@@ -14,6 +14,8 @@ A mutation path typically clones the record to build a proposal. `runState.save`
 
 Measured on 2026-10-16, using Durable runtime baseline `c80d8e86e570608603380f4f15a96ad19055dab9` and pinned Pulse dependency `v0.4.2-0.20261015113730-990607e5593a`. The machine ran Windows 11 `10.0.26200`, amd64, Go `1.25.0`, Intel Core i9-14900HX, and default `GOMAXPROCS=32`; records were on the local D: NTFS volume. Filesystem caches were not cleared and other system load was not controlled.
 
+These measurements describe the historical baseline above, not the dependency used by every current build. See the repository's `go.mod` for the current pin. Remeasure costs after dependency or implementation upgrades rather than replacing the versions recorded here.
+
 There are two groups. Fixture generation is excluded from component timings:
 
 - **Component matrix:** first complete eight real string messages through MemoryStore to obtain a record template, then construct 8, 128, or 1024 confirmed history entries. `drained` has no Pending messages; `backlog` adds the same number of Pending messages on top of that history. String length independently varies between 32 and 4096 bytes. The template also retains one integer state and the final string as an ordinary result. Constructed records measure copying, encoding, and backend persistence; they do not establish large-run Runtime recovery correctness.
