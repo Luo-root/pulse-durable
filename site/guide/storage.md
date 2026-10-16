@@ -41,7 +41,7 @@ if err != nil {
 mkdir durable-storage
 cd durable-storage
 go mod init example.com/durable-storage
-go get github.com/Luo-root/pulse-durable@6c96a0afb793
+go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 ```
 
 需要 Go 1.25 或更高版本。保存以下完整程序为 `main.go`：
