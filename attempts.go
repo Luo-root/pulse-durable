@@ -124,7 +124,8 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	if latestID != "" {
 		switch latest.State {
 		case AttemptActive:
-			attempt := pulse.CheckpointAttempt{Scope: latestID, Index: latest.Index}
+			resumed := true
+			attempt := pulse.CheckpointAttempt{Scope: latestID, Index: latest.Index, Resumed: &resumed}
 			if req.Boundary == "" {
 				if err := s.activeAttempt(latestID); err != nil {
 					return pulse.CheckpointAttempt{}, err
@@ -157,7 +158,8 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	if err := s.save(ctx, proposed); err != nil {
 		return pulse.CheckpointAttempt{}, err
 	}
-	return pulse.CheckpointAttempt{Scope: id, Index: a.Index}, nil
+	resumed := false
+	return pulse.CheckpointAttempt{Scope: id, Index: a.Index, Resumed: &resumed}, nil
 }
 
 func (s *runState) failAttempt(ctx context.Context, id string) error {

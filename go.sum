@@ -1,4 +1,4 @@
-github.com/Luo-root/pulse v0.4.2-0.20261015103043-d21714d1af84 h1:iodkwC4kuAm0QQlOkPvnwBxI7lccuHLBDuVgPfNZRUI=
-github.com/Luo-root/pulse v0.4.2-0.20261015103043-d21714d1af84/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
-github.com/Luo-root/pulse v0.4.2-0.20261015113730-990607e5593a h1:ZO/+KpRuMB0XLSsygX6fkV0nQ2vlzlANXEmUPyE2WWs=
-github.com/Luo-root/pulse v0.4.2-0.20261015113730-990607e5593a/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
+github.com/Luo-root/pulse v0.4.2-0.20261016093428-9c5b032257d1 h1:R8ptZ1r7CElF3jFm8qYV5UIvZ8z+Ea0meC9f1IB7bZk=
+github.com/Luo-root/pulse v0.4.2-0.20261016093428-9c5b032257d1/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

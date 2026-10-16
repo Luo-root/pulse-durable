@@ -9,6 +9,10 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
+// AttrRunID 是稳定 Durable 运行身份的观测属性键，值来自 RunOptions.RunID。
+// 宿主在 Sink 装配时补充；不把 Pulse 的进程内 Execution ID 当作持久身份。
+const AttrRunID = "durable.run_id"
+
 // Runtime 将 Pulse 的可靠检查点桥接到 Store。可并发运行不同 RunID。
 // 同一 RunID 的 Run/Resume 在整个 Start/Wait 期间持有独占会话。
 type Runtime struct {
