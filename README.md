@@ -21,10 +21,10 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 需要 **Go 1.25 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
 
 ```sh
-go get github.com/Luo-root/pulse-durable@6c96a0afb793
+go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 ```
 
-该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261015113730-990607e5593a`。完整的新模块操作见[安装](site/guide/installation.md)。
+该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261016133921-f9f071a07499`。完整的新模块操作见[安装](site/guide/installation.md)。
 
 ## 最小示例
 
@@ -132,7 +132,7 @@ result: 42 ready
 - 流消息先可靠追加再交付；`HandleMessage` 的输入确认、显式 `SetMessageState` 状态和输出在同一次 Save 中确认。消息贡献的普通值在恢复时认回完整节点暂存，仍等完整节点确认才发布，不重跑已 Ack 输入。活跃来源须声明 `WithStreamSource(id, true)`，按 `StreamWriter.Position()` 与 `SendAt` 续读；已完成来源会重建未确认尾部而不重跑业务体。
 - `RunID` 和业务 `Version` 必填。恢复需要相同的定义、输入和编码契约；修改业务函数、闭包或切面语义时，需要升级业务版本。
 - `filestore` 面向本机单宿主，依赖文件系统的独占锁和同目录原子替换。它不提供分布式租约、跨机器调度或断电持久性保证。`MemoryStore` 只验证进程内协议。
-- 未确认节点的外部副作用可能重复。业务应使用幂等键、事务、去重或 outbox。Durable 不承诺 exactly-once、deterministic replay 或持久等待，不支持 channel、函数或 `unsafe.Pointer` 值。
+- 未确认节点的外部副作用可能重复。业务应使用幂等键、事务、去重或 outbox。Durable 不承诺 exactly-once 或 deterministic replay；宿主可按[组合指南](site/guide/composition.md)登记业务等待并 Cancel/Resume，库不内置唤醒服务。不支持 channel、函数或 `unsafe.Pointer` 值。
 - 新建记录使用格式 `2`；普通格式 `1` 仍可恢复，下一次保存升级为 `2`。旧 Runtime 拒绝新格式。Codec 编码消息元素、游标和显式状态，不编码流端点；普通值中嵌套 channel 的拒绝不变。
 - `RunOptions.BeforeStart` 在 Start 前供宿主登记 `pulse.SubscribeStream` 并启动读取任务；Run/Resume 仍阻塞 Wait 并持有 Session，读取任务须确认消息或显式停止。
 - 检查点包含编码后的业务输出，并非加密容器。存储访问控制、备份与数据保留由宿主管理。
@@ -147,7 +147,7 @@ go vet ./...
 go test -race -count=1 ./...
 ```
 
-可运行示例见 [example_test.go](example_test.go) 和 [subgraph_example_test.go](subgraph_example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。
+节点、子图与受管流的可运行示例集中在 [example_test.go](example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。
 
 ## 参与项目
 
