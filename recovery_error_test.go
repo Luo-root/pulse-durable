@@ -108,7 +108,7 @@ func checkRecoveryFailure(t *testing.T, err error, cause *recoveryCauseError) {
 
 func TestRecoveryEventsClassifyRootAndChildFailures(t *testing.T) {
 	for _, site := range []string{"root", "child"} {
-		for _, failure := range []string{"error", "panic-error", "panic-text"} {
+		for _, failure := range []string{"error", "panic-error", "panic-text", "panic-nil"} {
 			t.Run(site+"/"+failure, func(t *testing.T) {
 				cause := &recoveryCauseError{cause: errors.Join(errors.New("event sentinel"), pulse.ErrSkipped, context.Canceled)}
 				leaf := recoveryGraph(t, "leaf-graph")
@@ -196,12 +196,14 @@ func TestRecoveryEventsClassifyRootAndChildFailures(t *testing.T) {
 						panic(cause)
 					case "panic-text":
 						panic("private recovery data")
+					case "panic-nil":
+						panic(nil)
 					}
 					return cause
 				}
 				e, err := rt.Resume(context.Background(), g, pulse.Inputs{}, opts)
 				wantCause := cause
-				if failure == "panic-text" {
+				if failure == "panic-text" || failure == "panic-nil" {
 					wantCause = nil
 				}
 				checkRecoveryFailure(t, err, wantCause)
@@ -235,6 +237,7 @@ type startupFaultStore struct {
 	op         string
 	cause      error
 	panicValue any
+	panicNil   bool
 	saveMatch  func(durable.RunRecord) bool
 	fired      atomic.Bool
 	acquires   atomic.Int32
@@ -246,7 +249,7 @@ type startupFaultSession struct {
 }
 
 func (s *startupFaultStore) fail() error {
-	if s.panicValue != nil {
+	if s.panicNil || s.panicValue != nil {
 		panic(s.panicValue)
 	}
 	return s.cause
@@ -290,20 +293,28 @@ func (s *startupFaultSession) Close() error {
 
 func TestRuntimeStoreOperationsAreCheckpointFailures(t *testing.T) {
 	for _, op := range []string{"acquire", "load", "save", "close"} {
-		for _, failure := range []string{"error", "panic-text"} {
+		for _, failure := range []string{"error", "panic-text", "panic-nil", "panic-error"} {
 			t.Run(op+"/"+failure, func(t *testing.T) {
-				cause := &recoveryCauseError{cause: errors.New("store sentinel")}
+				cause := &recoveryCauseError{cause: errors.Join(errors.New("store sentinel"), pulse.ErrSkipped)}
 				base := durable.NewMemoryStore()
 				store := &startupFaultStore{Store: base, op: op, cause: cause}
 				wantCause := cause
-				if failure == "panic-text" {
+				switch failure {
+				case "panic-text":
 					store.panicValue, wantCause = "private record bytes", nil
+				case "panic-nil":
+					store.panicNil, wantCause = true, nil
+				case "panic-error":
+					store.panicValue, wantCause = cause, nil // Store panics retain no business cause.
 				}
 				g := recoveryGraph(t, "store-failure")
 				var body atomic.Int32
 				recoveryAdd(t, g, pulse.NewNode("work", "", nil, nil, func(*pulse.RunCtx) error { body.Add(1); return nil }))
 				e, err := recoveryRuntime(t, store, durable.NewCodecs()).Run(context.Background(), g, pulse.Inputs{}, recoveryOptions("run"))
 				checkRecoveryFailure(t, err, wantCause)
+				if strings.HasPrefix(failure, "panic-") && !strings.Contains(err.Error(), op+" panicked") {
+					t.Fatalf("Store panic was attributed to a different operation: %v", err)
+				}
 				wantBody := int32(0)
 				if op == "close" {
 					wantBody = 1

@@ -65,15 +65,18 @@ func NewCodecs() *Codecs {
 // Register 原子注册一个编码器。重复类型或重复 ID 返回 ErrConflict，绝不替换旧编码器。
 // channel、func、unsafe.Pointer（包括其嵌套声明）不属于首期值协议。
 func (c *Codecs) Register(codec Codec) (err error) {
-	defer func() {
-		if recover() != nil {
-			err = fmt.Errorf("durable: codec registration panicked")
-		}
-	}()
 	if c == nil || nilValue(codec) {
 		return fmt.Errorf("durable: codecs and codec are required")
 	}
+	returned := false
+	defer func() {
+		if !returned {
+			_ = recover()
+			err = fmt.Errorf("durable: codec registration panicked")
+		}
+	}()
 	t, id, version := codec.Type(), codec.ID(), codec.Version()
+	returned = true
 	if t == nil || id == "" || version == "" {
 		return fmt.Errorf("durable: codec type, ID and version are required")
 	}
@@ -160,15 +163,17 @@ func (c *Codecs) snapshot() map[reflect.Type]codecEntry {
 }
 
 func (c codecEntry) encode(v any) (data []byte, err error) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			data, err = nil, operationPanic(fmt.Sprintf("codec %q encode", c.id), rec)
-		}
-	}()
 	if !validBusinessValue(c.typ, v) {
 		return nil, fmt.Errorf("durable: codec %q received an invalid value type", c.id)
 	}
+	returned := false
+	defer func() {
+		if !returned {
+			data, err = nil, operationPanic(fmt.Sprintf("codec %q encode", c.id), recover())
+		}
+	}()
 	data, err = c.codec.Encode(v)
+	returned = true
 	if err != nil {
 		return nil, &operationError{op: fmt.Sprintf("codec %q encode", c.id), cause: err}
 	}
@@ -176,12 +181,14 @@ func (c codecEntry) encode(v any) (data []byte, err error) {
 }
 
 func (c codecEntry) decode(data []byte) (v any, err error) {
+	returned := false
 	defer func() {
-		if rec := recover(); rec != nil {
-			v, err = nil, operationPanic(fmt.Sprintf("codec %q decode", c.id), rec)
+		if !returned {
+			v, err = nil, operationPanic(fmt.Sprintf("codec %q decode", c.id), recover())
 		}
 	}()
 	v, err = c.codec.Decode(append([]byte(nil), data...))
+	returned = true
 	if err != nil {
 		return nil, &operationError{op: fmt.Sprintf("codec %q decode", c.id), cause: err}
 	}

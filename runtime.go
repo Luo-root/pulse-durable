@@ -162,12 +162,15 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 }
 
 func beforeStart(callback func(*pulse.Execution) error, execution *pulse.Execution) (err error) {
+	returned := false
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = operationPanic("before start callback", rec)
+		if !returned {
+			err = operationPanic("before start callback", recover())
 		}
 	}()
-	if err := callback(execution); err != nil {
+	err = callback(execution)
+	returned = true
+	if err != nil {
 		return &operationError{op: "before start callback", cause: err}
 	}
 	return nil
@@ -182,12 +185,15 @@ func checkpointError(op string, err error) error {
 }
 
 func acquire(store Store, ctx context.Context, runID string) (session Session, err error) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			_ = recover()
 			session, err = nil, fmt.Errorf("durable: store acquire panicked")
 		}
 	}()
 	session, err = store.Acquire(ctx, runID)
+	returned = true
 	if err != nil {
 		return nil, &operationError{op: "store acquire", cause: err}
 	}
@@ -198,12 +204,15 @@ func acquire(store Store, ctx context.Context, runID string) (session Session, e
 }
 
 func load(session Session, ctx context.Context) (record RunRecord, err error) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			_ = recover()
 			record, err = RunRecord{}, fmt.Errorf("durable: store load panicked")
 		}
 	}()
 	record, err = session.Load(ctx)
+	returned = true
 	if err != nil {
 		return RunRecord{}, &operationError{op: "store load", cause: err}
 	}
@@ -211,12 +220,16 @@ func load(session Session, ctx context.Context) (record RunRecord, err error) {
 }
 
 func closeSession(session Session) (err error) {
+	returned := false
 	defer func() {
-		if recover() != nil {
+		if !returned {
+			_ = recover()
 			err = fmt.Errorf("durable: session close panicked")
 		}
 	}()
-	if err = session.Close(); err != nil {
+	err = session.Close()
+	returned = true
+	if err != nil {
 		return &operationError{op: "session close", cause: err}
 	}
 	return nil

@@ -375,13 +375,17 @@ func (s *runState) restored(scopeID string, records []pulse.NodeCheckpoint) (err
 	scope := s.record.Scopes[scopeID]
 	runID := s.record.RunID
 	s.mu.Unlock()
+	returned := false
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = operationPanic("recovery event callback", rec)
+		if !returned {
+			err = operationPanic("recovery event callback", recover())
 		}
 	}()
 	for _, n := range records {
-		if err := s.event(Event{Kind: EventRestored, RunID: runID, Scope: scopeID, Graph: scope.Graph, Path: scope.Path, NodeID: n.NodeID}); err != nil {
+		returned = false
+		err = s.event(Event{Kind: EventRestored, RunID: runID, Scope: scopeID, Graph: scope.Graph, Path: scope.Path, NodeID: n.NodeID})
+		returned = true
+		if err != nil {
 			return &operationError{op: "recovery event callback", cause: err}
 		}
 	}
