@@ -375,13 +375,19 @@ func (s *runState) restored(scopeID string, records []pulse.NodeCheckpoint) (err
 	scope := s.record.Scopes[scopeID]
 	runID := s.record.RunID
 	s.mu.Unlock()
+	// 每次回调单独标记正常返回，才能识别后续回调的兼容模式 panic(nil)。
+	// operationPanic 保留 error 原因，显示文本仍只含操作信息。
+	returned := false
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = operationPanic("recovery event callback", rec)
+		if !returned {
+			err = operationPanic("recovery event callback", recover())
 		}
 	}()
 	for _, n := range records {
-		if err := s.event(Event{Kind: EventRestored, RunID: runID, Scope: scopeID, Graph: scope.Graph, Path: scope.Path, NodeID: n.NodeID}); err != nil {
+		returned = false
+		err = s.event(Event{Kind: EventRestored, RunID: runID, Scope: scopeID, Graph: scope.Graph, Path: scope.Path, NodeID: n.NodeID})
+		returned = true
+		if err != nil {
 			return &operationError{op: "recovery event callback", cause: err}
 		}
 	}
