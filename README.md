@@ -147,7 +147,7 @@ go vet ./...
 go test -race -count=1 ./...
 ```
 
-可运行示例见 [example_test.go](example_test.go) 和 [subgraph_example_test.go](subgraph_example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。
+节点、子图与受管流的可运行示例集中在 [example_test.go](example_test.go)；真实进程退出与重启测试见 [integration/recovery_test.go](integration/recovery_test.go)。
 
 ## 参与项目
 
