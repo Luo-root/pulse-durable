@@ -15,6 +15,8 @@ function sidebar(prefix: string, en: boolean) {
       ['子图与重试恢复', 'Subgraphs and retries', 'guide/subgraphs'],
       ['编码业务值', 'Encoding business values', 'guide/codecs'],
       ['存储与运行所有权', 'Storage and ownership', 'guide/storage'],
+      ['审批与工具组合', 'Approval and tool composition', 'guide/composition'],
+      ['检查点成本', 'Checkpoint costs', 'guide/checkpoint-cost'],
     ]) },
     { text: en ? 'Reference' : '参考', collapsed: false, items: pages([
       ['参考索引', 'Reference index', 'reference/'],
@@ -37,7 +39,7 @@ function locale(en: boolean) {
     themeConfig: {
       nav: [
         { text: en ? 'Get started' : '入门', link: `${prefix}guide/`, activeMatch: `${prefix}guide/(?:installation|quickstart|recovery)?(?:\\.html)?$` },
-        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/subgraphs`, activeMatch: `${prefix}guide/(?:subgraphs|codecs|storage)` },
+        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/subgraphs`, activeMatch: `${prefix}guide/(?:subgraphs|codecs|storage|composition|checkpoint-cost)` },
         { text: en ? 'Reference' : '参考', link: `${prefix}reference/`, activeMatch: `${prefix}reference/` },
         { text: 'Pulse', link: en ? 'https://luo-root.github.io/pulse/en/' : 'https://luo-root.github.io/pulse/' },
       ],
