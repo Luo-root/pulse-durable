@@ -147,7 +147,7 @@ go vet ./...
 go test -race -count=1 ./...
 ```
 
-Runnable examples are in [example_test.go](example_test.go) and [subgraph_example_test.go](subgraph_example_test.go). Actual process exit and restart tests are in [integration/recovery_test.go](integration/recovery_test.go).
+Runnable node, subgraph, and managed-stream examples are collected in [example_test.go](example_test.go). Actual process exit and restart tests are in [integration/recovery_test.go](integration/recovery_test.go).
 
 ## Contributing
 
