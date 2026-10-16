@@ -28,6 +28,15 @@ type observationLogRecord struct {
 	Attrs                          map[string]json.RawMessage
 }
 
+// String 仅改善断言诊断；RawMessage 按原 JSON 展示，不输出十进制字节数组。
+func (r observationLogRecord) String() string {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Sprintf("observationLogRecord(invalid JSON: %v)", err)
+	}
+	return string(data)
+}
+
 func observationAttr[T any](t *testing.T, record observationLogRecord, key string) T {
 	t.Helper()
 	var value T
