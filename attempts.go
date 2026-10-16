@@ -43,6 +43,7 @@ func (s *runState) save(ctx context.Context, proposed RunRecord) (err error) {
 	proposed.Format = RecordFormat
 	proposed.Revision = s.record.Revision + 1
 	// panic(nil) 在兼容模式下 recover 为 nil，须按调用是否正常返回判定。
+	// Store panic 沿原契约不保留原值；Save 异常仍须锁存 stopped。
 	returned := false
 	defer func() {
 		if !returned {

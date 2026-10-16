@@ -68,6 +68,7 @@ func (c *Codecs) Register(codec Codec) (err error) {
 	if c == nil || nilValue(codec) {
 		return fmt.Errorf("durable: codecs and codec are required")
 	}
+	// 按正常返回识别兼容模式的 panic(nil)；元数据注册 panic 沿原契约不保留原值。
 	returned := false
 	defer func() {
 		if !returned {
@@ -166,6 +167,7 @@ func (c codecEntry) encode(v any) (data []byte, err error) {
 	if !validBusinessValue(c.typ, v) {
 		return nil, fmt.Errorf("durable: codec %q received an invalid value type", c.id)
 	}
+	// 按正常返回识别兼容模式的 panic(nil)；operationPanic 保留 error 原因并脱敏正文。
 	returned := false
 	defer func() {
 		if !returned {
@@ -181,6 +183,7 @@ func (c codecEntry) encode(v any) (data []byte, err error) {
 }
 
 func (c codecEntry) decode(data []byte) (v any, err error) {
+	// 按正常返回识别兼容模式的 panic(nil)；operationPanic 保留 error 原因并脱敏正文。
 	returned := false
 	defer func() {
 		if !returned {

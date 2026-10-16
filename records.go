@@ -375,6 +375,8 @@ func (s *runState) restored(scopeID string, records []pulse.NodeCheckpoint) (err
 	scope := s.record.Scopes[scopeID]
 	runID := s.record.RunID
 	s.mu.Unlock()
+	// 每次回调单独标记正常返回，才能识别后续回调的兼容模式 panic(nil)。
+	// operationPanic 保留 error 原因，显示文本仍只含操作信息。
 	returned := false
 	defer func() {
 		if !returned {

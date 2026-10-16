@@ -162,6 +162,7 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 }
 
 func beforeStart(callback func(*pulse.Execution) error, execution *pulse.Execution) (err error) {
+	// 按正常返回识别兼容模式的 panic(nil)；operationPanic 保留 error 原因并脱敏正文。
 	returned := false
 	defer func() {
 		if !returned {
@@ -185,6 +186,7 @@ func checkpointError(op string, err error) error {
 }
 
 func acquire(store Store, ctx context.Context, runID string) (session Session, err error) {
+	// 按正常返回识别兼容模式的 panic(nil)；Store panic 沿原契约不保留原值。
 	returned := false
 	defer func() {
 		if !returned {
@@ -204,6 +206,7 @@ func acquire(store Store, ctx context.Context, runID string) (session Session, e
 }
 
 func load(session Session, ctx context.Context) (record RunRecord, err error) {
+	// 按正常返回识别兼容模式的 panic(nil)；Store panic 沿原契约不保留原值。
 	returned := false
 	defer func() {
 		if !returned {
@@ -220,6 +223,7 @@ func load(session Session, ctx context.Context) (record RunRecord, err error) {
 }
 
 func closeSession(session Session) (err error) {
+	// 按正常返回识别兼容模式的 panic(nil)；Store panic 沿原契约不保留原值。
 	returned := false
 	defer func() {
 		if !returned {
