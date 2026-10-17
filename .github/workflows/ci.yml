@@ -46,3 +46,27 @@ jobs:
           fi
       - name: Test, including process exit and recovery
         run: go test -race -count=1 -timeout=180s ./...
+
+  benchmark-correctness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: benchmarks/workflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: benchmarks/workflow/go.mod
+          cache-dependency-path: benchmarks/workflow/go.sum
+      - name: Build isolated benchmark adapters
+        run: go build ./...
+      - name: Vet benchmark adapters
+        run: go vet ./...
+      - name: Check equal results and real process recovery
+        run: go test -race -count=1 -timeout=180s ./...
+      # Full timing matrices run manually; noisy shared CI timing is not a performance gate.
