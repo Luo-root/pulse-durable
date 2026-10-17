@@ -2,6 +2,8 @@
 
 This page records bounded measurements for [Pulse #411](https://github.com/Luo-root/pulse/issues/411), to help hosts estimate individual checkpoint operations, cumulative writes, and retained storage. It defines no product throughput target or business retention period, and introduces no compression, incremental storage, or distributed ownership capability. See [Storage](storage.md) for guarantees and the [Data model](../reference/data-model.md) for record fields.
 
+See [scale and performance](performance.md) for equal-task comparisons at 1–10000 ordinary business steps, current pinned revisions and actual process-recovery costs. This page keeps its original historical measurements.
+
 ## What remains after Pending is empty
 
 `StreamRecord.Pending` holds messages with outstanding reading obligations. Acknowledgement removes a message from Pending, while its `MessageAttemptRecord` remains in `RunRecord.Messages`, preserving identity, attempt budget, and confirmation state. That record does not itself contain the encoded message payload. Explicit state and ordinary outputs can also retain business values. Empty Pending therefore does not mean an empty record.

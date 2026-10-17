@@ -18,6 +18,7 @@ function sidebar(prefix: string, en: boolean) {
       ['审批与工具组合', 'Approval and tool composition', 'guide/composition'],
       ['观测与运行身份', 'Observation and run identity', 'guide/observation'],
       ['检查点成本', 'Checkpoint costs', 'guide/checkpoint-cost'],
+      ['规模与性能', 'Scale and performance', 'guide/performance'],
     ]) },
     { text: en ? 'Reference' : '参考', collapsed: false, items: pages([
       ['参考索引', 'Reference index', 'reference/'],
@@ -40,7 +41,7 @@ function locale(en: boolean) {
     themeConfig: {
       nav: [
         { text: en ? 'Get started' : '入门', link: `${prefix}guide/`, activeMatch: `${prefix}guide/(?:installation|quickstart|recovery)?(?:\\.html)?$` },
-        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/subgraphs`, activeMatch: `${prefix}guide/(?:subgraphs|codecs|storage|composition|observation|checkpoint-cost)` },
+        { text: en ? 'Guides' : '使用指南', link: `${prefix}guide/subgraphs`, activeMatch: `${prefix}guide/(?:subgraphs|codecs|storage|composition|observation|checkpoint-cost|performance)` },
         { text: en ? 'Reference' : '参考', link: `${prefix}reference/`, activeMatch: `${prefix}reference/` },
         { text: 'Pulse', link: en ? 'https://luo-root.github.io/pulse/en/' : 'https://luo-root.github.io/pulse/' },
       ],

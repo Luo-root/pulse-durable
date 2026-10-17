@@ -1,0 +1,13 @@
+suite,engine,backend,shape,nodes,rounds,mode,parallelism,procs,samples_planned,samples_ok,attempts,statuses,ns_per_op_median,ns_per_op_min,ns_per_op_max,bytes_per_op_median,bytes_per_op_min,bytes_per_op_max,allocs_per_op_median,allocs_per_op_min,allocs_per_op_max,ns_per_node,nodes_per_second,allocated_bytes_per_node
+workflow,durable,file,chain,10,1,reopen,4,4,3,3,3,"{""ok"": 3}",887000,776500,966900,,,,,,,88700.0,11273.957158962796,
+workflow,durable,file,chain,10,1,resume,4,4,3,3,3,"{""ok"": 3}",81007000,79781000,85979100,,,,,,,8100700.0,123.44612194007925,
+workflow,durable,file,chain,100,1,reopen,4,4,3,3,3,"{""ok"": 3}",2222800,2153600,2245100,,,,,,,22228.0,44988.303041209285,
+workflow,durable,file,chain,100,1,resume,4,4,3,3,3,"{""ok"": 3}",899750900,886513200,948349600,,,,,,,8997509.0,111.14187271165831,
+workflow,durable,file,chain,1000,1,reopen,4,4,3,3,3,"{""ok"": 3}",14583200,13786000,14641900,,,,,,,14583.2,68572.05551593614,
+workflow,durable,file,chain,1000,1,resume,4,4,3,3,3,"{""ok"": 3}",11361191400,11010625200,11510143200,,,,,,,11361191.4,88.01893787301215,
+workflow,go-workflows,file,chain,10,1,reopen,4,4,3,3,3,"{""ok"": 3}",452000,425900,511600,,,,,,,45200.0,22123.893805309734,
+workflow,go-workflows,file,chain,10,1,resume,4,4,3,3,3,"{""ok"": 3}",81412100,80436200,83733700,,,,,,,8141210.0,122.8318640595194,
+workflow,go-workflows,file,chain,100,1,reopen,4,4,3,3,3,"{""ok"": 3}",1716300,1646500,1740700,,,,,,,17163.0,58264.87210860572,
+workflow,go-workflows,file,chain,100,1,resume,4,4,3,3,3,"{""ok"": 3}",764572300,764304200,765638400,,,,,,,7645723.0,130.7920781330948,
+workflow,go-workflows,file,chain,1000,1,reopen,4,4,3,3,3,"{""ok"": 3}",15375400,14719700,17036300,,,,,,,15375.4,65038.95833604329,
+workflow,go-workflows,file,chain,1000,1,resume,4,4,3,3,3,"{""ok"": 3}",6965492400,6828800800,7014724100,,,,,,,6965492.4,143.56486843629318,
