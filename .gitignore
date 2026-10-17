@@ -10,3 +10,9 @@ go.work.sum
 
 # Local editor settings
 .idea/
+
+# Isolated benchmark executables and scratch storage
+benchmarks/workflow/workflow
+benchmarks/workflow/workflow.exe
+benchmarks/results/*/work/
+benchmarks/**/__pycache__/
