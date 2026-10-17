@@ -27,7 +27,7 @@
 
 对照采用单机低延迟设置：Workflow/Activity 各 1 个 poller、1ms 轮询、相同业务并发上限；完成状态也按 1ms 查询。默认 200ms 轮询和结果等待的指数退避会显著影响小任务，因此这不是默认配置成绩。更频繁的轮询和 SQL 查询会增加 CPU 开销，`cpu_ns_per_op` 单列进程 CPU 时间；Windows CPU 计数较粗，小任务可能读到 0，不能解释成不消耗 CPU。
 
-SQLite 内存和文件组都通过公开 WithDB 构造器设置单连接并保留空闲连接。原生内存便捷构造器使用 2 连接；这里选择固定单连接的本机配置，实际值与 journal_mode、synchronous、busy_timeout、缓存、页大小随 JSON 一起公开。SingleWorkerMode 选项在固定版本的 Worker.New 中未产生实际效果，不把设置了该字段当成可靠性或性能保证。最大历史条数按规模提高，以免 10000 条默认上限提前终止大图。
+SQLite 内存和文件组都通过公开 WithDB 构造器设置单连接并保留空闲连接。原生内存便捷构造器使用 2 连接；这里选择固定单连接的本机配置，实际值与 journal_mode、synchronous、busy_timeout、缓存、页大小随原始 JSON 保留在外部证据包。SingleWorkerMode 选项在固定版本的 Worker.New 中未产生实际效果，不把设置了该字段当成可靠性或性能保证。最大历史条数按规模提高，以免 10000 条默认上限提前终止大图。
 
 `growth` 是独立仪表化场景：Durable Store 包装器在每次 Save 前额外 JSON 编码，记录 Save 次数、成功 Save 的累计逻辑 JSON 字节和最终记录大小，并执行累计字节预算。这些额外成本不混入普通 `run` 成绩。SQLite 在计时结束后、连接关闭前报告历史事件条数及当前数据库/WAL 文件长度；关闭连接后的 WAL checkpoint 可能改变这两个长度。未取得等价的累计物理或逻辑写入计数，不能把两者直接当作相同的写放大指标。
 
@@ -39,7 +39,7 @@ SQLite 内存和文件组都通过公开 WithDB 构造器设置单连接并保�
 
 ## 构建与复跑
 
-从本仓根目录，先在隔离模块验证：
+先设置 `GOWORK=off` 和 `GOFLAGS=-buildvcs=false`，保持无 replace，使用 Go 1.25 自动工具链。从本仓根目录，在隔离模块验证：
 
 ```sh
 cd benchmarks/workflow
@@ -49,7 +49,7 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
-设置 `GOWORK=off`，保持无 replace。Linux/macOS 将可执行文件命名为 `workflow`。真实恢复测试会启动刚编译的测试可执行文件，不需要外部服务或凭据。
+Linux/macOS 将可执行文件命名为 `workflow`。真实恢复测试会启动刚编译的测试可执行文件，不需要外部服务或凭据。
 
 使用 Pulse 仓库的统一采样器（根据两仓位置调整路径）：
 
@@ -68,4 +68,16 @@ benchmarks/workflow/workflow.exe -engine go-workflows -backend file -nodes 100 -
 
 正常 `run` 不额外编码计数，只有时间边界；1GiB 逻辑字节保护只用于 Durable `growth`。context 不能强行中断同步编码/落盘，统一采样器另设 65 秒父进程硬超时并清理整棵子进程树。超时、超预算与未测分别保存，未完成的 10000 步不补零、不从小规模外推。
 
-保留 `manifest.json`、`samples.jsonl`、summary 和 SVG；`work/` 里的业务记录、审计、SQLite 和 WAL 不提交。Go 累计分配不是峰值内存，文件长度不是累计写出量，重复批次的 min–max 不是线上延迟分位数。本次实际结果见站点性能页；[原 checkpoint-cost 页](../site/guide/checkpoint-cost.md) 保留其原版本与历史数字。
+## 读数据与保留规则
+
+[2026-10-17 历史报告](../site/guide/performance.md)使用上面的固定版本和后端配置，不代表后续统一框架的生产对比。[精简证据说明](reports/2026-10-17/README.md)记录环境、原始 JSONL 哈希和采集连续性；源码仓只保留以下汇总及报告实际引用的 6 张 PNG：
+
+- [普通运行汇总](reports/2026-10-17/workflow-summary.csv)：rounds=1/256，按引擎、后端和规模分组。
+- [增长耗时汇总](reports/2026-10-17/growth-summary.csv)与[存储增长汇总](reports/2026-10-17/storage-summary.csv)：后者区分 complete/partial，不把未完成前缀当成完整运行。
+- [恢复与重开汇总](reports/2026-10-17/recovery-summary.csv)：没有采集的分配量保持空白。
+
+汇总保留有效样本数、状态、中位数和观察到的 min–max。完整原始 JSONL、manifest、模块 Origin、机器说明、覆盖/校验记录、诊断和其他图保存在外部证据包 `pulse-scale-baseline-2026-10-17.zip`，不随源码仓分发；此处不提供未发布的下载链接。
+
+正常复跑仍向 Git 已忽略的 `benchmarks/results/` 写入原始 JSONL、manifest、汇总和图。将完整运行证据单独归档；不要提交该目录、执行文件、业务记录、审计、SQLite/WAL、本机路径清单或重复图。更新发布报告时，核对原始数据后只选取必要 CSV 和实际引用图。
+
+Go 累计分配不是峰值内存，文件长度不是累计写出量，重复批次的 min–max 不是线上延迟分位数。[原 checkpoint-cost 页](../site/guide/checkpoint-cost.md)保留其原版本与历史数字。

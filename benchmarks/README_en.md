@@ -27,7 +27,7 @@ There are no replacements. Retain versions, module checksums and binary SHA256 b
 
 The comparison uses an explicit low-latency single-host configuration: one Workflow and one Activity poller, each polling every 1ms, with the same business concurrency cap; completion state is also polled every 1ms. Default 200ms polling and exponential result-wait backoff substantially affect small tasks, so these are not default-configuration results. Frequent polling and SQL queries cost CPU. `cpu_ns_per_op` separately measures process CPU; Windows accounting is coarse and can return zero for short operations, which does not mean zero CPU consumption.
 
-Both SQLite groups use the public WithDB constructor with one connection and a retained idle connection. The native in-memory convenience constructor uses two connections; the suite selects a fixed single-connection local configuration and exposes it alongside journal_mode, synchronous, busy_timeout, cache and page settings. The pinned Worker.New does not act on SingleWorkerMode; setting that field is not treated as a guarantee. The history-event limit is raised with graph size to prevent the default 10000-event limit from ending large runs prematurely.
+Both SQLite groups use the public WithDB constructor with one connection and a retained idle connection. The native in-memory convenience constructor uses two connections; the suite selects a fixed single-connection local configuration and retains it in the external raw evidence alongside journal_mode, synchronous, busy_timeout, cache and page settings. The pinned Worker.New does not act on SingleWorkerMode; setting that field is not treated as a guarantee. The history-event limit is raised with graph size to prevent the default 10000-event limit from ending large runs prematurely.
 
 `growth` is a separate instrumented scenario. A Durable Store wrapper performs an extra JSON encoding before each Save, counting Save calls, cumulative JSON bytes passed to successful Saves and final record size, with a cumulative logical-byte budget. Do not mix these extra costs into ordinary `run` rankings. After timing and before closing connections, SQLite reports event counts and current database/WAL file lengths; a WAL checkpoint at close can change those lengths. It does not provide an equivalent cumulative physical/logical-write counter. These are different metrics, not directly comparable write-amplification figures.
 
@@ -39,7 +39,7 @@ Recovery separates process startup, backend/Graph preparation, restore plus rema
 
 ## Build and reproduce
 
-From this repository root, validate the separate module first:
+First set `GOWORK=off` and `GOFLAGS=-buildvcs=false`, keep automatic Go 1.25 toolchain selection and retain no replacements. From this repository root, validate the separate module:
 
 ```sh
 cd benchmarks/workflow
@@ -49,7 +49,7 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
-Set `GOWORK=off` and retain no replacements. On Linux/macOS, name the executable `workflow`. Recovery tests launch the compiled test executable; no external service or credentials are needed.
+On Linux/macOS, name the executable `workflow`. Recovery tests launch the compiled test executable; no external service or credentials are needed.
 
 Use the shared sampler from the Pulse repository, adjusting paths for your checkouts:
 
@@ -68,4 +68,16 @@ benchmarks/workflow/workflow.exe -engine go-workflows -backend file -nodes 100 -
 
 Ordinary `run` does no extra encoding for write metering and is time-bounded only; the 1GiB logical-byte guard applies to Durable `growth`. Context cancellation cannot forcibly interrupt synchronous encoding/storage, so the sampler adds a 65-second parent deadline and cleans up the contained process tree. Retain timeout, resource-limit and unmeasured states separately. Never fill an incomplete 10000-step point with zero or an extrapolated value.
 
-Keep `manifest.json`, `samples.jsonl`, summaries and SVGs; do not commit checkpoint, audit, SQLite or WAL files from `work/`. Cumulative Go allocations are not peak memory, current file length is not cumulative writes, and repeated-batch min–max is not a production latency percentile. See the site performance guide for actual measurements; the [historical checkpoint-cost page](../site/en/guide/checkpoint-cost.md) keeps its original versions and numbers.
+## Read data and retain evidence
+
+The [2026-10-17 historical report](../site/en/guide/performance.md) uses the pinned versions and backend settings above; it is not the later production comparison under a unified framework. The [compact evidence notes](reports/2026-10-17/README.md) retain the environment, raw JSONL hashes and collection continuity. The source repository keeps only these summaries and the six PNGs used by the report:
+
+- [Ordinary-run summary](reports/2026-10-17/workflow-summary.csv): rounds=1/256, grouped by engine, backend and size.
+- [Growth-time summary](reports/2026-10-17/growth-summary.csv) and [storage-growth summary](reports/2026-10-17/storage-summary.csv): the latter distinguishes complete/partial points, without presenting incomplete prefixes as full runs.
+- [Recovery and reopen summary](reports/2026-10-17/recovery-summary.csv): unmeasured allocation counters remain empty.
+
+Summaries retain valid sample counts, statuses, medians and observed min–max. Full raw JSONL, manifests, module Origin metadata, machine details, coverage/acceptance checks, diagnostics and other figures are retained in the external evidence archive `pulse-scale-baseline-2026-10-17.zip`, which is not distributed with source. No unpublished download URL is supplied here.
+
+Normal reruns still write raw JSONL, manifests, summaries and figures to Git-ignored `benchmarks/results/`. Archive the complete evidence separately. Do not commit that directory, executables, business records, audits, SQLite/WAL, local path inventories or duplicate figures. When updating a published report, check the raw data and select only necessary CSVs and figures actually used.
+
+Cumulative Go allocations are not peak memory, current file length is not cumulative writes, and repeated-batch min–max is not a production latency percentile. The [historical checkpoint-cost page](../site/en/guide/checkpoint-cost.md) keeps its original versions and numbers.

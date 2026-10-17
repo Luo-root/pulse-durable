@@ -14,5 +14,5 @@ go.work.sum
 # Isolated benchmark executables and scratch storage
 benchmarks/workflow/workflow
 benchmarks/workflow/workflow.exe
-benchmarks/results/*/work/
+/benchmarks/results/
 benchmarks/**/__pycache__/

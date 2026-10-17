@@ -2,7 +2,7 @@
 
 这份报告测量同一个长链任务在 1、10、100、1000、10000 个业务步骤下的成本：加上检查点、可靠记录和进程恢复以后，要付出多少时间、累计分配和写出。它与 [Pulse 纯内存报告](https://github.com/Luo-root/pulse/blob/main/site/reference/performance.md) 分组阅读，不能混成同一张速度榜。
 
-测量日期为 **2026-10-17**，固定公开 Durable `v0.0.0-20261016143640-e47e51eda579`、Core `v0.4.2-0.20261016143631-7d70e1e14771`，对照 go-workflows [v1.4.2](https://github.com/cschleiden/go-workflows/releases/tag/v1.4.2) 与该版本依赖的 pure-Go SQLite `v1.27.0`。这不是尚未创建的 Durable v0.1.0/Core v0.5.0 正式 tag；也不改写[历史成本页](checkpoint-cost.md)的版本和数字。
+测量日期为 **2026-10-17**，固定公开 Durable `v0.0.0-20261016143640-e47e51eda579`、Core `v0.4.2-0.20261016143631-7d70e1e14771`，对照 go-workflows [v1.4.2](https://github.com/cschleiden/go-workflows/releases/tag/v1.4.2) 与该版本依赖的 pure-Go SQLite `v1.27.0`。这是当时开发版本和各自后端配置的历史基线，不代表后续统一框架的生产对比；两种文件后端的事务与断电保证也不同。这不是尚未创建的 Durable v0.1.0/Core v0.5.0 正式 tag；也不改写[历史成本页](checkpoint-cost.md)的版本和数字。
 
 ## 本机结果：内存和文件成本明显分开
 
@@ -18,11 +18,11 @@
 
 在完成到 1000 步的测点上，MemoryStore 的耗时低于 SQLite 内存库，但分配增长必须一起看：1000 步的累计分配中位数，Durable 为 **1730MiB**，go-workflows 为 **55MiB**。这是整轮不断分配的总量，不是同时占着这么多内存。Durable 文件组在 1000 步的主矩阵中没有取得有效样本；预热和正式运行共用 60s 案例 context，不能据此声称单次执行必定超过 60s。
 
-![按后端分开的普通整任务耗时](/performance/2026-10-17/workflow-run-r1-time.svg)
+![按后端分开的普通整任务耗时](/performance/2026-10-17/workflow-run-r1-time.png)
 
-![累计 Go 分配而非峰值内存](/performance/2026-10-17/workflow-run-r1-allocations.svg)
+![累计 Go 分配而非峰值内存](/performance/2026-10-17/workflow-run-r1-allocations.png)
 
-![每步固定增加到 256 轮计算的结果](/performance/2026-10-17/workflow-run-r256-time.svg)
+![每步固定增加到 256 轮计算的结果](/performance/2026-10-17/workflow-run-r256-time.png)
 
 ## 记录增长：最终文件小，不等于保存成本小
 
@@ -47,7 +47,7 @@ SQLite 文件组的统计范围不同：下面是关闭前的当前文件长度�
 | 1000 | complete: ok, n=3 | 1000 | 3003 | 5.5 |
 | 10000 | partial: timeout, n=1 | 4676 | 14031 | 10.8 |
 
-![不同统计范围的增长指标，部分前缀单独标记](/performance/2026-10-17/storage-growth.svg)
+![不同统计范围的增长指标，部分前缀单独标记](/performance/2026-10-17/storage-growth.png)
 
 当前机制解释了为什么需要关注增长：[runState.save](https://github.com/Luo-root/pulse-durable/blob/e47e51eda57911df84922beca29b840fa8b6f2fd/attempts.go#L33) 会克隆完整候选交给 Store，确认成功后再克隆成自己的记录；[MemoryStore.Save](https://github.com/Luo-root/pulse-durable/blob/e47e51eda57911df84922beca29b840fa8b6f2fd/memory.go#L70) 还要保留一份隔离副本；[filestore.Save](https://github.com/Luo-root/pulse-durable/blob/e47e51eda57911df84922beca29b840fa8b6f2fd/filestore/store.go#L163) 每次先读/解码旧记录校验 Revision，再编码、同步并替换完整新记录。每确认一个节点，登记表就更长。尝试打开本身也会保存记录：固定版本的 [Core 检查点链](https://github.com/Luo-root/pulse/blob/7d70e1e1477192669d5008d47729e3c8c19a336f/checkpoint_run.go#L296) 在内层等待前驱之前就打开根 attempt，所以还没等到业务输入的节点也可能增长尝试表。Save 次数不能当成已经完成同样多的业务步骤。这是读码得到的机制证据，没有用 profiler 分配各函数的耗时百分比；先保留本次基线，再单独评审增量存储或减少复制。
 
@@ -61,9 +61,9 @@ SQLite 文件组的统计范围不同：下面是关闭前的当前文件长度�
 | 100 | 50 | 900 | 765 | 2.22 | 1.72 |
 | 1000 | 500 | 11400 | 6970 | 14.6 | 15.4 |
 
-![中途恢复并完成剩余审计业务](/performance/2026-10-17/workflow-resume-r1-time.svg)
+![中途恢复并完成剩余审计业务](/performance/2026-10-17/workflow-resume-r1-time.png)
 
-![两种不同的已完成重开动作](/performance/2026-10-17/workflow-reopen-r1-time.svg)
+![两种不同的已完成重开动作](/performance/2026-10-17/workflow-reopen-r1-time.png)
 
 成功的 resume 点都经过父进程独立核对持久前缀，且两进程合并的磁盘审计中每个业务 ID 恰好一次；超时点不算该规模恢复通过。完成后重开的两列是不同的原生动作，不据此排等价恢复能力的快慢。进程启动、setup、剩余操作以及清理/IPC 的墙钟时间在原始 JSON 中分别保留；未采集分配量仍为空。
 
@@ -77,7 +77,7 @@ SQLite 文件组的统计范围不同：下面是关闭前的当前文件长度�
 
 两引擎、两后端的 run/growth 都实际尝试了五档请求规模。触及预算的点保留原状态，没有替未完成的 10000 步编一个耗时。对于大量极细的持久步骤，应把整份记录复制/保存的成本计入设计，并按自己的业务规模验收；小规模正确不等于大规模成本合适。优化属于后续单独改动，仍须保留确认、身份和恢复契约。
 
-原始资料：[普通运行 JSONL](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/results/2026-10-17-workflow/samples.jsonl) · [增长 JSONL](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/results/2026-10-17-growth/samples.jsonl) · [重启 JSONL](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/results/2026-10-17-recovery/samples.jsonl)。各目录同时保留 manifest、Origin 补充、机器说明、覆盖/校验记录和 CSV/SVG/PNG。
+仓内汇总：[普通运行 CSV](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/reports/2026-10-17/workflow-summary.csv) · [增长耗时 CSV](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/reports/2026-10-17/growth-summary.csv) · [存储增长 CSV](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/reports/2026-10-17/storage-summary.csv) · [恢复与重开 CSV](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/reports/2026-10-17/recovery-summary.csv)。[精简证据说明](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/reports/2026-10-17/README.md)保留版本、环境、原始 JSONL 哈希与采集连续性。完整原始 JSONL、manifest、模块 Origin、机器说明、覆盖/校验记录和其他图保存在外部证据包 `pulse-scale-baseline-2026-10-17.zip`，不随源码仓分发；此处没有公开下载链接。
 
 ## 共同任务与分组
 
@@ -118,7 +118,7 @@ Workflow/Activity 各一 poller、1ms 轮询、上限 4；完成查询同为 1ms
 
 ## 复跑和检查
 
-[隔离评测模块与完整方法](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/README.md)给出命令、固定依赖和原生边界。统一采样/绘图工具位于 Pulse 的 `benchmarks/tools`；保留 JSONL、模块版本/校验和、二进制 SHA256、机器说明、CSV 和 SVG，不能只看截图。Go JSON 未给出的 Origin 另由 `module-origins.json` 查询同版本代理元数据；未提供/获取失败明确标记。
+[隔离评测模块与完整方法](https://github.com/Luo-root/pulse-durable/blob/main/benchmarks/README.md)给出命令、固定依赖和原生边界。统一采样/绘图工具位于 Pulse 的 `benchmarks/tools`；正常复跑把原始 JSONL、模块版本/校验和、二进制 SHA256、机器说明、汇总和图写入 Git 已忽略的 `benchmarks/results/`，完整证据单独归档，源码仓只选取精简 CSV 和报告实际引用的 PNG。Go JSON 未给出的 Origin 另由 `module-origins.json` 查询同版本代理元数据；未提供/获取失败明确标记。
 
 适配器先通过两引擎、两后端、1/2/10/100 步、两档计算的次数/结果/并发检查及 race；10/100 步真实退出恢复和完成后重开也通过。独立复审确认并修正 URI 特殊字符导致共库、恢复误用 growth 预算两处适配器问题，原反例复测通过。Linux/Windows 的生产回归与新增适配器 CI 均通过；这些是正确性检查，不是共享 CI 上的性能成绩。
 
