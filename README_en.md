@@ -124,6 +124,7 @@ Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) ·
 | Compose child graphs and understand Retry recovery | [Subgraphs and retries](site/en/guide/subgraphs.md) |
 | Persist business structs and custom types | [Value codecs](site/en/guide/codecs.md) |
 | Use file storage or implement a Store | [Storage](site/en/guide/storage.md) |
+| Estimate execution, storage and recovery costs at 1–10000 steps | [Scale and performance](site/en/guide/performance.md) · [Benchmark source and method](benchmarks/README_en.md) |
 | Check API, record, and error rules | [Reference overview](site/en/reference/index.md), [Execution contract](site/en/reference/execution.md), [Data model](site/en/reference/data-model.md), [Error handling](site/en/reference/errors.md) |
 
 ## Current boundaries

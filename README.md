@@ -124,6 +124,7 @@ result: 42 ready
 | 组合子图并理解 Retry 恢复 | [子图与重试](site/guide/subgraphs.md) |
 | 保存业务结构体与自定义类型 | [值编码](site/guide/codecs.md) |
 | 使用文件存储或实现 Store | [存储](site/guide/storage.md) |
+| 估算 1–10000 步的运行、存储与恢复成本，复跑同任务对照 | [规模与性能](site/guide/performance.md) · [评测源码与方法](benchmarks/README.md) |
 | 核对 API、记录和错误规则 | [参考概览](site/reference/index.md)、[执行契约](site/reference/execution.md)、[数据模型](site/reference/data-model.md)、[错误处理](site/reference/errors.md) |
 
 ## 当前边界

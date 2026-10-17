@@ -2,6 +2,8 @@
 
 本页记录 [Pulse #411](https://github.com/Luo-root/pulse/issues/411) 的有限规模测量，帮助宿主估算检查点的单次保存成本、累计写出量和保留空间。它不定义产品吞吐目标或业务保留期，也没有引入压缩、增量存储或分布式所有权能力。存储保证见[存储指南](storage.md)，记录字段见[数据模型](../reference/data-model.md)。
 
+普通节点图从 1 到 10000 步的同任务对照、当前公开版本与真实进程恢复成本见[规模与性能](performance.md)。本页保留原历史测量，不改写成新版本数据。
+
 ## Pending 清空以后，留下了什么
 
 `StreamRecord.Pending` 保存仍有读取义务的消息。确认后消息从 Pending 移除，但对应的 `MessageAttemptRecord` 仍保存在 `RunRecord.Messages`，记录消息身份、尝试预算和确认状态。它本身不保存消息的编码内容。显式状态和普通输出也可能继续保留业务值；不能把「Pending 为零」理解成「记录已变空」。

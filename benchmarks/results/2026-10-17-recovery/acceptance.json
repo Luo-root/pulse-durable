@@ -1,0 +1,15 @@
+{
+  "planned_samples": 36,
+  "retained_samples": 36,
+  "statuses": {
+    "ok": 36
+  },
+  "groups": 12,
+  "groups_with_no_valid_sample": 0,
+  "coverage_and_independent_checksums_checked": true,
+  "all_sample_commands_and_manifest_configuration_checked": true,
+  "every_case_attempted_and_limit_skip_causality_checked": true,
+  "binary_sha256_matches_after_measurement": true,
+  "binary_hash_scope": "One captured pre-run hash and an equal post-run hash; this does not prove the file was continuously unchanged between checks.",
+  "samples_sha256": "3d4855364faa2a9fe37af8c87822d47be4c866a02cca5f1cb6e38b76edf2ae82"
+}
