@@ -26,6 +26,8 @@ go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 
 That revision's `go.mod` pins Pulse `v0.4.2-0.20261016133921-f9f071a07499`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
 
+Prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's benchmark module is not an official backend.
+
 ## Minimal example
 
 This `main.go` declares an input and an outlet, runs an “add one” node, and reads the outlet from this execution. `MemoryStore` is used only for this minimal demonstration; use persistent storage for recovery across processes.

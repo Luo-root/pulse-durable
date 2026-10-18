@@ -25,6 +25,8 @@ go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 
 Durable has no formal release yet. This command pins a public development revision. Go resolves it to a pseudo-version and writes that version to `go.mod`. It is not a released `v0.1`.
 
+The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's isolated benchmark module is not an official backend and does not satisfy that prerequisite.
+
 The revision pins Pulse:
 
 ```text

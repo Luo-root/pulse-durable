@@ -13,7 +13,7 @@
 | SQLite | 评测宿主，经现有Store扩展 | 评测宿主，经CheckPointStore扩展 | CLI内嵌真实Server |
 | 进程恢复 | 确认前缀后强杀宿主，再Resume | 主动checkpoint后退出，新进程恢复 | 无在途Activity前缀后强杀worker；另测Server重开 |
 
-SQLite配置WAL/FULL，保留不同事务布局与写入粒度；Durable宿主完整JSON CAS保存RunRecord，只借filestore系统锁提供本机运行独占。这是测试适配器，不能宣传为已交付的生产SQLite后端、分布式租约或fencing。Eino普通组没有同义逐节点确认测量不代表扩展机制不能承载持久应用；主动中断不等于任意crash恢复。
+SQLite配置WAL/FULL，保留不同事务布局与写入粒度；Durable评测宿主把完整RunRecord编码为JSON，存入SQLite的record BLOB列并按Revision做CAS；只借filestore系统锁提供本机运行独占，不调用其Load/Save，也不额外保存第二份JSON运行文件。这是测试适配器，不能宣传为已交付的生产SQLite后端、分布式租约或fencing。Eino普通组没有同义逐节点确认测量不代表扩展机制不能承载持久应用；主动中断不等于任意crash恢复。
 
 长链、rounds=1可靠复用中位数（ms）：
 

@@ -25,6 +25,8 @@ go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 
 Durable 当前没有正式 release。这条命令固定到公开开发修订，Go 会将它解析为伪版本并写入 `go.mod`。不要将它当作已发布的 `v0.1`。
 
+按维护者 2026-10-18 确认的发布顺序，Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。Pulse 独立评测模块中的 SQLite 实现不属于正式后端，也不满足该发布前置。
+
 该修订固定依赖 Pulse：
 
 ```text
