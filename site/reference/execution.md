@@ -22,7 +22,7 @@
 | 字段 | 规则 |
 | --- | --- |
 | `RunID string` | 必填，非空且为有效 UTF-8 文本；非法 RunID 在访问 Store 前作为参数错误拒绝 |
-| `Version string` | 必填，非空；标识宿主的业务语义版本，恢复时须与记录一致 |
+| `Version string` | 必填，非空且为有效 UTF-8 文本，不要求 SemVer；非法文本在访问 Store 前作为参数错误拒绝，恢复时须与记录一致 |
 | `ExecOptions []pulse.ExecOption` | 本次执行使用的 Pulse 选项，例如本次 Observer |
 | `OnEvent func(Event) error` | 可选，同步报告 Durable 恢复事实；错误或 panic 停止本次执行 |
 | `BeforeStart func(*pulse.Execution) error` | 可选，在恢复装配后、Start 前登记宿主流订阅；错误或 panic 取消执行并释放 Session |

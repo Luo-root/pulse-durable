@@ -22,7 +22,7 @@ Both return `(*pulse.Execution, error)`. A preflight failure may occur before an
 | Field | Rule |
 | --- | --- |
 | `RunID string` | Required, nonempty valid UTF-8 text; invalid RunID is rejected as an argument error before accessing Store |
-| `Version string` | Required and nonempty; identifies the host's business semantics version and must match the record on recovery |
+| `Version string` | Required, nonempty valid UTF-8 text; SemVer is not required. Invalid text is rejected as an argument error before accessing Store; it must match the record on recovery |
 | `ExecOptions []pulse.ExecOption` | Pulse options for this execution, such as its Observer |
 | `OnEvent func(Event) error` | Optional synchronous callback for Durable recovery facts; an error or panic stops this execution |
 | `BeforeStart func(*pulse.Execution) error` | Optional host stream registration after restore assembly and before Start; errors or panics cancel execution and release the Session |

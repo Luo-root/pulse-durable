@@ -32,6 +32,42 @@ func TestUnixDeniedReadIsNotMissing(t *testing.T) {
 	}
 }
 
+func TestUnixTemporaryCleanupFailureReleasesLock(t *testing.T) {
+	store := newTestStore(t)
+	initial := acquireTestSession(t, store, "run")
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	temporary := createTestTemporary(t, store, "run")
+	probe := createTestTemporary(t, store, "probe")
+	if err := os.Chmod(store.dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(store.dir, 0700) })
+	if err := os.Remove(probe); err == nil {
+		t.Skip("current user can bypass directory permissions")
+	}
+	for range 2 {
+		session, err := store.Acquire(context.Background(), "run")
+		if session != nil {
+			_ = session.Close()
+		}
+		if session != nil || !errors.Is(err, os.ErrPermission) || errors.Is(err, durable.ErrBusy) {
+			t.Fatalf("Acquire with undeletable temporary: session=%v err=%v", session, err)
+		}
+	}
+	if _, err := os.Stat(temporary); err != nil {
+		t.Fatalf("failed cleanup changed temporary: %v", err)
+	}
+	if err := os.Chmod(store.dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	acquireTestSession(t, store, "run")
+	if _, err := os.Stat(temporary); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary survived after directory permissions were restored: %v", err)
+	}
+}
+
 func TestUnixWriteFailurePreservesRecord(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")

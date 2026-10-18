@@ -33,6 +33,8 @@ On platforms with Unix permission bits, new directories use `0700` and new files
 
 Each RunID is located by SHA-256 of its original text, rather than inserted directly into a path. Records use `.json`, and ownership uses `.lock`. Persistent lock files are normal. Ownership comes from the operating system lock and is released on session close or process exit. Deleting a lock file can create two separate exclusive domains; it is not a way to resolve `ErrBusy`.
 
+A save writes the complete new record to a temporary file in the same directory, syncs it, then replaces `.json`. If the process exits before replacement, the next `Acquire` removes leftover temporary files after taking that RunID's lock. The original `.json` remains authoritative; uncommitted records are never recovered from temporary files. Cleanup matches only regular files named `<SHA-256>-<uint32 decimal>.tmp` for this run (no leading zeroes except `0`). It does not recurse or touch other runs, similar names, or `.lock` files. Directory-read or removal failures return an error and release the lock. Temporary files may remain until that run next acquires its lock successfully; directory permissions and retention remain the host's responsibility.
+
 ## 3. Read an existing record
 
 Run both processes from the [recovery tutorial](recovery.md) and keep `durable-recovery/checkpoints`. In a sibling directory, create an inspection module:
