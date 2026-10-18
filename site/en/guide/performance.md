@@ -1,5 +1,7 @@
 # Scale and performance
 
+> This page retains historical versions. The [unified production comparison](./production-comparison.md) uses merged latest Pulse/Durable with Eino and Temporal across execution, observation, resources, reliable confirmation and recovery.
+
 This report measures the same chain at 1, 10, 100, 1000 and 10000 business steps: time, cumulative allocations and writes after adding checkpoints, reliable records and recovery. Read it separately from [Pulse's in-memory report](https://github.com/Luo-root/pulse/blob/main/site/en/reference/performance.md), rather than one combined speed ranking.
 
 Measured on **2026-10-17**, pinning public Durable `v0.0.0-20261016143640-e47e51eda579`, Core `v0.4.2-0.20261016143631-7d70e1e14771`, go-workflows [v1.4.2](https://github.com/cschleiden/go-workflows/releases/tag/v1.4.2) and its pure-Go SQLite `v1.27.0` dependency. This is a historical baseline of those development versions and backend settings, not the later production comparison under a unified framework. The file backends also differ in transaction and power-loss guarantees. These are not uncreated Durable v0.1.0/Core v0.5.0 release tags. The [historical cost page](checkpoint-cost.md) retains its original versions and measurements.

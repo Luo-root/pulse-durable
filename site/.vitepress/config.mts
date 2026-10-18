@@ -18,7 +18,8 @@ function sidebar(prefix: string, en: boolean) {
       ['审批与工具组合', 'Approval and tool composition', 'guide/composition'],
       ['观测与运行身份', 'Observation and run identity', 'guide/observation'],
       ['检查点成本', 'Checkpoint costs', 'guide/checkpoint-cost'],
-      ['规模与性能', 'Scale and performance', 'guide/performance'],
+      ['统一生产框架对照', 'Unified workflow comparison', 'guide/production-comparison'],
+      ['历史规模与性能', 'Historical scale and performance', 'guide/performance'],
     ]) },
     { text: en ? 'Reference' : '参考', collapsed: false, items: pages([
       ['参考索引', 'Reference index', 'reference/'],
