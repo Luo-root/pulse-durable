@@ -1,5 +1,7 @@
 # 规模与性能
 
+> 本页是旧版本的历史样本。合并后最新版与 Eino、Temporal 固定同三列的新对比见[统一生产框架对照](./production-comparison.md)，覆盖执行、观测、资源、可靠确认和恢复。
+
 这份报告测量同一个长链任务在 1、10、100、1000、10000 个业务步骤下的成本：加上检查点、可靠记录和进程恢复以后，要付出多少时间、累计分配和写出。它与 [Pulse 纯内存报告](https://github.com/Luo-root/pulse/blob/main/site/reference/performance.md) 分组阅读，不能混成同一张速度榜。
 
 测量日期为 **2026-10-17**，固定公开 Durable `v0.0.0-20261016143640-e47e51eda579`、Core `v0.4.2-0.20261016143631-7d70e1e14771`，对照 go-workflows [v1.4.2](https://github.com/cschleiden/go-workflows/releases/tag/v1.4.2) 与该版本依赖的 pure-Go SQLite `v1.27.0`。这是当时开发版本和各自后端配置的历史基线，不代表后续统一框架的生产对比；两种文件后端的事务与断电保证也不同。这不是尚未创建的 Durable v0.1.0/Core v0.5.0 正式 tag；也不改写[历史成本页](checkpoint-cost.md)的版本和数字。
