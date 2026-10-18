@@ -13,7 +13,7 @@ Measured on 2026-10-17. Public Pulse `v0.4.2-0.20261017111210-aa02dd107a43`, Dur
 | SQLite | Benchmark host through existing Store | Benchmark host through CheckPointStore | Real Server embedded in CLI |
 | Process recovery | Kill host after confirmed prefix, then Resume | Exit after active checkpoint; new-process resume | No-in-flight prefix, worker kill; Server restart separately |
 
-SQLite uses WAL/FULL while retaining different transaction layouts and save granularity. Durable CAS-saves complete RunRecord JSON, borrowing filestore OS locks for local ownership only. This is a benchmark adapter, not a newly delivered production SQLite backend, distributed lease or fencing. No equivalent ordinary per-node confirmation measurement for Eino does not mean its extension mechanisms cannot support persistent applications. Active interruption is distinct from arbitrary-crash recovery.
+SQLite uses WAL/FULL while retaining different transaction layouts and save granularity. The Durable benchmark host encodes the complete RunRecord as JSON in SQLite's record BLOB column, with Revision-based CAS. It borrows filestore OS locks for local ownership only, never calls its Load/Save methods, and does not save a second JSON run file. This is a benchmark adapter, not a newly delivered production SQLite backend, distributed lease or fencing. No equivalent ordinary per-node confirmation measurement for Eino does not mean its extension mechanisms cannot support persistent applications. Active interruption is distinct from arbitrary-crash recovery.
 
 chain/rounds=1 reliable reuse medians (ms):
 

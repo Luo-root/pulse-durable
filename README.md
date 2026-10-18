@@ -26,6 +26,8 @@ go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
 
 该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261016133921-f9f071a07499`。完整的新模块操作见[安装](site/guide/installation.md)。
 
+当前发布顺序为 Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。Pulse 评测模块的 SQLite 适配器不属于正式后端。
+
 ## 最小示例
 
 下面的 `main.go` 声明一个输入和一个出口，运行“加一”节点，再读取本次执行的出口。`MemoryStore` 仅用于最小演示；跨进程恢复请使用持久存储。
