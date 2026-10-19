@@ -28,13 +28,25 @@ func (s *runState) hooks() pulse.CheckpointHooks {
 	return pulse.CheckpointHooks{OpenAttempt: s.openAttempt, FailAttempt: s.failAttempt, OpenChild: s.openChild, Commit: s.commit, StreamHooks: s.streamHooks()}
 }
 
+// Only a pre-operation context check may return this explicit fact. A Store
+// error, even context.Canceled after a possible write, always stops reliability.
+func checkCheckpointContext(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("durable: nil checkpoint context")
+	}
+	if ctx.Err() != nil {
+		return &pulse.CheckpointNotStarted{}
+	}
+	return nil
+}
+
 // save 的调用方串行持有 mu，首次保存发生在业务启动前。
 // proposed 与当前内存记录隔离，只有 Save 成功才推进内存；不确定错误锁存并停止。
 func (s *runState) save(ctx context.Context, proposed RunRecord) (err error) {
 	if s.stopped != nil {
 		return s.stopped
 	}
-	if err := checkContext(ctx); err != nil {
+	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
 	if s.record.Revision == math.MaxUint64 {
@@ -73,7 +85,7 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	if s.stopped != nil {
 		return pulse.CheckpointAttempt{}, s.stopped
 	}
-	if err := checkContext(ctx); err != nil {
+	if err := checkCheckpointContext(ctx); err != nil {
 		return pulse.CheckpointAttempt{}, err
 	}
 	loc := location{req.Site.Graph, req.Site.Path}
@@ -168,7 +180,7 @@ func (s *runState) failAttempt(ctx context.Context, id string) error {
 	if s.stopped != nil {
 		return s.stopped
 	}
-	if err := checkContext(ctx); err != nil {
+	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
 	a, ok := s.record.Attempts[id]

@@ -59,6 +59,10 @@ RunID 表示一项业务运行的身份，应保持稳定。新业务分配新 R
 
 完整节点根尝试的预算为一次，内置 Retry 在其内部保存自己的序号和上限。真实业务失败耗尽完整节点预算后，反复 `Resume` 不会补充 Retry 次数。内层成功在根确认前仍保持活跃。操作示例见[子图与重试](../guide/subgraphs.md)。
 
+恢复发现当前图作用域内已有最终失败的节点根时，不重跑已确认别名或重新打开失败来源。子作用域通过精确的 `*pulse.CheckpointScopeFailure{Scope: request.Attempt}` 在装配恢复成果之前交回父完整链；父切面可以接住业务失败，父 Retry 仍按持久剩余预算决定下一轮。信号不携带原业务错误身份或文本，不代替 Store/Codec/校验错误。
+
+根 Resume 在完整校验与旧 partial 收敛之后、解码根恢复成果之前返回同类业务信号。返回的 Execution 尚未 Start，Snapshot 仍为 pending；不发 restored/GraphStarted、不调用 BeforeStart，也不提供 ReadOutput 结果。必须以 Runtime 返回错误判断已确认失败，不能把 pending 快照当成可继续运行或恢复成功。
+
 宿主取消、退出或可靠失败不会仅因中断就将仍活跃的尝试确认成业务失败；不确定保存的实际结果仍以重读为准。节点自身取消局部 context 后返回真实业务错误，仍可能是应确认的业务失败，不能仅凭错误链中存在 `context.Canceled` 判断为宿主中断。
 
 ## 读取出口

@@ -67,6 +67,8 @@ func (r *Runtime) Run(ctx context.Context, g *pulse.Graph, in pulse.Inputs, opts
 // Resume 从权威记录恢复，调用方须重新提供相同输入及业务版本。
 // 仅中断、宿主取消或可靠失败留下的 active 尝试可继续；最终真实失败的根尝试
 // 已耗尽该 RunID 的预算，Resume 不为它分配新预算。
+// 根图已有最终业务失败时返回 *pulse.CheckpointScopeFailure；返回的 Execution
+// 尚未 Start，不发恢复事件或调用 BeforeStart，ReadOutput 不提供结果。
 func (r *Runtime) Resume(ctx context.Context, g *pulse.Graph, in pulse.Inputs, opts RunOptions) (*pulse.Execution, error) {
 	return r.execute(ctx, g, in, opts, true)
 }
@@ -139,6 +141,15 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 		}
 		if err := state.validateLoaded(); err != nil {
 			return execution, checkpointError("validate restore", err)
+		}
+		if err := state.reconcileFailedStreams(ctx); err != nil {
+			return execution, checkpointError("reconcile failed streams", err)
+		}
+		// No restore events, host registrations or Start for a scope whose
+		// final business failure is already authoritative. This Execution
+		// remains pending; the returned error, not Snapshot, is the verdict.
+		if err := state.scopeFailure(stored.RootScope); err != nil {
+			return execution, err
 		}
 		records, err := state.decodeScope(stored.RootScope)
 		if err != nil {

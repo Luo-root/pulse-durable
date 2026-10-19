@@ -59,6 +59,10 @@ A child scope belongs to its parent node's deepest current attempt. An `active` 
 
 A complete node root attempt has a budget of one. Built-in Retry persists its own index and limit inside that root attempt. Once real business failure exhausts the complete node budget, repeated `Resume` calls cannot replenish retries. Inner success remains active until root confirmation. See [Subgraphs and retries](../guide/subgraphs.md) for the example.
 
+When recovery finds a finally failed node root in the current graph scope, it does not rerun confirmed aliases or reopen failed sources. Before installing restored results, a child scope returns the exact `*pulse.CheckpointScopeFailure{Scope: request.Attempt}` to its parent complete chain. Parent Aspects may catch this business failure; parent Retry still uses its persistent remaining budget. The signal carries no original business error identity or text and does not replace Store, Codec, or validation errors.
+
+Root Resume returns the same business signal after complete validation and legacy partial reconciliation, before decoding root restore results. The returned Execution has not started and its Snapshot remains pending. No restored/GraphStarted event or BeforeStart callback runs, and ReadOutput provides no result. Use Runtime's returned error as the confirmed-failure verdict; a pending snapshot does not authorize continued execution or mean recovery succeeded.
+
 Host cancellation, exit, or reliable failure does not mark an otherwise active attempt as a business failure merely because execution was interrupted. Uncertain-save outcomes still follow the reloaded record. A node that cancels its local context and returns a real business error may still have a business failure to confirm. The presence of `context.Canceled` in an error chain alone cannot identify host interruption.
 
 ## Read outlets

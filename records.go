@@ -29,7 +29,7 @@ func (s *runState) openChildLocked(ctx context.Context, req pulse.CheckpointChil
 	if s.stopped != nil {
 		return nil, s.stopped
 	}
-	if err := checkContext(ctx); err != nil {
+	if err := checkCheckpointContext(ctx); err != nil {
 		return nil, err
 	}
 	root, _, err := s.rootAttempt(req.Attempt)
@@ -70,6 +70,9 @@ func (s *runState) openChildLocked(ctx context.Context, req pulse.CheckpointChil
 			return nil, err
 		}
 	}
+	if err := s.scopeFailure(req.Attempt); err != nil {
+		return nil, err
+	}
 	return s.decodeScope(req.Attempt)
 }
 
@@ -79,7 +82,7 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 	if s.stopped != nil {
 		return s.stopped
 	}
-	if err := checkContext(ctx); err != nil {
+	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
 	scope, ok := s.record.Scopes[req.Scope]

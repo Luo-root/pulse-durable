@@ -12,7 +12,7 @@ Use this page to decide what to do after Run/Resume fails. Identify reliable che
 | `durable.ErrConflict` | Existing RunID, or mismatched root recovery identity, Version, definition, or inputs; also registration and CAS conflicts | Check original contracts and the method; do not overwrite old records |
 | `*pulse.CheckpointError` | Reliable Store, Codec, recovery protocol, or callback operation fails | Stop this execution, resolve the cause, then reload the authoritative record with Resume |
 | Host cancellation or deadline | The current host context was actually canceled or expired | Recover the same run with a valid new context and the original compatible conditions |
-| Real business failure | A node or business Aspect returns a real error | Consume the existing Retry budget; Resume does not replenish it after final failure |
+| Real business failure | A node or business Aspect returns a real error; a confirmed scope failure returns `*pulse.CheckpointScopeFailure` during recovery (original error identity is not persisted) | Consume the existing Retry budget; Resume does not replenish it after final failure |
 
 A `CheckpointError` cause chain may also match `ErrConflict`, `context.Canceled`, or `pulse.ErrSkipped`. For example, a CAS conflict at a reliable-save boundary remains a reliable failure. Do not downgrade it to an ordinary argument conflict or normal skip. Normal root Run/Resume identity conflicts, missing records, and ownership contention retain their original categories.
 
