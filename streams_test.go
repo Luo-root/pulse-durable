@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -12,6 +13,209 @@ import (
 
 	"github.com/Luo-root/pulse"
 )
+
+func TestFailedStreamOwnerAtomicAndIdempotent(t *testing.T) {
+	p := newStreamProtocol(t)
+	ctx := context.Background()
+	if err := p.append(1); err != nil {
+		t.Fatal(err)
+	}
+	// A second reading group is another endpoint of the same writer root.
+	request := p.openRequest(false)
+	request.Group = "second"
+	sibling, err := p.s.openStream(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := pulse.CheckpointStreamFinish{Site: p.site, Attempt: p.source.Scope, Stream: p.input.Stream.ID,
+		Terminal: pulse.StreamFailed, LastSequence: 1, Cursor: 1}
+	before := p.s.record.Revision
+	if err := p.s.finishStream(ctx, finish); err != nil {
+		t.Fatal(err)
+	}
+	if p.s.record.Revision != before+1 || p.s.record.Attempts[p.source.Scope].State != AttemptFailed {
+		t.Fatal("terminal and source root were not one Save")
+	}
+	for _, stream := range p.s.record.Streams {
+		if stream.Stream.Attempt == p.source.Scope && stream.Stream.Terminal != "failed" {
+			t.Fatal("sibling stayed active")
+		}
+	}
+	if p.s.record.Attempts[p.processor.Scope].State != AttemptActive {
+		t.Fatal("another owner failed")
+	}
+	saved := cloneRecord(p.s.record)
+	if err := p.s.finishStream(ctx, finish); err != nil {
+		t.Fatal(err)
+	}
+	finish.Stream, finish.LastSequence, finish.Cursor = sibling.Stream.ID, 0, nil
+	if err := p.s.finishStream(ctx, finish); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.s.failAttempt(ctx, p.source.Scope); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(saved, p.s.record) {
+		t.Fatal("idempotent cleanup wrote again")
+	}
+	for name, mutate := range map[string]func(*pulse.CheckpointStreamFinish){
+		"generation": func(r *pulse.CheckpointStreamFinish) { r.Stream.Generation++ },
+		"sequence":   func(r *pulse.CheckpointStreamFinish) { r.LastSequence++ },
+		"cursor":     func(r *pulse.CheckpointStreamFinish) { r.Cursor = 2 },
+		"owner":      func(r *pulse.CheckpointStreamFinish) { r.Attempt = p.processor.Scope },
+		"site":       func(r *pulse.CheckpointStreamFinish) { r.Site.Graph = "wrong" },
+		"cancel":     func(r *pulse.CheckpointStreamFinish) { r.Terminal = pulse.StreamCanceled },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := finish
+			mutate(&bad)
+			if err := p.s.finishStream(ctx, bad); err == nil {
+				t.Fatal("invalid repeated finish accepted")
+			}
+		})
+	}
+	if _, err := p.s.openStream(ctx, p.openRequest(false)); err == nil {
+		t.Fatal("failed source reopened")
+	}
+	if err := p.append(2); err == nil {
+		t.Fatal("failed source appended")
+	}
+	if err := p.s.commitMessage(ctx, pulse.CheckpointMessageCommit{Scope: p.s.record.RootScope,
+		Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: 1}}}); err == nil {
+		t.Fatal("failed source acknowledged")
+	}
+	if !reflect.DeepEqual(saved, p.s.record) {
+		t.Fatal("rejected operation changed history")
+	}
+}
+
+func TestFailedStreamSaveFailureAndLegacyConvergence(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-save=%t", after), func(t *testing.T) {
+			p := newStreamProtocol(t)
+			ctx := context.Background()
+			saved := cloneRecord(p.s.record)
+			fault := errors.New("save unavailable")
+			p.s.session = &terminalFaultSession{Session: p.s.session, after: after, failure: fault}
+			err := p.s.finishStream(ctx, pulse.CheckpointStreamFinish{Site: p.site, Attempt: p.source.Scope,
+				Stream: p.input.Stream.ID, Terminal: pulse.StreamFailed})
+			if !errors.Is(err, fault) || !reflect.DeepEqual(saved, p.s.record) {
+				t.Fatal("uncertain Save advanced memory or lost error")
+			}
+			stored, err := p.s.session.Load(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := AttemptActive
+			if after {
+				want = AttemptFailed
+			}
+			if stored.Attempts[p.source.Scope].State != want {
+				t.Fatal("wrong authoritative Save outcome")
+			}
+		})
+	}
+	for _, terminal := range []string{"failed", "canceled", ""} {
+		t.Run("legacy-"+terminal, func(t *testing.T) {
+			p := newStreamProtocol(t)
+			key := streamKey(streamID(p.input.Stream.ID))
+			stream := p.s.record.Streams[key]
+			stream.Stream.Terminal = terminal
+			p.s.record.Streams[key] = stream
+			if err := p.s.save(context.Background(), cloneRecord(p.s.record)); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.s.validateLoaded(); err != nil {
+				t.Fatal(err)
+			}
+			before := cloneRecord(p.s.record)
+			if err := p.s.reconcileFailedStreams(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if terminal == "failed" {
+				if p.s.record.Attempts[p.source.Scope].State != AttemptFailed || p.s.record.Revision != before.Revision+1 {
+					t.Fatal("legacy failure not reconciled")
+				}
+			} else if !reflect.DeepEqual(before, p.s.record) || p.s.scopeFailure(before.RootScope) != nil {
+				t.Fatal("cancel/active became business failure")
+			}
+			stable := cloneRecord(p.s.record)
+			if err := p.s.reconcileFailedStreams(context.Background()); err != nil || !reflect.DeepEqual(stable, p.s.record) {
+				t.Fatal("reconciliation not idempotent")
+			}
+		})
+	}
+}
+
+func TestLegacyStreamRepairSaveOutcomeIsAuthoritative(t *testing.T) {
+	for _, after := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after-save=%t", after), func(t *testing.T) {
+			p := newStreamProtocol(t)
+			request := p.openRequest(false)
+			request.Group = "sibling"
+			sibling, err := p.s.openStream(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := streamKey(streamID(p.input.Stream.ID))
+			stream := p.s.record.Streams[key]
+			stream.Stream.Terminal = "failed"
+			p.s.record.Streams[key] = stream
+			if err := p.s.save(context.Background(), cloneRecord(p.s.record)); err != nil {
+				t.Fatal(err)
+			}
+			before := cloneRecord(p.s.record)
+			base := p.s.session
+			p.s.session = &terminalFaultSession{Session: base, after: after, failure: pulse.ErrSkipped}
+			if err := p.s.validateLoaded(); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.s.reconcileFailedStreams(context.Background()); !errors.Is(err, pulse.ErrSkipped) || p.s.stopped == nil || !reflect.DeepEqual(before, p.s.record) {
+				t.Fatalf("uncertain repair did not stop without advancing memory: %v", err)
+			}
+			stored, err := base.Load(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := AttemptActive
+			if after {
+				want = AttemptFailed
+			}
+			if stored.Attempts[p.source.Scope].State != want {
+				t.Fatal("repair claimed a Save that did not happen")
+			}
+			next := &runState{session: base, def: p.s.def, record: stored}
+			if err := next.validateLoaded(); err != nil {
+				t.Fatal(err)
+			}
+			if err := next.reconcileFailedStreams(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if next.record.Attempts[p.source.Scope].State != AttemptFailed || next.record.Streams[streamKey(streamID(sibling.Stream.ID))].Stream.Terminal != "failed" {
+				t.Fatal("repair left an active sibling")
+			}
+			stable := cloneRecord(next.record)
+			if err := next.reconcileFailedStreams(context.Background()); err != nil || !reflect.DeepEqual(stable, next.record) {
+				t.Fatal("authoritative repair repeated Save")
+			}
+		})
+	}
+}
+
+type terminalFaultSession struct {
+	Session
+	after   bool
+	failure error
+}
+
+func (s *terminalFaultSession) Save(ctx context.Context, record RunRecord, expected uint64) error {
+	if s.after {
+		if err := s.Session.Save(ctx, record, expected); err != nil {
+			return err
+		}
+	}
+	return s.failure
+}
 
 func TestConsumerCanConfirmBeforeItsStreamProducerCompletes(t *testing.T) {
 	confirmed := make(chan struct{})

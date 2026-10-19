@@ -381,6 +381,66 @@ func (s *failedAliasSession) Save(ctx context.Context, record durable.RunRecord,
 	return nil
 }
 
+func TestFailedAliasPartialHistoryCanAdvanceParentRetry(t *testing.T) {
+	for _, confirmRoot := range []bool{false, true} {
+		t.Run(fmt.Sprintf("root-failed=%t", confirmRoot), func(t *testing.T) {
+			base, signals := durable.NewMemoryStore(), newFailedAliasSignals(true)
+			fault := &failedAliasBoundaryStore{Store: &failedAliasStore{Store: base, signals: signals}, confirmRoot: confirmRoot}
+			runtime, err := durable.New(fault, durable.NewCodecs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			opts := durable.RunOptions{RunID: "failed-alias-partial", Version: "1"}
+			if _, err := runtime.Run(ctx, failedAliasGraph(t, signals, true), pulse.Inputs{}, opts); err == nil {
+				t.Fatal("failed-terminal fault did not fire")
+			}
+			if _, err := runtime.Resume(ctx, failedAliasGraph(t, signals, true), pulse.Inputs{}, opts); err != nil {
+				t.Fatalf("confirmed active alias must not mask the source's confirmed business failure: %v", err)
+			}
+		})
+	}
+}
+
+type failedAliasBoundaryStore struct {
+	durable.Store
+	confirmRoot bool
+	fired       atomic.Bool
+}
+
+type failedAliasBoundarySession struct {
+	durable.Session
+	owner *failedAliasBoundaryStore
+}
+
+func (s *failedAliasBoundaryStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
+	session, err := s.Store.Acquire(ctx, id)
+	return &failedAliasBoundarySession{Session: session, owner: s}, err
+}
+
+func (s *failedAliasBoundarySession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+	match := false
+	for _, stream := range record.Streams {
+		if stream.Stream.Terminal == "failed" && s.owner.fired.CompareAndSwap(false, true) {
+			match = true
+			if !s.owner.confirmRoot {
+				// Recreate the legacy partial format at a real Save boundary.
+				root := record.Attempts[stream.Stream.Attempt]
+				root.State = durable.AttemptActive
+				record.Attempts[stream.Stream.Attempt] = root
+			}
+		}
+	}
+	if err := s.Session.Save(ctx, record, expected); err != nil {
+		return err
+	}
+	if match {
+		return errors.New("after failed-terminal Save")
+	}
+	return nil
+}
+
 func TestFailedAliasHistoryDoesNotBlockSuccessfulRetryResume(t *testing.T) {
 	for _, scenario := range []struct {
 		name                  string

@@ -336,6 +336,95 @@ func TestParentRetryFailedScopeCannotReviveChildRecords(t *testing.T) {
 	}
 }
 
+func TestResumeFailedRootStopsBeforeRestoreOrStart(t *testing.T) {
+	store := NewMemoryStore()
+	g := testGraph(t, "failed-root")
+	output := pulse.NewKey[int]("out")
+	if err := g.DeclareOutput(pulse.NewPort(output)); err != nil {
+		t.Fatal(err)
+	}
+	var body, events, starts atomic.Int32
+	testAdd(t, g, pulse.NewNode("work", "", nil, pulse.Provides(output), func(*pulse.RunCtx) error {
+		body.Add(1)
+		return errors.New("final business failure")
+	}))
+	rt, opts := testRuntime(t, store, NewCodecs()), testOptions("run")
+	if _, err := rt.Run(context.Background(), g, pulse.Inputs{}, opts); err == nil {
+		t.Fatal("business failure lost")
+	}
+	before := readRecord(t, store, "run")
+	opts.OnEvent = func(Event) error { events.Add(1); return nil }
+	opts.BeforeStart = func(*pulse.Execution) error { starts.Add(1); return nil }
+	opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{GraphStarted: func(pulse.Site) { starts.Add(1) }})}
+	for i := 0; i < 2; i++ {
+		e, err := rt.Resume(context.Background(), g, pulse.Inputs{}, opts)
+		var signal *pulse.CheckpointScopeFailure
+		var checkpoint *pulse.CheckpointError
+		if !errors.As(err, &signal) || signal.Scope != before.RootScope || errors.As(err, &checkpoint) ||
+			e == nil || e.Snapshot().Graph.Status != pulse.GraphStatusPending || events.Load() != 0 || starts.Load() != 0 || body.Load() != 1 {
+			t.Fatalf("failed root invented Start/restore/retry: err=%v execution=%v", err, e != nil)
+		}
+		if _, state, err := pulse.ReadOutput(e, output); err == nil || state != "" {
+			t.Fatal("unstarted execution exposed output")
+		}
+		if !reflect.DeepEqual(before, readRecord(t, store, "run")) {
+			t.Fatal("exhausted Resume changed record")
+		}
+	}
+}
+
+func TestLegacyFailedStreamValidationPrecedesRepair(t *testing.T) {
+	for _, corruption := range []string{"none", "format-one", "association", "sibling-canceled"} {
+		t.Run(corruption, func(t *testing.T) {
+			p := newStreamProtocol(t)
+			key := streamKey(streamID(p.input.Stream.ID))
+			stream := p.s.record.Streams[key]
+			stream.Stream.Terminal = "failed"
+			p.s.record.Streams[key] = stream
+			if corruption == "format-one" {
+				p.s.record.Format = 1
+			}
+			if corruption == "association" {
+				stream.Stream.Attempt = p.processor.Scope
+				p.s.record.Streams[key] = stream
+			}
+			if corruption == "sibling-canceled" {
+				sibling := stream
+				sibling.Stream.ID.Group, sibling.Stream.Terminal = "other", "canceled"
+				p.s.record.Streams[streamKey(sibling.Stream.ID)] = sibling
+			}
+			// Test the Runtime entry, not a helper capable of repairing unvalidated data.
+			stored := cloneRecord(p.s.record)
+			store := NewMemoryStore()
+			store.records = map[string]RunRecord{"run": stored}
+			g := testGraph(t, "streams")
+			input, output, value := pulse.NewKey[pulse.Stream[int]]("input"), pulse.NewKey[pulse.Stream[int]]("output"), pulse.NewKey[int]("value")
+			var calls atomic.Int32
+			body := func(*pulse.RunCtx) error { calls.Add(1); return nil }
+			testAdd(t, g, pulse.NewNode("source", "", nil, pulse.Provides(input), body))
+			testAdd(t, g, pulse.NewNode("processor", "", pulse.Requires(input), pulse.Deps(pulse.Provides(output), pulse.Provides(value)), body))
+			testAdd(t, g, pulse.NewNode("sink", "", pulse.Requires(output), nil, body))
+			var events atomic.Int32
+			opts := RunOptions{RunID: "run", Version: "1", OnEvent: func(Event) error { events.Add(1); return nil }, BeforeStart: func(*pulse.Execution) error { calls.Add(1); return nil }}
+			_, err := testRuntime(t, store, NewCodecs()).Resume(context.Background(), g, pulse.Inputs{}, opts)
+			var checkpoint *pulse.CheckpointError
+			if corruption != "none" {
+				if !errors.As(err, &checkpoint) || checkpoint.Operation != "validate restore" || !reflect.DeepEqual(stored, readRecord(t, store, "run")) {
+					t.Fatalf("damaged history was guessed/repaired: %v", err)
+				}
+			} else {
+				var signal *pulse.CheckpointScopeFailure
+				if !errors.As(err, &signal) || errors.As(err, &checkpoint) {
+					t.Fatalf("legacy failure not restored: %v", err)
+				}
+			}
+			if calls.Load() != 0 || events.Load() != 0 {
+				t.Fatal("failed scope emitted events or entered business")
+			}
+		})
+	}
+}
+
 func TestWholeChainOuterFailureDoesNotCommit(t *testing.T) {
 	store := NewMemoryStore()
 	g := testGraph(t, "graph")

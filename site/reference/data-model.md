@@ -95,7 +95,11 @@ ready 恢复时会核对 Codec ID/版本、摘要格式与实际字节校验和�
 
 `StreamRecord` 的身份由 Scope/NodeID/Key/Group 和 Generation 构成，另存 SourceID/Resumable、LastSequence、AckedThrough、Pending 和 Cursor。Pending 按序保存仍需确认的消息，稀疏 Ack 不会把最大序号误当连续前沿。恢复一次提升一个代际，同轮重复 Open 认回同一代际；旧交付不能确认新代际。
 
-活跃来源必须显式可续读，业务从 `StreamWriter.Position()` 返回的位置开始并用 `SendAt` 保存新位置。completed 来源保留完整 NodeRecord，恢复只重建未确认尾部；已确认来源的尾部仍可 Ack。失败来源、失败祖先、伪造引用和未来代际均拒绝。
+活跃来源必须显式可续读，业务从 `StreamWriter.Position()` 返回的位置开始并用 `SendAt` 保存新位置。completed 来源保留完整 NodeRecord，恢复只重建未确认尾部；已确认来源的尾部仍可 Ack。失败来源仍拒绝 Open/Send/Ack，失败祖先、伪造引用和未来代际均拒绝。合法已确认的 Sub 别名可在历史身份、来源根已 failed 和有效祖先核验后，恢复为无消息、无 Open 的只读失败端点，让更深一层生产者的父链自行处理业务失败；这不重跑别名、不升级代际、不授权确认，也不接受 canceled 为业务失败。
+
+真实失败的 `Finish` 将实际写端根尝试和该根全部已打开流的 failed 终态在同一次 Save 中确认，不提前确认父 Sub 或父 Retry 的结论。Core 后续逐个 Finish 和 FailAttempt 只做严格幂等收尾；旧来源仍不得 Open、Send 或 Ack，位置、游标和代际不得改变。canceled 终态不是这条业务失败事实。
+
+旧格式 2 可能只保存部分 failed 终态而根仍 active。Resume 先完整校验全部历史，再以一次可靠 CAS 收敛仍有效作用域内同根全部端点和根失败；修复 Save 报错立即停止，由下次 Load 认回。不修改 confirmed/failed 祖先下的旧成果，不猜修损坏历史；同根 failed 与 canceled/成功终态混合视为不一致。普通格式 1 仍按原兼容路径，不允许增量字段。该修复不增加存储字段，也不补充任何 Retry 预算。
 
 `MessageAttemptRecord` 保存输入来源/组/序号、处理父尝试、Index/Limit 和状态；重启不补预算。`ManagedRecord.State` 是显式完整快照，Values 是已到达普通值。消息输入 Ack、状态、普通值和输出消息在一次整记录 CAS 中确认；失败只丢弃 proposed record，保存结果不确定时停止并由 Resume 重读。Stop 显式结束读取义务，不伪装逐条 Ack。外部副作用仍需要业务幂等、事务或 outbox。
 

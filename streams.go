@@ -35,7 +35,7 @@ func (s *runState) streamReady(ctx context.Context) error {
 	if s.stopped != nil {
 		return s.stopped
 	}
-	return checkContext(ctx)
+	return checkCheckpointContext(ctx)
 }
 
 func (s *runState) openStream(ctx context.Context, req pulse.CheckpointStreamOpen) (pulse.CheckpointStreamRecord, error) {
@@ -285,11 +285,111 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 	if err := s.streamReady(ctx); err != nil {
 		return err
 	}
+	// Core still finishes each output and then fails the root. Once a failed
+	// Finish has atomically closed the whole owner, only exact cleanup is valid.
+	key := streamKey(streamID(req.Stream))
+	stream, exists := s.record.Streams[key]
+	root := s.record.Attempts[req.Attempt]
+	if exists && root.State == AttemptFailed && req.Terminal == pulse.StreamFailed && stream.Stream.Terminal == string(pulse.StreamFailed) {
+		if stream.Stream.ID != streamID(req.Stream) || stream.Stream.Attempt != req.Attempt || root.Boundary != "" ||
+			root.Parent != req.Stream.Scope || root.NodeID != req.Stream.NodeID || stream.Stream.Graph != req.Site.Graph ||
+			stream.Stream.Path != req.Site.Path || stream.LastSequence != req.LastSequence {
+			return fmt.Errorf("durable: invalid repeated source finish")
+		}
+		if err := s.activeScope(root.Parent); err != nil {
+			return err
+		}
+		var cursor *ValueRecord
+		if req.Cursor != nil {
+			value, err := s.def.encodePayload("cursor", reflect.TypeOf(req.Cursor), req.Cursor)
+			if err != nil {
+				return err
+			}
+			cursor = &value
+		}
+		if !reflect.DeepEqual(cursor, stream.Cursor) {
+			return fmt.Errorf("durable: repeated source finish changed the last accepted cursor")
+		}
+		return nil
+	}
 	proposed := cloneRecord(s.record)
 	if err := s.applyFinish(&proposed, req, false); err != nil {
 		return err
 	}
+	if req.Terminal == pulse.StreamFailed {
+		if err := checkFailedStreamOwner(proposed, req.Attempt); err != nil {
+			return err
+		}
+		failStreamOwner(&proposed, req.Attempt)
+	}
 	return s.save(ctx, proposed)
+}
+
+// A failed terminal is a full-chain business verdict, not a reliable operation
+// error or host cancellation. All opened outputs share that owner verdict;
+// closing siblings here avoids partial multi-output recovery and needs no Core
+// API for sending/acknowledging an already failed source.
+func checkFailedStreamOwner(record RunRecord, id string) error {
+	for _, stream := range record.Streams {
+		if stream.Stream.Attempt == id && stream.Stream.Terminal != "" && stream.Stream.Terminal != string(pulse.StreamFailed) {
+			return fmt.Errorf("durable: failed source owner has inconsistent sibling terminals")
+		}
+	}
+	return nil
+}
+
+func failStreamOwner(record *RunRecord, id string) {
+	root := record.Attempts[id]
+	root.State = AttemptFailed
+	record.Attempts[id] = root
+	for key, stream := range record.Streams {
+		if stream.Stream.Attempt == id && stream.Stream.Terminal == "" {
+			stream.Stream.Terminal = string(pulse.StreamFailed)
+			record.Streams[key] = stream
+		}
+	}
+}
+
+// Only after complete history validation: legacy format-2 saves could persist
+// one failed output before the owner failure. Reconcile live scopes in one CAS;
+// confirmed/failed ancestor history stays untouched. Canceled is not evidence.
+func (s *runState) reconcileFailedStreams(ctx context.Context) error {
+	proposed := cloneRecord(s.record)
+	changed := false
+	for _, stream := range s.record.Streams {
+		root := s.record.Attempts[stream.Stream.Attempt]
+		if stream.Stream.Terminal != string(pulse.StreamFailed) || s.activeScope(root.Parent) != nil {
+			continue
+		}
+		if err := checkFailedStreamOwner(s.record, stream.Stream.Attempt); err != nil {
+			return err
+		}
+		if root.State == AttemptActive {
+			changed = true
+		}
+		for _, sibling := range s.record.Streams {
+			if sibling.Stream.Attempt == stream.Stream.Attempt && sibling.Stream.Terminal == "" {
+				changed = true
+			}
+		}
+		failStreamOwner(&proposed, stream.Stream.Attempt)
+	}
+	if !changed {
+		return nil
+	}
+	return s.save(ctx, proposed)
+}
+
+// The caller has validated the complete record and the requested live scope.
+// Only failed node roots are final scope failures; inner Retry failures and
+// canceled streams do not establish this fact or consume an ancestor's budget.
+func (s *runState) scopeFailure(scope string) error {
+	for _, attempt := range s.record.Attempts {
+		if attempt.Parent == scope && attempt.Boundary == "" && attempt.State == AttemptFailed {
+			return &pulse.CheckpointScopeFailure{Scope: scope}
+		}
+	}
+	return nil
 }
 
 // 引用可以早于实际来源的成功终态、读取组 Stop 或恢复升代际；每条历史仍须
@@ -362,6 +462,21 @@ func (s *runState) checkStreamReferenceRecord(record RunRecord, ref StreamDescri
 // Open 提升代际或稍后的 Stop 被倒改；差异不是两条来源，也不能靠放宽历史校验抹平。
 // 调用方持 runState.mu，或处于业务尚未启动的根恢复阶段。
 func (s *runState) restoreStreamReference(key pulse.CheckpointKey, historical StreamDescriptorRecord) (pulse.CheckpointStreamDescriptor, error) {
+	if stream, exists := s.record.Streams[streamKey(historical.ID)]; exists && stream.Stream.Terminal == string(pulse.StreamFailed) {
+		// A confirmed alias may live above the failing producer's Sub. Preserve
+		// that result as a read-only failed endpoint so intermediate parent
+		// chains can still catch/retry the actual producer; never reopen it.
+		if err := s.checkStreamReferenceRecord(s.record, historical, true); err != nil {
+			return pulse.CheckpointStreamDescriptor{}, err
+		}
+		if s.record.Attempts[stream.Stream.Attempt].State != AttemptFailed {
+			return pulse.CheckpointStreamDescriptor{}, fmt.Errorf("durable: failed reference lacks a confirmed failed source root")
+		}
+		if err := s.activeScope(stream.Stream.ID.Scope); err != nil {
+			return pulse.CheckpointStreamDescriptor{}, err
+		}
+		return s.def.decodeDescriptor(key, stream.Stream)
+	}
 	if err := s.checkStreamReference(s.record, historical); err != nil {
 		return pulse.CheckpointStreamDescriptor{}, err
 	}

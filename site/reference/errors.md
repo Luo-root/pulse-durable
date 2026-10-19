@@ -12,7 +12,7 @@
 | `durable.ErrConflict` | RunID 已存在，或根恢复身份、Version、定义、输入不一致；也用于注册或 CAS 冲突 | 核对原始契约与调用方式，不覆盖旧记录 |
 | `*pulse.CheckpointError` | Store、Codec、恢复协议或恢复回调的可靠操作失败 | 停止本次，处理原因；后续 Resume 重新读取权威记录 |
 | 宿主取消或到期 | 当前宿主 context 确实被取消或到期 | 用有效的新 context 恢复原运行；保留原身份与兼容条件 |
-| 真实业务失败 | 节点或业务切面返回真实错误 | 消耗已有 Retry 预算；最终失败不会通过 Resume 获得新预算 |
+| 真实业务失败 | 节点或业务切面返回真实错误；恢复已确认 scope 失败时返回 `*pulse.CheckpointScopeFailure`（不保存原错误身份） | 消耗已有 Retry 预算；最终失败不会通过 Resume 获得新预算 |
 
 一个 `CheckpointError` 的原因链仍可能匹配 `ErrConflict`、`context.Canceled` 或 `pulse.ErrSkipped`。例如 CAS 冲突发生在可靠保存边界时，它仍首先是可靠失败；不能降为普通参数冲突或正常跳过。根 Run/Resume 的正常身份冲突、记录不存在和占用保持原分类。
 

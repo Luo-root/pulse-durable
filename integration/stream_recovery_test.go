@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -505,6 +506,380 @@ func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
 		return parent
 	}
 	return g
+}
+
+type failedStreamCase struct {
+	Name                               string
+	Outputs, At                        int
+	Fault                              string
+	Retries                            int
+	Always, Nested                     bool
+	Alias, HostCancel, Catch, Indirect bool
+}
+
+// The barrier is Session.Save's real return, never a sleep between Core calls.
+// New multi-output failures cross every terminal threshold in one atomic Save.
+func TestFailedStreamRecoveryAcrossProcessExit(t *testing.T) {
+	cases := []failedStreamCase{
+		{Name: "root", Outputs: 1, At: 1, Fault: "root", Retries: 2},
+		{Name: "terminal", Outputs: 1, At: 1, Fault: "exit", Retries: 2},
+		{Name: "uncertain", Outputs: 1, At: 1, Fault: "uncertain", Retries: 2},
+		{Name: "multi-first", Outputs: 3, At: 1, Fault: "exit", Retries: 2},
+		{Name: "multi-third", Outputs: 3, At: 3, Fault: "exit", Retries: 2},
+		{Name: "multi-uncertain", Outputs: 3, At: 2, Fault: "uncertain", Retries: 2},
+		{Name: "not-saved", Outputs: 3, At: 1, Fault: "before", Retries: 2},
+		{Name: "legacy-first", Outputs: 3, At: 1, Fault: "legacy", Retries: 2},
+		{Name: "legacy-second", Outputs: 3, At: 2, Fault: "legacy", Retries: 2},
+		{Name: "constant", Outputs: 3, At: 1, Fault: "exit", Retries: 2, Always: true},
+		{Name: "constant-control", Outputs: 1, Retries: 2, Always: true},
+		{Name: "no-retry", Outputs: 1, At: 1, Fault: "exit", Always: true},
+		{Name: "nested", Outputs: 2, At: 1, Fault: "uncertain", Retries: 2, Always: true, Nested: true},
+		{Name: "confirmed-alias", Outputs: 1, At: 1, Fault: "exit", Retries: 2, Alias: true},
+		{Name: "legacy-alias", Outputs: 1, At: 1, Fault: "legacy", Retries: 2, Alias: true},
+		{Name: "parent-catch", Outputs: 1, At: 1, Fault: "exit", Retries: 2, Alias: true, Catch: true},
+		{Name: "legacy-catch", Outputs: 1, At: 1, Fault: "legacy", Retries: 2, Alias: true, Catch: true},
+		{Name: "indirect-alias", Outputs: 1, At: 1, Fault: "exit", Retries: 2, Alias: true, Indirect: true},
+		{Name: "host-cancel", Outputs: 2, Retries: 2, HostCancel: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			dir := t.TempDir()
+			err := failedStreamProcess(t, dir, tc, "run")
+			if tc.Fault == "exit" || tc.Fault == "root" || tc.Fault == "legacy" {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != crashExit {
+					t.Fatalf("did not reach Save return barrier: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			before := loadStreamRecord(t, dir)
+			failed := 0
+			for _, stream := range before.Streams {
+				if stream.Stream.Terminal == "failed" {
+					failed++
+				}
+				want := durable.AttemptFailed
+				if tc.Fault == "before" || tc.Fault == "legacy" || tc.HostCancel {
+					want = durable.AttemptActive
+				}
+				if got := before.Attempts[stream.Stream.Attempt].State; got != want {
+					t.Fatalf("barrier root=%s, want %s", got, want)
+				}
+			}
+			wantFailed := tc.Outputs
+			if tc.Fault == "" && tc.Always {
+				wantFailed *= tc.Retries
+			}
+			if tc.Fault == "legacy" {
+				wantFailed = tc.At
+			} else if tc.Fault == "before" || tc.HostCancel {
+				wantFailed = 0
+			}
+			if failed != wantFailed {
+				t.Fatalf("failed outputs=%d, want %d", failed, wantFailed)
+			}
+			t.Logf("exact barrier: rev=%d failed=%d/%d", before.Revision, failed, tc.Outputs)
+			for _, phase := range []string{"resume", "again"} {
+				if err := failedStreamProcess(t, dir, tc, phase); err != nil {
+					t.Fatalf("%s: %v", phase, err)
+				}
+			}
+			wantCalls := 2
+			if tc.Retries == 0 || tc.Catch {
+				wantCalls = 1
+			} else if tc.Nested {
+				wantCalls = 4
+			}
+			if got := callCount(dir, "failure-source"); got != wantCalls {
+				t.Fatalf("source calls=%d want=%d; failed owner reran or budget changed", got, wantCalls)
+			}
+			after := loadStreamRecord(t, dir)
+			maxIndex := 0
+			for _, attempt := range after.Attempts {
+				if attempt.Boundary != "" && attempt.Index > maxIndex {
+					maxIndex = attempt.Index
+				}
+			}
+			wantIndex := tc.Retries
+			if tc.Fault == "before" || tc.HostCancel || tc.Catch {
+				wantIndex = 1
+			}
+			if maxIndex != wantIndex {
+				t.Fatalf("Retry index=%d, want %d", maxIndex, wantIndex)
+			}
+		})
+	}
+}
+
+func failedStreamProcess(t *testing.T, dir string, tc failedStreamCase, phase string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	data, err := json.Marshal(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStreamProcessHelper$", "-test.count=1", "-test.timeout=10s")
+	cmd.Env = append(os.Environ(), "PULSE_FAILED_DIR="+dir, "PULSE_FAILED_CASE="+string(data), "PULSE_FAILED_PHASE="+phase)
+	output, err := cmd.CombinedOutput()
+	t.Logf("%s/%s: %s", tc.Name, phase, output)
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+	return err
+}
+
+func TestFailedStreamProcessHelper(t *testing.T) {
+	dir := os.Getenv("PULSE_FAILED_DIR")
+	if dir == "" {
+		return
+	}
+	var tc failedStreamCase
+	if err := json.Unmarshal([]byte(os.Getenv("PULSE_FAILED_CASE")), &tc); err != nil {
+		t.Fatal(err)
+	}
+	phase := os.Getenv("PULSE_FAILED_PHASE")
+	store, err := filestore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasSaved := make(chan struct{})
+	rt, err := durable.New(&failedStreamStore{Store: store, test: tc, first: phase == "run", aliasSaved: aliasSaved}, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	g := failedStreamGraph(t, dir, tc, aliasSaved, cancel)
+	opts := durable.RunOptions{RunID: "stream-run", Version: "failed-stream/1"}
+	var execution *pulse.Execution
+	if phase == "run" {
+		execution, err = rt.Run(ctx, g, pulse.Inputs{}, opts)
+	} else {
+		execution, err = rt.Resume(ctx, g, pulse.Inputs{}, opts)
+	}
+	var checkpoint *pulse.CheckpointError
+	if phase == "run" && (tc.Fault == "uncertain" || tc.Fault == "before") {
+		if !errors.As(err, &checkpoint) || !errors.Is(err, failedStreamSaveError) {
+			t.Fatalf("reliable Save failure did not stop execution: %v", err)
+		}
+		return
+	}
+	if phase == "run" && tc.HostCancel {
+		if err == nil || errors.As(err, &checkpoint) {
+			t.Fatalf("host cancellation became reliable failure or success: %v", err)
+		}
+		return
+	}
+	if tc.Always {
+		if err == nil || errors.As(err, &checkpoint) {
+			t.Fatalf("constant business failure became success/reliable failure: %v", err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if tc.Catch && phase != "run" {
+		value, state, err := pulse.ReadOutput(execution, pulse.NewKey[int]("result"))
+		if err != nil || state != pulse.SlotStateReady || value != 99 {
+			t.Fatalf("parent catch output=%d/%s/%v", value, state, err)
+		}
+	}
+}
+
+func failedStreamGraph(t *testing.T, dir string, tc failedStreamCase, aliasSaved <-chan struct{}, cancel context.CancelFunc) *pulse.Graph {
+	t.Helper()
+	graph := func(id string) *pulse.Graph {
+		g, err := pulse.New(id, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	add := func(g *pulse.Graph, n *pulse.Node) {
+		if err := g.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := graph("failed-child")
+	inputs := make([]pulse.Key[pulse.Stream[int]], tc.Outputs)
+	for i := range inputs {
+		inputs[i] = pulse.NewKey[pulse.Stream[int]](fmt.Sprintf("input%d", i))
+	}
+	result := pulse.NewKey[int]("result")
+	if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+		t.Fatal(err)
+	}
+	producer := g
+	if tc.Indirect {
+		producer = graph("indirect-source")
+		if err := producer.DeclareOutput(pulse.NewPort(inputs[0])); err != nil {
+			t.Fatal(err)
+		}
+		if err := pulse.Sub(g, "producer", "", []pulse.SubBind{pulse.Out(inputs[0], inputs[0])}, producer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(producer, pulse.NewNode("source", "", nil, pulse.Provides(inputs...), func(rc *pulse.RunCtx) error {
+		calls := logCall(dir, "failure-source")
+		for _, input := range inputs {
+			if _, err := pulse.OpenStream(rc, input, pulse.WithBuffer(1), pulse.WithStreamSource(input.Name(), true)); err != nil {
+				return err
+			}
+		}
+		if tc.Alias {
+			select {
+			case <-aliasSaved:
+			case <-rc.Context().Done():
+				return rc.Context().Err()
+			}
+		}
+		if tc.HostCancel && calls == 1 {
+			cancel()
+			return context.Canceled
+		}
+		if tc.Always || calls == 1 {
+			return errors.New("same source business failure")
+		}
+		return nil
+	}))
+	reads := append([]pulse.Key[pulse.Stream[int]](nil), inputs...)
+	if tc.Alias {
+		pass, inlet, alias := graph("failed-pass"), pulse.NewKey[pulse.Stream[int]]("inlet"), pulse.NewKey[pulse.Stream[int]]("alias")
+		if err := pass.DeclareInput(pulse.NewPort(inlet)); err != nil {
+			t.Fatal(err)
+		}
+		if err := pass.DeclareOutput(pulse.NewPort(inlet)); err != nil {
+			t.Fatal(err)
+		}
+		if err := pulse.Sub(g, "pass", "", []pulse.SubBind{pulse.In(inputs[0], inlet), pulse.Out(inlet, alias)}, pass); err != nil {
+			t.Fatal(err)
+		}
+		reads[0] = alias
+	}
+	add(g, pulse.NewNode("sink", "", pulse.Requires(reads...), pulse.Provides(result), func(rc *pulse.RunCtx) error {
+		for _, input := range reads {
+			stream, err := pulse.Get(rc, input)
+			if err != nil {
+				return err
+			}
+			if _, err := stream.Receive(rc); err != io.EOF {
+				return err
+			}
+		}
+		return pulse.Set(rc, result, 42)
+	}))
+	if tc.Retries == 0 {
+		return g
+	}
+	parent := graph("failed-parent")
+	if err := parent.DeclareOutput(pulse.NewPort(result)); err != nil {
+		t.Fatal(err)
+	}
+	aspects := []pulse.Aspect{pulse.Retry(tc.Retries, 0)}
+	if tc.Nested {
+		aspects = append(aspects, pulse.Retry(tc.Retries, 0))
+	}
+	if tc.Catch {
+		aspects = append(aspects, func(rc *pulse.RunCtx, next func(*pulse.RunCtx) error) error {
+			if err := next(rc); err != nil {
+				var checkpoint *pulse.CheckpointError
+				if errors.As(err, &checkpoint) {
+					return err
+				}
+				return pulse.Set(rc, result, 99)
+			}
+			return nil
+		})
+	}
+	if err := pulse.Sub(parent, "mount", "", []pulse.SubBind{pulse.Out(result, result)}, g, aspects...); err != nil {
+		t.Fatal(err)
+	}
+	return parent
+}
+
+var failedStreamSaveError = errors.New("lost failed-terminal acknowledgement")
+
+type failedStreamStore struct {
+	durable.Store
+	test       failedStreamCase
+	first      bool
+	aliasSaved chan struct{}
+	aliasOnce  atomic.Bool
+}
+
+type failedStreamSession struct {
+	durable.Session
+	owner *failedStreamStore
+}
+
+func (s *failedStreamStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
+	session, err := s.Store.Acquire(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &failedStreamSession{Session: session, owner: s}, nil
+}
+
+func (s *failedStreamSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+	tc := s.owner.test
+	keys := make([]string, 0)
+	for key, stream := range record.Streams {
+		if stream.Stream.Terminal == "failed" {
+			keys = append(keys, key)
+		}
+	}
+	match := s.owner.first && tc.Fault != "" && len(keys) >= tc.At
+	if match && tc.Fault == "root" {
+		match = record.Attempts[record.Streams[keys[0]].Stream.Attempt].State == durable.AttemptFailed
+	}
+	if match {
+		s.owner.first = false
+		if tc.Fault == "before" {
+			return failedStreamSaveError
+		}
+		if tc.Fault == "legacy" {
+			// Explicit compatibility fixture: emulate the prior legal kth Finish
+			// Save. This is not claimed to be a healthy filestore losing fields.
+			for i, key := range sortedStreamKeys(record.Streams) {
+				stream := record.Streams[key]
+				if i >= tc.At {
+					stream.Stream.Terminal = ""
+					record.Streams[key] = stream
+				}
+				root := record.Attempts[stream.Stream.Attempt]
+				root.State = durable.AttemptActive
+				record.Attempts[stream.Stream.Attempt] = root
+			}
+		}
+	}
+	if err := s.Session.Save(ctx, record, expected); err != nil {
+		return err
+	}
+	if tc.Alias {
+		for _, scope := range record.Scopes {
+			if _, exists := scope.Nodes["pass"]; exists && s.owner.aliasOnce.CompareAndSwap(false, true) {
+				close(s.owner.aliasSaved)
+			}
+		}
+	}
+	if match {
+		fmt.Printf("exact Save return: rev=%d failed=%d root=%s\n", record.Revision, len(keys), record.Attempts[record.Streams[keys[0]].Stream.Attempt].State)
+		if tc.Fault == "uncertain" {
+			return failedStreamSaveError
+		}
+		os.Exit(crashExit)
+	}
+	return nil
+}
+
+func sortedStreamKeys(streams map[string]durable.StreamRecord) []string {
+	keys := make([]string, 0, len(streams))
+	for key := range streams {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type streamInjectedStore struct {

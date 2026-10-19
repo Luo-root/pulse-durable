@@ -83,6 +83,11 @@ func (s *runState) validateStreams() error {
 		} else if owner.State == AttemptConfirmed {
 			return fmt.Errorf("durable: confirmed source has no successful stream terminal")
 		}
+		if record.Stream.Terminal == string(pulse.StreamFailed) {
+			if err := checkFailedStreamOwner(r, record.Stream.Attempt); err != nil {
+				return err
+			}
+		}
 	}
 	groups := make(map[string]map[int]MessageAttemptRecord)
 	for id, message := range r.Messages {
