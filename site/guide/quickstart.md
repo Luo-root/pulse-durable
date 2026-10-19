@@ -10,7 +10,7 @@
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@baccccb80f5e
+go get github.com/Luo-root/pulse-durable@8372486cafd5
 ```
 
 如果已经按[安装](installation.md)创建模块，直接在那个模块目录继续。Durable 尚无正式 release，本教程固定使用公开开发修订。
