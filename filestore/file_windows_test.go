@@ -61,6 +61,32 @@ func TestWindowsReplaceFailurePreservesRecordAndCleansTemporary(t *testing.T) {
 	}
 }
 
+func TestWindowsTemporaryCleanupFailureReleasesLock(t *testing.T) {
+	store := newTestStore(t)
+	temporary := createTestTemporary(t, store, "run")
+	t.Run("denied-delete", func(t *testing.T) {
+		openWithoutDeleteSharing(t, temporary, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE)
+		for range 2 {
+			session, err := store.Acquire(context.Background(), "run")
+			if session != nil {
+				_ = session.Close()
+			}
+			// 重试仍得到真实共享冲突，不能因上次清理失败泄漏锁而变为 ErrBusy。
+			if session != nil || !errors.Is(err, syscall.Errno(32)) || errors.Is(err, durable.ErrBusy) {
+				t.Fatalf("Acquire with undeletable temporary: session=%v err=%v", session, err)
+			}
+		}
+		if _, err := os.Stat(temporary); err != nil {
+			t.Fatalf("failed cleanup changed temporary: %v", err)
+		}
+	})
+	// 子测试的句柄已关闭，下一次取得锁应清理成功。
+	acquireTestSession(t, store, "run")
+	if _, err := os.Stat(temporary); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary survived after delete sharing was restored: %v", err)
+	}
+}
+
 func TestWindowsDeniedReadIsNotMissing(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")

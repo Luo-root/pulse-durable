@@ -6,7 +6,7 @@ Use this page to decide what to do after Run/Resume fails. Identify reliable che
 
 | Category | Detection and scenarios | Action |
 | --- | --- | --- |
-| Argument or definition error | Nil Runtime/context/graph, empty RunID/Version, invalid RunID UTF-8, invalid graph, missing Codec, unsupported type, or streaming declaration | Fix the call or configuration; these preflight contract errors are not CheckpointError |
+| Argument or definition error | Nil Runtime/context/graph, empty RunID/Version, invalid RunID/Version UTF-8, invalid graph, missing Codec, unsupported type, or streaming declaration | Fix the call or configuration; these preflight contract errors are not CheckpointError |
 | `durable.ErrBusy` | An active session owns the RunID during Acquire | Coordinate with the existing owner; Acquire does not wait, and deleting lock files does not resolve contention |
 | `durable.ErrNotFound` | Resume loads a RunID with no record | Check storage and identity; use Run for genuinely new work |
 | `durable.ErrConflict` | Existing RunID, or mismatched root recovery identity, Version, definition, or inputs; also registration and CAS conflicts | Check original contracts and the method; do not overwrite old records |

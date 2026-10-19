@@ -29,7 +29,8 @@ func New(store Store, codecs *Codecs) (*Runtime, error) {
 }
 
 // RunOptions 是本次执行的宿主契约。RunID 和 Version 显式必填。
-// RunID 是有效 UTF-8 文本；非法身份在访问 Store 之前按参数错误拒绝。
+// RunID 和 Version 是有效 UTF-8 文本；非法文本在访问 Store 之前按参数错误拒绝。
+// Version 由宿主定义，不要求 SemVer 格式。
 // 函数、闭包、固定绑定值、Aspect 顺序/参数/语义变化由业务 Version 负责。
 type RunOptions struct {
 	RunID       string
@@ -79,6 +80,9 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 	}
 	if !utf8.ValidString(opts.RunID) {
 		return nil, fmt.Errorf("durable: run ID must be valid UTF-8")
+	}
+	if !utf8.ValidString(opts.Version) {
+		return nil, fmt.Errorf("durable: business version must be valid UTF-8")
 	}
 	d, err := inspectDefinition(g, r.codecs.snapshot())
 	if err != nil {

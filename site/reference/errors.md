@@ -6,7 +6,7 @@
 
 | 类别 | 判定与场景 | 处理方式 |
 | --- | --- | --- |
-| 参数或定义错误 | nil Runtime/context/图、空 RunID/Version、非法 RunID UTF-8、无效图、缺少 Codec、不支持的类型或流式声明 | 修正调用或配置；这些前置契约错误不归为 CheckpointError |
+| 参数或定义错误 | nil Runtime/context/图、空 RunID/Version、非法 RunID/Version UTF-8、无效图、缺少 Codec、不支持的类型或流式声明 | 修正调用或配置；这些前置契约错误不归为 CheckpointError |
 | `durable.ErrBusy` | Acquire 时同一 RunID 已有活动会话 | 由宿主协调现有所有者；Acquire 不等待，不能删除锁文件解除占用 |
 | `durable.ErrNotFound` | Resume 加载时没有该 RunID 的记录 | 核对存储与身份；确实是新业务时使用 Run |
 | `durable.ErrConflict` | RunID 已存在，或根恢复身份、Version、定义、输入不一致；也用于注册或 CAS 冲突 | 核对原始契约与调用方式，不覆盖旧记录 |

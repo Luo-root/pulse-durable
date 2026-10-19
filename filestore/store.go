@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -53,6 +55,7 @@ func New(dir string) (*Store, error) {
 // 同一运行已被本进程或另一进程持有时返回 durable.ErrBusy。
 // runID 必须是非空 UTF-8 字符串，按原文的 SHA-256 定位文件，不将其作为路径使用。
 // 锁保持到 Session.Close 或进程退出；锁文件保留，避免替换锁文件产生两个独占域。
+// 取得锁后清理本运行遗留的暂存文件；JSON 记录始终是唯一权威，清理失败返回错误。
 func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
@@ -77,6 +80,9 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	if err := checkContext(ctx); err != nil {
 		return nil, errors.Join(err, unlockFile(lock), lock.Close())
 	}
+	if err := removeStaleTemporaries(s.dir, base); err != nil {
+		return nil, errors.Join(err, unlockFile(lock), lock.Close())
+	}
 	return &session{
 		dir:   s.dir,
 		path:  filepath.Join(s.dir, base+".json"),
@@ -95,6 +101,37 @@ func checkContext(ctx context.Context) error {
 func fileBase(runID string) string {
 	sum := sha256.Sum256([]byte(runID))
 	return hex.EncodeToString(sum[:])
+}
+
+// removeStaleTemporaries 只在持有 base 对应的运行锁时调用，不认回未提交的记录。
+func removeStaleTemporaries(dir, base string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("filestore: list temporary records: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		random, ok := strings.CutPrefix(entry.Name(), base+"-")
+		if !ok {
+			continue
+		}
+		random, ok = strings.CutSuffix(random, ".tmp")
+		if !ok {
+			continue
+		}
+		// Go 1.25 的 os.CreateTemp 使用无前导零的 uint32 十进制随机数。
+		// 严格匹配实际生成格式，避免清理名字相近的调用方文件。
+		number, err := strconv.ParseUint(random, 10, 32)
+		if err != nil || strconv.FormatUint(number, 10) != random {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("filestore: remove temporary record: %w", err)
+		}
+	}
+	return nil
 }
 
 // session 的全部操作串行执行；Close 与正在进行的读写互斥。

@@ -44,6 +44,22 @@ func acquireTestSession(t *testing.T, store *Store, runID string) durable.Sessio
 	return session
 }
 
+func createTestTemporary(t *testing.T, store *Store, runID string) string {
+	t.Helper()
+	file, err := os.CreateTemp(store.dir, fileBase(runID)+"-*.tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("uncommitted temporary data"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return file.Name()
+}
+
 func requireBusy(t *testing.T, store *Store, runID string) {
 	t.Helper()
 	result := make(chan error, 1)
@@ -143,6 +159,87 @@ func TestAcquireIndependentStoresAndRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	acquireTestSession(t, second, "a")
+}
+
+func TestAcquireCleansOnlyRunTemporaries(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	initial := acquireTestSession(t, store, "run")
+	if err := initial.Save(ctx, testRecord("run"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	base := fileBase("run")
+	lockPath := filepath.Join(store.dir, base+".lock")
+	lockBefore, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 另一个运行仍在持锁写入；取得 run 的锁不得动它的暂存文件。
+	acquireTestSession(t, store, "other")
+	otherTemporary := createTestTemporary(t, store, "other")
+	removed := []string{createTestTemporary(t, store, "run")}
+	for _, random := range []string{"0", "1", "4294967295"} {
+		path := filepath.Join(store.dir, base+"-"+random+".tmp")
+		if err := os.WriteFile(path, []byte("stale"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		removed = append(removed, path)
+	}
+	preserved := map[string][]byte{}
+	for _, path := range []string{filepath.Join(store.dir, base+".json"), otherTemporary} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preserved[path] = data
+	}
+	// 空、符号、前导零、越界、非十进制及近似前后缀都不是 CreateTemp 的格式。
+	names := []string{base + "-.tmp", base + "--1.tmp", base + "-+1.tmp", base + "-01.tmp",
+		base + "-00.tmp", base + "-0000000001.tmp", base + "-4294967296.tmp", base + "-1e3.tmp",
+		base + "-1x.tmp", base + "-1.0.tmp", base + "-１.tmp", base + "-name.tmp",
+		base + "-73.tmp.bak", base + "-74.TMP", base + "-75.json", base + "-76.lock",
+		base[:63] + "-77.tmp", base + "0-78.tmp", "prefix-" + base + "-79.tmp",
+		strings.ToUpper(base) + "-80.tmp"}
+	for _, name := range names {
+		path := filepath.Join(store.dir, name)
+		data := []byte("caller-owned: " + name)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		preserved[path] = data
+	}
+	// 清理只处理同目录普通文件，不递归，也不删除同名目录。
+	directory := filepath.Join(store.dir, base+"-4444.tmp")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(directory, base+"-81.tmp")
+	if err := os.WriteFile(nested, []byte("nested"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	preserved[nested] = []byte("nested")
+	acquireTestSession(t, store, "run")
+	if got, err := os.ReadFile(otherTemporary); err != nil || !bytes.Equal(got, preserved[otherTemporary]) {
+		t.Fatalf("Acquire touched another run's active temporary: %v", err)
+	}
+	for _, path := range removed {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale temporary %s survived Acquire: %v", filepath.Base(path), err)
+		}
+	}
+	for path, want := range preserved {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("Acquire changed caller/other-run file %s: %v", filepath.Base(path), err)
+		}
+	}
+	lockAfter, err := os.Stat(lockPath)
+	if err != nil || !os.SameFile(lockBefore, lockAfter) {
+		t.Fatalf("cleanup replaced the lock file: %v", err)
+	}
 }
 
 func TestSaveCASAndCompleteRecord(t *testing.T) {
@@ -404,66 +501,131 @@ func helperCommand(ctx context.Context, executable, mode, dir, runID string) *ex
 }
 
 func TestProcessExitReleasesLockAndKeepsRecord(t *testing.T) {
-	store := newTestStore(t)
-	runID := "真实进程/../运行"
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	for _, mode := range []string{"hold-and-exit", "stage-and-exit"} {
+		t.Run(mode, func(t *testing.T) {
+			store := newTestStore(t)
+			runID := "真实进程/../运行"
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			writer := helperCommand(ctx, executable, mode, store.dir, runID)
+			input, err := writer.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := writer.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			writer.Stderr = &stderr
+			if err := writer.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			defer func() {
+				cancel()
+				_ = input.Close()
+				if !waited {
+					_ = writer.Wait()
+				}
+			}()
+			ready, err := bufio.NewReader(output).ReadString('\n')
+			if err != nil || ready != "locked-and-saved\n" {
+				t.Fatalf("writer did not confirm held lock and saved record: %v", err)
+			}
+			var temporary string
+			if mode == "stage-and-exit" {
+				paths, err := filepath.Glob(filepath.Join(store.dir, fileBase(runID)+"-*.tmp"))
+				if err != nil || len(paths) != 1 {
+					t.Fatalf("writer did not stage exactly one temporary: %v; paths=%v", err, paths)
+				}
+				temporary = paths[0]
+				data, err := os.ReadFile(temporary)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var staged durable.RunRecord
+				if err := json.Unmarshal(data, &staged); err != nil || !reflect.DeepEqual(staged, stagedTestRecord(runID)) {
+					t.Fatalf("temporary is not the complete uncommitted record: %v", err)
+				}
+			}
+			// 在子进程仍持有锁时竞争，不能借清理删除它正在提交的暂存文件。
+			requireBusy(t, store, runID)
+			independent := acquireTestSession(t, store, "other-process-run")
+			if err := independent.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if temporary != "" {
+				if _, err := os.Stat(temporary); err != nil {
+					t.Fatalf("competing Acquire removed an active temporary: %v", err)
+				}
+			}
+			if err := input.Close(); err != nil {
+				t.Fatal(err)
+			}
+			err = writer.Wait()
+			waited = true
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != crashCode {
+				t.Fatalf("writer exit = %v; want os.Exit(%d); stderr: %s", err, crashCode, stderr.String())
+			}
+			// os.Exit 不运行 Save 的 defer；真正的崩溃遗留须在下次 Acquire 前仍存在。
+			if temporary != "" {
+				if _, err := os.Stat(temporary); err != nil {
+					t.Fatalf("controlled exit did not leave its temporary: %v", err)
+				}
+			}
+			reader := helperCommand(ctx, executable, "load-and-save", store.dir, runID)
+			if output, err := reader.CombinedOutput(); err != nil {
+				t.Fatalf("new process could not clean, load and save: %v; output: %s", err, output)
+			}
+			if temporary != "" {
+				if _, err := os.Stat(temporary); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("new process left the crashed writer's temporary: %v", err)
+				}
+			}
+			// 第二个进程也不调用 Close；权威 JSON 仍保留旧成果，没有认回暂存内容。
+			record, err := acquireTestSession(t, store, runID).Load(context.Background())
+			want := testRecord(runID)
+			want.Revision = 2
+			if err != nil || !reflect.DeepEqual(record, want) {
+				t.Fatalf("record did not survive process exit and replacement: %v", err)
+			}
+		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	writer := helperCommand(ctx, executable, "hold-and-exit", store.dir, runID)
-	input, err := writer.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err := writer.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stderr bytes.Buffer
-	writer.Stderr = &stderr
-	if err := writer.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := false
-	defer func() {
-		cancel()
-		_ = input.Close()
-		if !waited {
-			_ = writer.Wait()
+}
+
+func stagedTestRecord(runID string) durable.RunRecord {
+	record := testRecord(runID)
+	record.Revision = 2
+	record.Version = "uncommitted version"
+	record.Scopes["scope"].Nodes["node"].Outputs[0].Data = []byte("uncommitted private value")
+	return record
+}
+
+// Save 的第三次取消检查位于暂存文件 Sync/Close 后、replaceFile 前。
+// 只在子进程的这次调用中暂停并 os.Exit，真实绕过 defer，不增加生产测试钩子。
+type exitBeforeReplaceContext struct {
+	context.Context
+	checks int
+}
+
+func (c *exitBeforeReplaceContext) Err() error {
+	c.checks++
+	if c.checks == 3 {
+		if _, err := io.WriteString(os.Stdout, "locked-and-saved\n"); err != nil {
+			os.Exit(59)
 		}
-	}()
-	ready, err := bufio.NewReader(output).ReadString('\n')
-	if err != nil || ready != "locked-and-saved\n" {
-		t.Fatalf("writer did not confirm held lock and saved record: %v", err)
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			os.Exit(60)
+		}
+		os.Exit(crashCode)
 	}
-	// 在子进程仍持有锁时竞争，防止只有进程内互斥的实现冒充操作系统锁。
-	requireBusy(t, store, runID)
-	independent := acquireTestSession(t, store, "other-process-run")
-	if err := independent.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := input.Close(); err != nil {
-		t.Fatal(err)
-	}
-	err = writer.Wait()
-	waited = true
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != crashCode {
-		t.Fatalf("writer exit = %v; want os.Exit(%d); stderr: %s", err, crashCode, stderr.String())
-	}
-	reader := helperCommand(ctx, executable, "load-and-save", store.dir, runID)
-	if output, err := reader.CombinedOutput(); err != nil {
-		t.Fatalf("new process could not acquire and load: %v; output: %s", err, output)
-	}
-	// 第二个进程也不调用 Close，再次确认退出释放句柄，并保留替换后的记录。
-	record, err := acquireTestSession(t, store, runID).Load(context.Background())
-	want := testRecord(runID)
-	want.Revision = 2
-	if err != nil || !reflect.DeepEqual(record, want) {
-		t.Fatalf("record did not survive process exit and replacement: %v", err)
-	}
+	return c.Context.Err()
 }
 
 func TestFilestoreProcessHelper(t *testing.T) {
@@ -481,9 +643,14 @@ func TestFilestoreProcessHelper(t *testing.T) {
 		os.Exit(52)
 	}
 	switch mode {
-	case "hold-and-exit":
+	case "hold-and-exit", "stage-and-exit":
 		if err := session.Save(context.Background(), testRecord(runID), 0); err != nil {
 			os.Exit(53)
+		}
+		if mode == "stage-and-exit" {
+			ctx := &exitBeforeReplaceContext{Context: context.Background()}
+			_ = session.Save(ctx, stagedTestRecord(runID), 1)
+			os.Exit(61) // 未到达预定退出点就是故障注入失败。
 		}
 		if _, err := io.WriteString(os.Stdout, "locked-and-saved\n"); err != nil {
 			os.Exit(54)
@@ -493,9 +660,18 @@ func TestFilestoreProcessHelper(t *testing.T) {
 		}
 		os.Exit(crashCode) // 刻意不 Close，证明操作系统在进程退出时释放锁。
 	case "load-and-save":
+		paths, err := filepath.Glob(filepath.Join(store.dir, fileBase(runID)+"-*.tmp"))
+		if err != nil || len(paths) != 0 {
+			os.Exit(62)
+		}
 		record, err := session.Load(context.Background())
 		if err != nil || !reflect.DeepEqual(record, testRecord(runID)) {
 			os.Exit(56)
+		}
+		future := record
+		future.Revision = 3
+		if err := session.Save(context.Background(), future, 2); !errors.Is(err, durable.ErrConflict) {
+			os.Exit(63)
 		}
 		record.Revision = 2
 		if err := session.Save(context.Background(), record, 1); err != nil {
