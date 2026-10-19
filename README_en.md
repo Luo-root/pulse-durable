@@ -21,7 +21,7 @@ Outputs are published to downstream nodes after storage confirms the checkpoint 
 Requires **Go 1.25 or later**. Durable is currently a development version with no formal release. Pin the public development revision for reproducible installation:
 
 ```sh
-go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
+go get github.com/Luo-root/pulse-durable@baccccb80f5e
 ```
 
 That revision's `go.mod` pins Pulse `v0.4.2-0.20261016133921-f9f071a07499`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
