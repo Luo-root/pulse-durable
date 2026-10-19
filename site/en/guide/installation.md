@@ -20,10 +20,10 @@ Run these commands where you want to keep the example. You may choose a differen
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@bd38ad7ab69f
+go get github.com/Luo-root/pulse-durable@baccccb80f5e
 ```
 
-Durable has no formal release yet. This command pins a public development revision. Go resolves it to a pseudo-version and writes that version to `go.mod`. It is not a released `v0.1`.
+Durable has no formal release yet. This command pins a public development revision. Go resolves it to pseudo-version `v0.0.0-20261019064914-baccccb80f5e` and writes that version to `go.mod`. It is not a released `v0.1`.
 
 The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's isolated benchmark module is not an official backend and does not satisfy that prerequisite.
 
@@ -43,7 +43,7 @@ Run:
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-In the new module created above, expect a development pseudo-version for Durable and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
+In the new module created above, expect Durable `v0.0.0-20261019064914-baccccb80f5e` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
 
 If your machine uses `go.work` and you want to check this module independently, temporarily disable the workspace. In PowerShell:
 
