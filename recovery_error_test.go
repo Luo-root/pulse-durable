@@ -3,10 +3,13 @@ package durable_test
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Luo-root/pulse"
@@ -471,6 +474,60 @@ func TestRuntimeRunIDValidationBeforeStore(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type inspectionPanicError struct {
+	method string
+	exec   *pulse.Execution
+}
+
+func (*inspectionPanicError) Error() string { return "error inspection" }
+func (e *inspectionPanicError) inspect(method string) {
+	_ = e.exec.Err()
+	_ = e.exec.Snapshot()
+	if e.method == method {
+		panic("error method panic")
+	}
+}
+func (e *inspectionPanicError) Is(error) bool { e.inspect("Is"); return false }
+func (e *inspectionPanicError) As(any) bool   { e.inspect("As"); return false }
+func (e *inspectionPanicError) Unwrap() error { e.inspect("Unwrap"); return nil }
+
+// A hostile diagnostic object must fail one node, not terminate the host.
+// Is/As/Unwrap reenter inspection synchronously; no recursive Wait is involved.
+func TestRuntimeErrorInspectionPanicIsContained(t *testing.T) {
+	if method := os.Getenv("PULSE_DURABLE_INSPECT_METHOD"); method != "" {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		store := durable.NewMemoryStore()
+		g := recoveryGraph(t, "error-inspection")
+		cause := &inspectionPanicError{method: method}
+		recoveryAdd(t, g, pulse.NewNode("work", "", nil, nil, func(*pulse.RunCtx) error { return cause }))
+		opts := recoveryOptions("run")
+		opts.BeforeStart = func(e *pulse.Execution) error { cause.exec = e; return nil }
+		e, err := recoveryRuntime(t, store, durable.NewCodecs()).Run(ctx, g, pulse.Inputs{}, opts)
+		r := recoveryRecord(t, store, "run")
+		if err == nil || !strings.Contains(err.Error(), "panic") || e.Snapshot().Graph.Status != pulse.GraphStatusFailed || len(r.Attempts) != 1 || len(r.Scopes[r.RootScope].Nodes) != 0 {
+			t.Fatalf("inspection panic escaped node failure: err=%v attempts=%+v", err, r.Attempts)
+		}
+		for _, attempt := range r.Attempts {
+			if attempt.State != durable.AttemptFailed {
+				t.Fatalf("panic did not confirm one root failure: %+v", attempt)
+			}
+		}
+		return
+	}
+	for _, method := range []string{"Is", "As", "Unwrap"} {
+		t.Run(method, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRuntimeErrorInspectionPanicIsContained$", "-test.count=1", "-test.timeout=8s")
+			cmd.Env = append(os.Environ(), "PULSE_DURABLE_INSPECT_METHOD="+method, "GORACE=atexit_sleep_ms=0")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("error method killed or hung the host: %v\n%s", err, output)
+			}
+		})
 	}
 }
 

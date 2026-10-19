@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,169 @@ func TestCheckpointRecoveryAcrossProcessExit(t *testing.T) {
 			}
 			t.Logf("real exit/restart: body calls=%v, output=%d, revision=%d→%d", tc.counts, tc.expected, before.Revision, after.Revision)
 		})
+	}
+}
+
+// Run returns and closes the real filestore session before the process exits.
+// Each Resume uses a new process; the call file only observes business entries.
+func TestExecutionFailureBudgetAcrossProcessExit(t *testing.T) {
+	for _, kind := range []string{"mixed-skip", "cancel-nil", "cancel-skip"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			if kind != "mixed-skip" {
+				if err := os.WriteFile(filepath.Join(dir, "interrupt.request"), []byte("pending"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dependencyRecoveryProcess(t, dir, kind, "run")
+			before := loadRecord(t, dir)
+			calls := callCount(dir, "work")
+			failed, active := 0, 0
+			for _, attempt := range before.Attempts {
+				if attempt.State == durable.AttemptFailed {
+					failed++
+				}
+				if attempt.State == durable.AttemptActive {
+					active++
+				}
+			}
+			if kind == "mixed-skip" {
+				if failed != 3 || active != 0 || calls != 2 || len(before.Scopes[before.RootScope].Nodes) != 0 {
+					t.Errorf("real failure became skip or lost Retry budget: active=%d failed=%d calls=%d", active, failed, calls)
+				}
+			} else if active != 1 || failed != 0 || calls != 1 || len(before.Scopes[before.RootScope].Nodes) != 0 {
+				t.Errorf("local Cancel consumed persistent root budget: active=%d failed=%d calls=%d", active, failed, calls)
+			}
+			dependencyRecoveryProcess(t, dir, kind, "resume")
+			after := loadRecord(t, dir)
+			if before.RootScope != after.RootScope || len(before.Attempts) != len(after.Attempts) {
+				t.Fatal("Resume allocated a new root or refreshed Retry budget")
+			}
+			for id, old := range before.Attempts {
+				next, ok := after.Attempts[id]
+				if !ok || old.Parent != next.Parent || old.Index != next.Index || old.Limit != next.Limit {
+					t.Fatal("Resume replaced a persisted attempt identity")
+				}
+			}
+			if kind == "mixed-skip" {
+				if !reflect.DeepEqual(before, after) || callCount(dir, "work") != 2 {
+					t.Error("Resume reran exhausted failure or changed its history")
+				}
+			} else {
+				node, ok := after.Scopes[after.RootScope].Nodes["work"]
+				if !ok || node.Reason != "completed" || after.Attempts[node.Attempt].State != durable.AttemptConfirmed || after.Revision <= before.Revision || callCount(dir, "work") != 2 {
+					t.Error("active interrupted root did not resume and confirm once")
+				}
+			}
+			dependencyRecoveryProcess(t, dir, kind, "resume")
+			if final := loadRecord(t, dir); !reflect.DeepEqual(after, final) || callCount(dir, "work") != 2 {
+				t.Error("repeated Resume changed completed/exhausted history")
+			}
+		})
+	}
+}
+
+func dependencyRecoveryProcess(t *testing.T, dir, kind, phase string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestDependencyRecoveryProcessHelper$", "-test.count=1", "-test.timeout=12s")
+	cmd.Env = append(os.Environ(), "PULSE_DEPENDENCY_DIR="+dir, "PULSE_DEPENDENCY_CASE="+kind, "PULSE_DEPENDENCY_PHASE="+phase, "GORACE=atexit_sleep_ms=0")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("dependency helper deadline: %v\n%s", ctx.Err(), output)
+	}
+	if phase == "run" {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != crashExit {
+			t.Fatalf("Run did not exit after closing the real session: %v\n%s", err, output)
+		}
+	} else if err != nil {
+		t.Fatalf("new-process Resume: %v\n%s", err, output)
+	}
+}
+
+func TestDependencyRecoveryProcessHelper(t *testing.T) {
+	dir := os.Getenv("PULSE_DEPENDENCY_DIR")
+	if dir == "" {
+		return
+	}
+	kind, phase := os.Getenv("PULSE_DEPENDENCY_CASE"), os.Getenv("PULSE_DEPENDENCY_PHASE")
+	store, err := filestore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := durable.New(store, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := pulse.New("dependency-"+kind, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	business := errors.New("mixed business failure")
+	if kind == "cursor" {
+		g = dependencyCursorGraph(t, dir)
+	} else {
+		var aspects []pulse.Aspect
+		if kind == "mixed-skip" {
+			aspects = append(aspects, pulse.Retry(2, 0))
+		}
+		err = g.Add(pulse.NewNode("work", "", nil, nil, func(rc *pulse.RunCtx) error {
+			logCall(dir, "work")
+			if kind == "mixed-skip" {
+				return errors.Join(pulse.NoValue(), business)
+			}
+			request := filepath.Join(dir, "interrupt.request")
+			data, err := os.ReadFile(request)
+			if err != nil {
+				return err
+			}
+			switch string(data) {
+			case "pending":
+				if err := os.WriteFile(request, []byte("consumed"), 0600); err != nil {
+					return err
+				}
+				rc.Cancel()
+				if kind == "cancel-skip" {
+					return pulse.NoValue()
+				}
+				return nil
+			case "consumed":
+				return nil
+			default:
+				return errors.New("unknown interrupt request")
+			}
+		}, aspects...))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	opts := durable.RunOptions{RunID: "process-run", Version: "dependency/1"}
+	if phase == "run" {
+		_, err = rt.Run(ctx, g, pulse.Inputs{}, opts)
+	} else {
+		_, err = rt.Resume(ctx, g, pulse.Inputs{}, opts)
+	}
+	var checkpoint *pulse.CheckpointError
+	if errors.As(err, &checkpoint) || ctx.Err() != nil {
+		t.Fatalf("unexpected reliable/host failure: %v", err)
+	}
+	if kind == "mixed-skip" {
+		if err == nil || phase == "run" && !errors.Is(err, business) {
+			t.Fatalf("mixed real failure became success: %v", err)
+		}
+	} else if phase == "run" && kind != "cursor" {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("local interruption was not cancellation: %v", err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if phase == "run" {
+		os.Exit(crashExit)
 	}
 }
 

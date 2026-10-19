@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -446,5 +448,393 @@ func TestRunIDBusyAndCancellationLeavesActiveRoot(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatal("active root was not recognized")
+	}
+}
+
+// Use the real Durable hooks while controlling the Core confirmation boundary.
+// These tests gate dependency upgrades; they do not substitute a second engine.
+func testCheckpointState(t *testing.T, ctx context.Context, g *pulse.Graph) (*runState, Store) {
+	t.Helper()
+	store := NewMemoryStore()
+	session, err := store.Acquire(ctx, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	def, err := inspectDefinition(g, NewCodecs().snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := randomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := def.inputsFingerprint(def.root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "business/1",
+		Definition: def.fingerprint, Inputs: inputs, RootScope: root, Attempts: make(map[string]AttemptRecord),
+		Scopes: map[string]ScopeRecord{root: {Graph: def.root.graph, Inputs: inputs, Nodes: make(map[string]NodeRecord)}}}}
+	if err := s.save(ctx, cloneRecord(s.record)); err != nil {
+		t.Fatal(err)
+	}
+	return s, store
+}
+
+func testAwait[T any](t *testing.T, ctx context.Context, ch <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		var zero T
+		return zero
+	}
+}
+
+func TestTimeoutCleanupDoesNotConsumeRootBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	store := NewMemoryStore()
+	g := testGraph(t, "timeout-cleanup")
+	testAdd(t, g, pulse.NewNode("work", "", nil, nil, func(rc *pulse.RunCtx) error {
+		defer rc.Cancel() // Local Fork cleanup, not the one-hour deadline.
+		return nil
+	}, pulse.Timeout(time.Hour)))
+	e, err := testRuntime(t, store, NewCodecs()).Run(ctx, g, pulse.Inputs{}, testOptions("run"))
+	if err != nil || e.Snapshot().Graph.Status != pulse.GraphStatusCompleted {
+		t.Fatalf("cleanup replaced completed result: %v", err)
+	}
+	r := readRecord(t, store, "run")
+	node, ok := r.Scopes[r.RootScope].Nodes["work"]
+	if !ok || node.Reason != "completed" || len(r.Attempts) != 1 || r.Attempts[node.Attempt].State != AttemptConfirmed {
+		t.Fatalf("cleanup consumed persistent budget: %+v", r.Attempts)
+	}
+}
+
+type confirmedSkipError struct {
+	confirmed atomic.Bool
+	late      atomic.Int32
+}
+
+func (*confirmedSkipError) Error() string { return "normal absence" }
+func (e *confirmedSkipError) Is(target error) bool {
+	if e.confirmed.Load() {
+		e.late.Add(1)
+		return false
+	}
+	return target == pulse.ErrSkipped
+}
+func (e *confirmedSkipError) Unwrap() error {
+	if e.confirmed.Load() {
+		e.late.Add(1)
+		return errors.New("changed after confirmation")
+	}
+	return nil
+}
+
+func TestCheckpointConfirmationFreezesSkippedConclusion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	g := testGraph(t, "confirmed-conclusion")
+	cause := &confirmedSkipError{}
+	var calls atomic.Int32
+	testAdd(t, g, pulse.NewNode("work", "", nil, nil, func(*pulse.RunCtx) error { calls.Add(1); return cause }))
+	s, store := testCheckpointState(t, ctx, g)
+	h := s.hooks()
+	commit := h.Commit
+	h.Commit = func(ctx context.Context, req pulse.CheckpointCommit) error {
+		if err := commit(ctx, req); err != nil {
+			return err
+		}
+		cause.confirmed.Store(true) // Save succeeded before the original error changes.
+		return nil
+	}
+	e, err := g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	err = e.Wait()
+	node := s.record.Scopes[s.record.RootScope].Nodes["work"]
+	if err != nil || e.Snapshot().Nodes[0].Status != pulse.NodeStatusSkipped || node.Reason != "skipped" || cause.late.Load() != 0 {
+		t.Errorf("confirmed skip was reinspected: err=%v saved=%s late=%d", err, node.Reason, cause.late.Load())
+	}
+	if err := s.session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testRuntime(t, store, NewCodecs()).Resume(ctx, g, pulse.Inputs{}, testOptions("run")); err != nil || calls.Load() != 1 {
+		t.Fatalf("confirmed skip did not restore: err=%v calls=%d", err, calls.Load())
+	}
+}
+
+func TestCheckpointAcceptedHostStopJoinsWait(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			g := testGraph(t, "accepted-stop")
+			key := pulse.NewKey[pulse.Stream[int]]("out")
+			if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
+				t.Fatal(err)
+			}
+			if err := pulse.ProduceStream(g, "source", "", key, func(*pulse.RunCtx, *pulse.StreamWriter[int]) error { return nil }, pulse.WithStreamSource("empty/1", true)); err != nil {
+				t.Fatal(err)
+			}
+			s, _ := testCheckpointState(t, ctx, g)
+			h := s.hooks()
+			commit := h.StreamHooks.Commit
+			entered, release, sourceDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			defer once.Do(func() { close(release) })
+			cause := errors.New("accepted Stop save failed")
+			h.StreamHooks.Commit = func(ctx context.Context, req pulse.CheckpointMessageCommit) error {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if fail {
+					return cause
+				}
+				return commit(ctx, req)
+			}
+			var finished atomic.Int32
+			e, err := g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, h), pulse.WithExecObserver(pulse.ObserverFunc{
+				Finished:      func(_ pulse.Site, _ string, _ pulse.NodeFinishReason, _ error) { close(sourceDone) },
+				GraphFinished: func(pulse.Site, pulse.NodeFinishReason, error) { finished.Add(1) },
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer e.Cancel()
+			sub, err := pulse.SubscribeStream(e, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(); err != nil {
+				t.Fatal(err)
+			}
+			testAwait(t, ctx, sourceDone)
+			if _, err := sub.Receive(ctx); err != io.EOF {
+				t.Fatalf("empty source EOF=%v", err)
+			}
+			stopDone, waitDone := make(chan error, 1), make(chan error, 1)
+			go func() { stopDone <- sub.Stop(ctx) }()
+			testAwait(t, ctx, entered) // Stop accepted before Wait seals new work.
+			go func() { waitDone <- e.Wait() }()
+			var first error
+			premature := false
+			select {
+			case first = <-waitDone:
+				premature = true
+				t.Errorf("Wait overtook accepted Stop: %v", first)
+			case <-time.After(150 * time.Millisecond):
+			}
+			if finished.Load() != 0 {
+				t.Error("GraphFinished overtook Stop confirmation")
+			}
+			once.Do(func() { close(release) })
+			stopErr := testAwait(t, ctx, stopDone)
+			if !premature {
+				first = testAwait(t, ctx, waitDone)
+			}
+			if fail && (!errors.Is(first, cause) || !errors.Is(stopErr, cause)) || !fail && (first != nil || stopErr != nil) {
+				t.Errorf("first Wait lost Stop result: Wait=%v Stop=%v", first, stopErr)
+			}
+			if e.Wait() != first || e.Err() != first {
+				t.Error("terminal result changed after first Wait")
+			}
+		})
+	}
+}
+
+func TestCheckpointWriterTerminalSerializesWithStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	g := testGraph(t, "terminal-stop")
+	key := pulse.NewKey[pulse.Stream[int]]("out")
+	if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
+		t.Fatal(err)
+	}
+	finishBody, bodyReturned := make(chan struct{}), make(chan struct{})
+	endpoint := make(chan pulse.Stream[int], 1)
+	if err := pulse.ProduceStream(g, "source", "", key, func(rc *pulse.RunCtx, _ *pulse.StreamWriter[int]) error {
+		stream, err := pulse.Get(rc, key)
+		if err != nil {
+			return err
+		}
+		endpoint <- stream
+		select {
+		case <-finishBody:
+		case <-rc.Context().Done():
+			return rc.Context().Err()
+		}
+		close(bodyReturned)
+		return nil
+	}, pulse.WithStreamSource("empty/1", true)); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := testCheckpointState(t, ctx, g)
+	h := s.hooks()
+	stop, commit := h.StreamHooks.Commit, h.Commit
+	entered, releaseStop, releaseWriter := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var stopOnce, writerOnce sync.Once
+	defer stopOnce.Do(func() { close(releaseStop) })
+	defer writerOnce.Do(func() { close(releaseWriter) })
+	sampled := make(chan pulse.CheckpointCommit, 1)
+	h.StreamHooks.Commit = func(ctx context.Context, req pulse.CheckpointMessageCommit) error {
+		close(entered)
+		select {
+		case <-releaseStop:
+			return stop(ctx, req)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	h.Commit = func(ctx context.Context, req pulse.CheckpointCommit) error {
+		sampled <- req
+		select {
+		case <-releaseWriter:
+			return commit(ctx, req)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	e, err := g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	sub, err := pulse.SubscribeStream(e, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream := testAwait(t, ctx, endpoint)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- sub.Stop(ctx) }()
+	testAwait(t, ctx, entered)
+	close(finishBody)
+	testAwait(t, ctx, bodyReturned)
+	var saved pulse.CheckpointCommit
+	early := false
+	select {
+	case saved = <-sampled:
+		early = true
+	case <-time.After(150 * time.Millisecond):
+	}
+	stopOnce.Do(func() { close(releaseStop) })
+	if err := testAwait(t, ctx, stopDone); err != nil {
+		t.Fatal(err)
+	}
+	if !early {
+		saved = testAwait(t, ctx, sampled)
+	}
+	writerOnce.Do(func() { close(releaseWriter) })
+	if err := e.Wait(); err != nil {
+		t.Fatalf("Core supplied an inconsistent terminal to Durable: %v", err)
+	}
+	local := stream.Snapshot()
+	if early || len(saved.Streams) != 1 || len(saved.Node.Outputs) != 1 || saved.Node.Outputs[0].Stream == nil {
+		t.Fatalf("terminal sampled before Stop installation: early=%t payload=%+v", early, saved)
+	}
+	if saved.Streams[0].Terminal != local.Terminal || saved.Node.Outputs[0].Stream.Stopped != local.Stopped || local.Terminal != pulse.StreamStopped || !local.Stopped {
+		t.Fatalf("confirmed terminal disagrees with local stream: saved=%+v local=%+v", saved.Streams, local)
+	}
+}
+
+func TestCheckpointHostReceiveCannotCancelSharedRestore(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	g := testGraph(t, "host-first-restore")
+	key := pulse.NewKey[pulse.Stream[int]]("out")
+	if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	if err := pulse.ProduceStream(g, "source", "", key, func(*pulse.RunCtx, *pulse.StreamWriter[int]) error { calls.Add(1); return nil }, pulse.WithStreamSource("empty/1", true)); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := testCheckpointState(t, ctx, g)
+	first, err := g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, s.hooks()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Cancel()
+	sub, err := pulse.SubscribeStream(first, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sub.Receive(ctx); err != io.EOF {
+		t.Fatal(err)
+	}
+	if err := first.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	restored := &runState{session: s.session, def: s.def, record: cloneRecord(s.record)}
+	records, err := restored.decodeScope(s.record.RootScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := restored.hooks()
+	open := h.StreamHooks.Open
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	h.StreamHooks.Open = func(ctx context.Context, req pulse.CheckpointStreamOpen) (pulse.CheckpointStreamRecord, error) {
+		entered <- ctx
+		select {
+		case <-release:
+			return open(ctx, req)
+		case <-ctx.Done():
+			return pulse.CheckpointStreamRecord{}, ctx.Err()
+		}
+	}
+	var e *pulse.Execution
+	callCtx, cancelCall := context.WithCancel(ctx)
+	defer cancelCall()
+	result := make(chan error, 1)
+	observer := pulse.ObserverFunc{GraphStarted: func(pulse.Site) {
+		go func() { _, err := sub.Receive(callCtx); result <- err }()
+		openCtx := testAwait(t, ctx, entered) // Observer precedes all internal workers.
+		cancelCall()
+		if err := testAwait(t, ctx, result); !errors.Is(err, context.Canceled) {
+			t.Errorf("single Receive cancellation=%v", err)
+		}
+		if openCtx != e.Context() || openCtx.Err() != nil {
+			t.Error("single Receive owns or canceled the shared Open")
+		}
+		once.Do(func() { close(release) })
+	}}
+	e, err = g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, h), pulse.WithExecObserver(observer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Cancel()
+	sub, err = pulse.SubscribeStream(e, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RestoreNodes(records); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Wait(); err != nil || calls.Load() != 1 {
+		t.Fatalf("healthy restored run failed or reentered source: err=%v calls=%d", err, calls.Load())
 	}
 }
