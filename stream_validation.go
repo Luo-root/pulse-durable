@@ -113,8 +113,15 @@ func (s *runState) validateStreams() error {
 				pending = true
 			}
 		}
-		if message.State == AttemptConfirmed && pending {
-			return fmt.Errorf("durable: confirmed message still has its input pending")
+		if message.State == AttemptConfirmed {
+			if pending {
+				return fmt.Errorf("durable: confirmed message still has its input pending")
+			}
+			// CommitMessage always saves this container, even with no state or values.
+			managed, ok := r.Managed[managedKey(message.Scope, message.Parent, message.NodeID)]
+			if !ok || managed.Scope != message.Scope || managed.Parent != message.Parent || managed.NodeID != message.NodeID {
+				return fmt.Errorf("durable: confirmed message has no matching managed state")
+			}
 		}
 		key := managedKey(message.Scope, message.Parent, fmt.Sprintf("%s/%s/%d", message.NodeID, streamKey(message.Input), message.Sequence))
 		if groups[key] == nil {

@@ -50,7 +50,28 @@ func TestIncrementalRecordCorruptionIsRejected(t *testing.T) {
 			state.State[0].Digest = "bad"
 			r.Managed[managedKey] = state
 		},
-		"state-without-message": func(r *RunRecord) { r.Messages = nil },
+		"state-without-message":      func(r *RunRecord) { r.Messages = nil },
+		"confirmed-without-managed":  func(r *RunRecord) { delete(r.Managed, managedKey) },
+		"confirmed-with-nil-managed": func(r *RunRecord) { r.Managed = nil },
+		"managed-storage-identity": func(r *RunRecord) {
+			r.Managed["wrong-key"] = r.Managed[managedKey]
+			delete(r.Managed, managedKey)
+		},
+		"managed-scope": func(r *RunRecord) {
+			managed := r.Managed[managedKey]
+			managed.Scope = p.processor.Scope
+			r.Managed[managedKey] = managed
+		},
+		"managed-parent": func(r *RunRecord) {
+			managed := r.Managed[managedKey]
+			managed.Parent = p.source.Scope
+			r.Managed[managedKey] = managed
+		},
+		"managed-node": func(r *RunRecord) {
+			managed := r.Managed[managedKey]
+			managed.NodeID = "source"
+			r.Managed[managedKey] = managed
+		},
 		"budget": func(r *RunRecord) {
 			message := r.Messages[a.Attempt.Scope]
 			message.Limit = 0
@@ -74,6 +95,134 @@ func TestIncrementalRecordCorruptionIsRejected(t *testing.T) {
 			s := &runState{def: p.s.def, record: copy}
 			if err := s.validateLoaded(); err == nil {
 				t.Fatal("corrupted record accepted")
+			}
+		})
+	}
+}
+
+func TestEachConfirmedMessageRequiresItsOwnManagedHistory(t *testing.T) {
+	p := newStreamProtocol(t)
+	ctx := context.Background()
+	owners := []string{p.processor.Scope}
+	retry, err := p.s.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.processor.Scope, NodeID: "processor", Boundary: "retry", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners = append(owners, retry.Scope)
+	for i, owner := range owners {
+		p.processor.Scope = owner
+		sequence := uint64(i + 1)
+		if err := p.append(sequence); err != nil {
+			t.Fatal(err)
+		}
+		message, err := p.s.openMessage(ctx, p.messageRequest(sequence, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.s.commitMessage(ctx, pulse.CheckpointMessageCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: message.Attempt.Scope,
+			Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: sequence}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.s.validateLoaded(); err != nil {
+		t.Fatal(err)
+	}
+	for _, owner := range owners {
+		t.Run(owner, func(t *testing.T) {
+			record := cloneRecord(p.s.record)
+			delete(record.Managed, managedKey(record.RootScope, owner, "processor"))
+			if len(record.Managed) != 1 {
+				t.Fatal("test did not retain another valid Managed container")
+			}
+			state := &runState{def: p.s.def, record: record}
+			if err := state.validateLoaded(); err == nil {
+				t.Fatal("another processing owner's container masked a missing confirmed history")
+			}
+		})
+	}
+}
+
+func TestManagedHistoryValidationAcceptsLegitimateRecords(t *testing.T) {
+	for _, scenario := range []string{"empty-managed", "manual-ack", "active-message", "failed-message", "older-generation", "confirmed-parent", "failed-parent", "failed-retry-ancestor"} {
+		t.Run(scenario, func(t *testing.T) {
+			p := newStreamProtocol(t)
+			ctx := context.Background()
+			if err := p.append(1); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "failed-retry-ancestor" {
+				attempt, err := p.s.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.processor.Scope, NodeID: "processor", Boundary: "retry", Limit: 2})
+				if err != nil {
+					t.Fatal(err)
+				}
+				p.processor = attempt
+			}
+			commit := pulse.CheckpointMessageCommit{Site: p.site, Scope: p.s.record.RootScope,
+				Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: 1}}}
+			if scenario == "manual-ack" {
+				if err := p.s.commitMessage(ctx, commit); err != nil {
+					t.Fatal(err)
+				}
+				if len(p.s.record.Messages)+len(p.s.record.Managed) != 0 {
+					t.Fatal("manual Ack created processing history")
+				}
+			} else {
+				message, err := p.s.openMessage(ctx, p.messageRequest(1, 2))
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch scenario {
+				case "active-message":
+				case "failed-message":
+					if err := p.s.failMessage(ctx, message.Attempt.Scope); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					commit.Attempt = message.Attempt.Scope
+					if err := p.s.commitMessage(ctx, commit); err != nil {
+						t.Fatal(err)
+					}
+					managed, exists := p.s.record.Managed[managedKey(commit.Scope, p.processor.Scope, "processor")]
+					if !exists || managed.Scope != commit.Scope || managed.Parent != p.processor.Scope || managed.NodeID != "processor" || len(managed.State)+len(managed.Values) != 0 {
+						t.Fatal("empty message commit lost its identity-bearing Managed container")
+					}
+				}
+				if (scenario == "active-message" || scenario == "failed-message") && len(p.s.record.Managed) != 0 {
+					t.Fatal("unconfirmed message created a Managed container")
+				}
+			}
+			switch scenario {
+			case "older-generation":
+				resumed := &runState{session: p.s.session, def: p.s.def, record: cloneRecord(p.s.record)}
+				input, err := resumed.openStream(ctx, p.openRequest(false))
+				if err != nil || input.Stream.ID.Generation != p.input.Stream.ID.Generation+1 {
+					t.Fatalf("advance input generation: %+v %v", input, err)
+				}
+				p.s = resumed
+			case "confirmed-parent":
+				descriptor := p.output.Stream
+				descriptor.Terminal = pulse.StreamCompleted
+				if err := p.s.commit(ctx, pulse.CheckpointCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: p.processor.Scope,
+					Node: pulse.NodeCheckpoint{NodeID: "processor", Reason: pulse.NodeCompleted, Outputs: []pulse.CheckpointOutput{
+						{Key: p.outKey, State: pulse.SlotStateReady, Stream: &descriptor}, {Key: p.value, State: pulse.SlotStateSkipped}}},
+					Streams: []pulse.CheckpointStreamFinish{{Site: p.site, Attempt: p.processor.Scope, Stream: descriptor.ID, Terminal: pulse.StreamCompleted}}}); err != nil {
+					t.Fatal(err)
+				}
+			case "failed-parent", "failed-retry-ancestor":
+				_, ancestor, err := p.s.rootAttempt(p.processor.Scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := p.s.failAttempt(ctx, ancestor); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := cloneRecord(p.s.record)
+			if err := p.s.validateLoaded(); err != nil {
+				t.Fatalf("legitimate message history rejected: %v", err)
+			}
+			if !reflect.DeepEqual(before, p.s.record) {
+				t.Fatal("history validation changed the record")
 			}
 		})
 	}

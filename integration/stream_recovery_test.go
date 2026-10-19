@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,6 +90,91 @@ func TestStreamRecoveryAcrossProcessExit(t *testing.T) {
 				t.Fatalf("restored explicit state=%d, want 6", value)
 			}
 			t.Logf("real exit/restart: input trace=%q, revision=%d→%d", trace, before.Revision, after.Revision)
+		})
+	}
+}
+
+func TestManagedHistoryRecoveryAcrossProcessExit(t *testing.T) {
+	for _, scenario := range []string{"managed-healthy", "managed-missing", "managed-wrong-owner"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			err := streamRecoveryProcess(t, dir, scenario, "run")
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != crashExit {
+				t.Fatalf("first process did not exit after confirming message 1: %v", err)
+			}
+			before := loadStreamRecord(t, dir)
+			assertStreamTransactions(t, before)
+			if len(before.Messages) != 1 || len(before.Managed) != 1 || managedSum(t, before) != 1 {
+				t.Fatal("crash did not retain exactly one confirmed message and sum=1")
+			}
+			for _, message := range before.Messages {
+				if message.State != durable.AttemptConfirmed || message.Sequence != 1 {
+					t.Fatal("crash did not retain the first confirmation")
+				}
+			}
+			for _, stream := range before.Streams {
+				if stream.Stream.ID.NodeID == "source" && stream.AckedThrough != 1 {
+					t.Fatal("crash did not retain input Ack=1")
+				}
+			}
+			if _, ready := before.Scopes[before.RootScope].Nodes["source-ready"]; !ready {
+				t.Fatal("test lacks a complete node for observing premature restore events")
+			}
+			if scenario != "managed-healthy" {
+				store, err := filestore.New(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session, err := store.Acquire(context.Background(), before.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Deliberately persist an incomplete record; a healthy filestore did not lose data.
+				for key, managed := range before.Managed {
+					if scenario == "managed-missing" {
+						delete(before.Managed, key)
+					} else {
+						managed.Parent = before.RootScope
+						before.Managed[key] = managed
+					}
+				}
+				expected := before.Revision
+				before.Revision++
+				if err := session.Save(context.Background(), before, expected); err != nil {
+					t.Fatal(err)
+				}
+				if err := session.Close(); err != nil {
+					t.Fatal(err)
+				}
+				before = loadStreamRecord(t, dir)
+			}
+			trace, err := os.ReadFile(filepath.Join(dir, "processor.calls"))
+			if err != nil || string(trace) != "1\n" {
+				t.Fatalf("wrong pre-resume trace: %q %v", trace, err)
+			}
+			sourceCalls := callCount(dir, "source")
+			if err := streamRecoveryProcess(t, dir, scenario, "resume"); err != nil {
+				t.Fatalf("resume verification: %v", err)
+			}
+			after := loadStreamRecord(t, dir)
+			if scenario == "managed-healthy" {
+				assertStreamTransactions(t, after)
+				trace, err := os.ReadFile(filepath.Join(dir, "processor.calls"))
+				if err != nil || string(trace) != "1\n2\n3\n" || managedSum(t, after) != 6 {
+					t.Fatalf("healthy resume lost or replayed a confirmed input: trace=%q sum=%d err=%v", trace, managedSum(t, after), err)
+				}
+				t.Logf("healthy exit=%d, resume=0, sum=6, revision=%d→%d", exit.ExitCode(), before.Revision, after.Revision)
+				return
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("rejected restore advanced revision, generation or persisted history")
+			}
+			afterTrace, err := os.ReadFile(filepath.Join(dir, "processor.calls"))
+			if err != nil || string(afterTrace) != string(trace) || callCount(dir, "source") != sourceCalls {
+				t.Fatalf("rejected restore ran business: trace=%q source calls=%d err=%v", afterTrace, callCount(dir, "source"), err)
+			}
+			t.Logf("damaged history rejected before business/events/Save; exit=%d, resume verifier=0, revision=%d unchanged", exit.ExitCode(), after.Revision)
 		})
 	}
 }
@@ -207,6 +294,14 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	opts := durable.RunOptions{RunID: "stream-run", Version: "stream-recovery/1"}
+	var events, observations, starts atomic.Int32
+	if strings.HasPrefix(scenario, "managed-") && phase == "resume" {
+		opts.OnEvent = func(durable.Event) error { events.Add(1); return nil }
+		opts.BeforeStart = func(*pulse.Execution) error { starts.Add(1); return nil }
+		opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{
+			GraphStarted: func(pulse.Site) { observations.Add(1) },
+		})}
+	}
 	var e *pulse.Execution
 	if phase == "run" {
 		e, err = rt.Run(ctx, g, pulse.Inputs{}, opts)
@@ -219,6 +314,16 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 			t.Fatalf("uncertain reliable error swallowed: %v", err)
 		}
 		os.Exit(crashExit)
+	}
+	if (scenario == "managed-missing" || scenario == "managed-wrong-owner") && phase == "resume" {
+		var checkpoint *pulse.CheckpointError
+		if !errors.As(err, &checkpoint) || checkpoint.Operation != "validate restore" || events.Load() != 0 || observations.Load() != 0 || starts.Load() != 0 {
+			t.Fatalf("incomplete history was not rejected before recovery events/Start: err=%v events=%d observations=%d starts=%d sum=%d", err, events.Load(), observations.Load(), starts.Load(), managedSum(t, loadStreamRecord(t, dir)))
+		}
+		return
+	}
+	if scenario == "managed-healthy" && phase == "resume" && (events.Load() == 0 || observations.Load() != 1 || starts.Load() != 1) {
+		t.Fatalf("healthy control did not exercise restoration and Start: events=%d observations=%d starts=%d err=%v", events.Load(), observations.Load(), starts.Load(), err)
 	}
 	if scenario == "message-budget" && phase == "resume" {
 		if err == nil {
@@ -272,8 +377,16 @@ func streamRecoveryGraph(t *testing.T, dir, scenario string) *pulse.Graph {
 			t.Fatal(err)
 		}
 	}
+	sourceRequires := pulse.Requires[int]()
+	if strings.HasPrefix(scenario, "managed-") {
+		ready := pulse.NewKey[int]("source-ready")
+		sourceRequires = pulse.Requires(ready)
+		add(pulse.NewNode("source-ready", "恢复事件对照", nil, pulse.Provides(ready), func(rc *pulse.RunCtx) error {
+			return pulse.Set(rc, ready, 1)
+		}))
+	}
 	swallow := func(rc *pulse.RunCtx, next func(*pulse.RunCtx) error) error { _ = next(rc); return nil }
-	add(pulse.NewNode("source", "可靠渐进来源", nil, pulse.Provides(input), func(rc *pulse.RunCtx) error {
+	add(pulse.NewNode("source", "可靠渐进来源", sourceRequires, pulse.Provides(input), func(rc *pulse.RunCtx) error {
 		logCall(dir, "source")
 		writer, err := pulse.OpenStream(rc, input, pulse.WithBuffer(4), pulse.WithStreamSource("source/integers", scenario != "completed-tail"))
 		if err != nil {
@@ -427,6 +540,12 @@ func (s *streamInjectedSession) Save(ctx context.Context, record durable.RunReco
 		case "commit-before", "commit-after", "uncertain-commit", "nested-stream", "ordinary-commit-after", "ordinary-first-write":
 			for _, attempt := range record.Messages {
 				if attempt.Sequence == 2 && attempt.State == durable.AttemptConfirmed {
+					match = true
+				}
+			}
+		case "managed-healthy", "managed-missing", "managed-wrong-owner":
+			for _, attempt := range record.Messages {
+				if attempt.Sequence == 1 && attempt.State == durable.AttemptConfirmed {
 					match = true
 				}
 			}

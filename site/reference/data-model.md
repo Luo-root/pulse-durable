@@ -99,6 +99,8 @@ ready 恢复时会核对 Codec ID/版本、摘要格式与实际字节校验和�
 
 `MessageAttemptRecord` 保存输入来源/组/序号、处理父尝试、Index/Limit 和状态；重启不补预算。`ManagedRecord.State` 是显式完整快照，Values 是已到达普通值。消息输入 Ack、状态、普通值和输出消息在一次整记录 CAS 中确认；失败只丢弃 proposed record，保存结果不确定时停止并由 Resume 重读。Stop 显式结束读取义务，不伪装逐条 Ack。外部副作用仍需要业务幂等、事务或 outbox。
 
+每个 confirmed 消息尝试都必须对应以 Scope/Parent/NodeID 定位、归属字段相同的 `ManagedRecord`；反向也要求每个容器至少有一条同归属的 confirmed 消息。即使 State 和 Values 都为空，合法消息提交也保存这个带身份的容器。恢复若发现容器缺失或归属错误，会在恢复事件、Start、业务调用及 Revision/Generation 推进前拒绝，不把丢失的状态当作初始零值。手动 Ack 不创建消息尝试，不要求容器；尚未确认的 active/failed 消息也不要求已有容器，格式 1 的无消息记录仍可恢复。历史 confirmed 记录不因父尝试或祖先后来失败、输入流代际后来提升而损坏，但失败祖先下的成果不能复用。这些是记录完整性检查，不表示健康 filestore 会自行丢失容器，也不是对任意篡改的认证。
+
 消息已确认、完整节点仍 active 时，根 `CheckpointAttempt.Values` 从同 Scope/Parent/NodeID 的 ManagedRecord.Values 解码普通成果（ready 或 skipped），恢复进 Core 的完整链暂存外帧，完整节点 Commit 后才发布执行槽。认回不增加修订号、不重新处理已 Ack 输入；失败祖先不允许认回。流引用、未声明或重复键、类型/编码版本错误和 pending 都被拒绝；Retry 及 OpenMessage 的嵌套 CheckpointAttempt.Values 始终为空。此接缝不增加存储字段。
 
 ## Codec 契约
