@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -81,6 +83,87 @@ func TestManagedSugarRecoveryAcrossProcessExit(t *testing.T) {
 		}
 	}
 	t.Logf("real exit/restart with ProduceStream→TeeStream→ConsumeStream: left stopped at 1, right sum=6, revision=%d", record.Revision)
+}
+
+func TestMessageBatchClearsSendAtCursorAcrossProcessExit(t *testing.T) {
+	dir := t.TempDir()
+	for _, phase := range []string{"run", "resume"} {
+		dependencyRecoveryProcess(t, dir, "cursor", phase)
+		r := loadRecord(t, dir)
+		found := false
+		for _, stream := range r.Streams {
+			if stream.Stream.ID.NodeID == "transform" {
+				found = true
+				if stream.LastSequence != 2 || stream.Cursor != nil || stream.AckedThrough != 2 || len(stream.Pending) != 0 || stream.Stream.Terminal != "completed" {
+					t.Fatalf("%s: confirmed batch and source finish disagree: %+v", phase, stream)
+				}
+			}
+		}
+		if !found || callCount(dir, "prefix") != 1 || callCount(dir, "value-10") != 1 || callCount(dir, "transform") != 1 {
+			t.Fatalf("%s: output lost/replayed or completed transform reentered", phase)
+		}
+	}
+}
+
+func dependencyCursorGraph(t *testing.T, dir string) *pulse.Graph {
+	t.Helper()
+	g, err := pulse.New("dependency-cursor", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, output := pulse.NewKey[pulse.Stream[int]]("input"), pulse.NewKey[pulse.Stream[int]]("output")
+	if err := pulse.ProduceStream(g, "source", "", input, func(_ *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+		if writer.Position().Sequence == 0 {
+			return writer.SendAt(1, 1)
+		}
+		return nil
+	}, pulse.WithStreamSource("input/1", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(pulse.NewNode("transform", "", pulse.Requires(input), pulse.Provides(output), func(rc *pulse.RunCtx) error {
+		logCall(dir, "transform")
+		writer, err := pulse.OpenStream(rc, output, pulse.WithBuffer(2), pulse.WithStreamSource("output/1", true))
+		if err != nil {
+			return err
+		}
+		if writer.Position().Sequence == 0 {
+			if err := writer.SendAt(-1, "prefix"); err != nil {
+				return err
+			}
+		}
+		stream, err := pulse.Get(rc, input)
+		if err != nil {
+			return err
+		}
+		for {
+			delivery, err := stream.Receive(rc)
+			if err == io.EOF {
+				if position := writer.Position(); position.Sequence != 2 || position.Cursor != nil {
+					return fmt.Errorf("batch left stale local cursor: %+v", position)
+				}
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err := pulse.HandleMessage(rc, delivery, func(_ *pulse.RunCtx, value int) error { return writer.Send(value * 10) }); err != nil {
+				return err
+			}
+		}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := pulse.ConsumeStream(g, "sink", "", output, func(_ *pulse.RunCtx, value int) error {
+		name := fmt.Sprintf("value-%d", value)
+		if value == -1 {
+			name = "prefix"
+		}
+		logCall(dir, name)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return g
 }
 
 func TestManagedSugarProcessHelper(t *testing.T) {
