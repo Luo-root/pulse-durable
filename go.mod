@@ -2,4 +2,4 @@ module github.com/Luo-root/pulse-durable
 
 go 1.25.0
 
-require github.com/Luo-root/pulse v0.4.2-0.20261019104456-df2579a5dbf5
+require github.com/Luo-root/pulse v0.4.2-0.20261020022625-020a61636fe6
