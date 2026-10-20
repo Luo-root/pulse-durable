@@ -1,6 +1,6 @@
 # Observation and stable run identity
 
-This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets public Durable revision `9fda63212a51fc04e44e771cb09e06a9a06b1c7b`, pinned by [installation](installation.md); there is no formal release. This revision pins public Core development commit `995752b4614a129064e2e274264e0f1a73f6f6f6` (`v0.4.2-0.20261020102630-995752b4614a`), with no local replace in default builds.
+This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets public Durable revision `887892d6d64f5d9c589675edea7fa12680332045`, pinned by [installation](installation.md); there is no formal release. This revision pins public Core development commit `e064e0ebbc64db0c1eada4ce809b8158648d8392` (`v0.4.2-0.20261020134627-e064e0ebbc64`), with no local replace in default builds.
 
 ## Distinguish runs, processes and attempts
 

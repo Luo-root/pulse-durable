@@ -23,7 +23,7 @@
 mkdir durable-subgraphs
 cd durable-subgraphs
 go mod init example.com/durable-subgraphs
-go get github.com/Luo-root/pulse-durable@9fda63212a51fc04e44e771cb09e06a9a06b1c7b
+go get github.com/Luo-root/pulse-durable@887892d6d64f5d9c589675edea7fa12680332045
 ```
 
 下面使用固定 RunID 和 `./checkpoints`。首次执行应使用没有本例记录的新目录；再次开始新的演示应分配新 RunID，不能自动删除旧记录。
