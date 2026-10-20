@@ -20,17 +20,17 @@ Run these commands where you want to keep the example. You may choose a differen
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@a1ee8aacebed
+go get github.com/Luo-root/pulse-durable@9fda63212a51fc04e44e771cb09e06a9a06b1c7b
 ```
 
-Durable has no formal release yet. This command pins a public development revision. Go resolves it to pseudo-version `v0.0.0-20261020061150-a1ee8aacebed` and writes that version to `go.mod`. It is not a released `v0.1`.
+Durable has no formal release yet. This command pins a public development revision. Go resolves it to pseudo-version `v0.0.0-20261020103326-9fda63212a51` and writes that version to `go.mod`. It is not a released `v0.1`.
 
 The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's isolated benchmark module is not an official backend and does not satisfy that prerequisite.
 
 The revision pins Pulse:
 
 ```text
-v0.4.2-0.20261020055532-12e50dc9914e
+v0.4.2-0.20261020102630-995752b4614a
 ```
 
 You normally do not need to install Pulse separately. Go module version selection can retain a higher Pulse dependency already present in your project. For an existing application, inspect the resolved version and validate that combination.
@@ -43,7 +43,7 @@ Run:
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-In the new module created above, expect Durable `v0.0.0-20261020061150-a1ee8aacebed` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
+In the new module created above, expect Durable `v0.0.0-20261020103326-9fda63212a51` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
 
 If your machine uses `go.work` and you want to check this module independently, temporarily disable the workspace. In PowerShell:
 
