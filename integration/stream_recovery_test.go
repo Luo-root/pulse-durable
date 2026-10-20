@@ -180,6 +180,171 @@ func TestManagedHistoryRecoveryAcrossProcessExit(t *testing.T) {
 	}
 }
 
+func TestConfirmedManagedValuesAcrossProcessExit(t *testing.T) {
+	for _, scenario := range []string{"healthy", "node-skipped", "managed-skipped", "before-reconcile", "reconcile-control"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			name := "confirmed-values-" + scenario
+			if err := streamRecoveryProcess(t, dir, name, "run"); err != nil {
+				t.Fatalf("healthy seed process: %v", err)
+			}
+			before := loadStreamRecord(t, dir)
+			node := before.Scopes[before.RootScope].Nodes["processor"]
+			if len(before.Managed) != 1 || len(node.Outputs) != 1 || string(node.Outputs[0].Data) != "42" || node.Outputs[0].State != "ready" {
+				t.Fatal("seed did not confirm the ordinary value")
+			}
+			for _, managed := range before.Managed {
+				if managed.Parent != node.Attempt || !reflect.DeepEqual(managed.Values, node.Outputs) {
+					t.Fatal("healthy seed has inconsistent owners or values")
+				}
+			}
+			if scenario != "healthy" {
+				store, err := filestore.New(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session, err := store.Acquire(t.Context(), before.RunID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record, err := session.Load(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Deliberate, individually valid record edits through public CAS; a
+				// healthy Runtime is not claimed to produce contradictory values.
+				scope := record.Scopes[record.RootScope]
+				if scenario == "node-skipped" || scenario == "before-reconcile" {
+					value := scope.Nodes["processor"]
+					value.Outputs[0].State, value.Outputs[0].Data, value.Outputs[0].Digest = "skipped", nil, ""
+					scope.Nodes["processor"] = value
+				}
+				if scenario == "managed-skipped" {
+					for key, managed := range record.Managed {
+						managed.Values[0].State, managed.Values[0].Data, managed.Values[0].Digest = "skipped", nil, ""
+						record.Managed[key] = managed
+					}
+				}
+				if strings.Contains(scenario, "reconcile") {
+					// Legacy format-2 shape: producer failed after its consumer
+					// confirmed, but its root failure still needs one reconcile Save.
+					source := scope.Nodes["source"].Attempt
+					attempt := record.Attempts[source]
+					attempt.State = durable.AttemptActive
+					record.Attempts[source] = attempt
+					delete(scope.Nodes, "source")
+					for key, stream := range record.Streams {
+						stream.Stream.Terminal = string(pulse.StreamFailed)
+						record.Streams[key] = stream
+					}
+				}
+				record.Scopes[record.RootScope] = scope
+				expected := record.Revision
+				record.Revision++
+				if err := session.Save(t.Context(), record, expected); err != nil {
+					t.Fatal(err)
+				}
+				if err := session.Close(); err != nil {
+					t.Fatal(err)
+				}
+				before = loadStreamRecord(t, dir)
+			}
+			if err := streamRecoveryProcess(t, dir, name, "resume"); err != nil {
+				t.Fatalf("new-process verification: %v", err)
+			}
+			after := loadStreamRecord(t, dir)
+			if scenario != "healthy" && scenario != "reconcile-control" && !reflect.DeepEqual(before, after) {
+				t.Fatalf("rejected restore changed history: revision %d->%d", before.Revision, after.Revision)
+			}
+			if scenario == "reconcile-control" && after.Revision != before.Revision+1 {
+				t.Fatal("control did not exercise the pending reconcile Save")
+			}
+			if callCount(dir, "source") != 1 || callCount(dir, "processor") != 1 {
+				t.Fatal("completed business was replayed")
+			}
+			t.Logf("real seed/Resume processes: %s, revision=%d->%d, source/processor calls=1/1", scenario, before.Revision, after.Revision)
+		})
+	}
+}
+
+func confirmedManagedValuesProcess(t *testing.T, store durable.Store, dir, scenario, phase string) {
+	t.Helper()
+	g, err := pulse.New("confirmed-values", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, result := pulse.NewKey[pulse.Stream[int]]("input"), pulse.NewKey[int]("result")
+	if err := g.DeclareOutput(pulse.NewPort(result)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pulse.ProduceStream(g, "source", "", input, func(_ *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+		logCall(dir, "source")
+		return writer.Send(42)
+	}, pulse.WithBuffer(1), pulse.WithStreamSource("one-value", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Add(pulse.NewNode("processor", "", pulse.Requires(input), pulse.Provides(result), func(rc *pulse.RunCtx) error {
+		logCall(dir, "processor")
+		stream, err := pulse.Get(rc, input)
+		if err != nil {
+			return err
+		}
+		for {
+			delivery, err := stream.Receive(rc)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err := pulse.HandleMessage(rc, delivery, func(rc *pulse.RunCtx, value int) error { return pulse.Set(rc, result, value) }); err != nil {
+				return err
+			}
+		}
+	})); err != nil {
+		t.Fatal(err)
+	}
+	var events, beforeStarts, starts, saves atomic.Int32
+	rt, err := durable.New(&streamInjectedStore{Store: store, saves: &saves}, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	opts := durable.RunOptions{RunID: "stream-run", Version: "confirmed-values/1"}
+	if phase == "run" {
+		if _, err := rt.Run(ctx, g, pulse.Inputs{}, opts); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	opts.OnEvent = func(durable.Event) error { events.Add(1); return nil }
+	opts.BeforeStart = func(*pulse.Execution) error { beforeStarts.Add(1); return nil }
+	opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{GraphStarted: func(pulse.Site) { starts.Add(1) }})}
+	e, err := rt.Resume(ctx, g, pulse.Inputs{}, opts)
+	if scenario == "confirmed-values-healthy" {
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, state, err := pulse.ReadOutput(e, result)
+		if err != nil || value != 42 || state != pulse.SlotStateReady || events.Load() != 2 || beforeStarts.Load() != 1 || starts.Load() != 1 {
+			t.Fatalf("healthy control: value=%d state=%s events=%d BeforeStart=%d Start=%d err=%v", value, state, events.Load(), beforeStarts.Load(), starts.Load(), err)
+		}
+		return
+	}
+	if scenario == "confirmed-values-reconcile-control" {
+		var scopeFailure *pulse.CheckpointScopeFailure
+		if !errors.As(err, &scopeFailure) || saves.Load() != 1 || events.Load()+beforeStarts.Load()+starts.Load() != 0 {
+			t.Fatalf("legacy control: err=%v saves=%d events=%d BeforeStart=%d Start=%d", err, saves.Load(), events.Load(), beforeStarts.Load(), starts.Load())
+		}
+		return
+	}
+	var checkpoint *pulse.CheckpointError
+	if !errors.As(err, &checkpoint) || checkpoint.Operation != "validate restore" || saves.Load()+events.Load()+beforeStarts.Load()+starts.Load() != 0 {
+		t.Fatalf("conflict reached reconcile/events/BeforeStart/Start/Save: err=%v saves=%d events=%d BeforeStart=%d Start=%d", err, saves.Load(), events.Load(), beforeStarts.Load(), starts.Load())
+	}
+}
+
 func streamRecoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -285,6 +450,10 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	store, err := filestore.New(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.HasPrefix(scenario, "confirmed-values-") {
+		confirmedManagedValuesProcess(t, store, dir, scenario, phase)
+		return
 	}
 	backend := &streamInjectedStore{Store: store, scenario: scenario, first: phase == "run"}
 	rt, err := durable.New(backend, durable.NewCodecs())
@@ -886,6 +1055,7 @@ type streamInjectedStore struct {
 	durable.Store
 	scenario string
 	first    bool
+	saves    *atomic.Int32
 }
 
 func (s *streamInjectedStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
@@ -893,16 +1063,20 @@ func (s *streamInjectedStore) Acquire(ctx context.Context, id string) (durable.S
 	if err != nil {
 		return nil, err
 	}
-	return &streamInjectedSession{Session: session, scenario: s.scenario, first: s.first}, nil
+	return &streamInjectedSession{Session: session, scenario: s.scenario, first: s.first, saves: s.saves}, nil
 }
 
 type streamInjectedSession struct {
 	durable.Session
 	scenario string
 	first    bool
+	saves    *atomic.Int32
 }
 
 func (s *streamInjectedSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+	if s.saves != nil {
+		s.saves.Add(1)
+	}
 	match := false
 	if s.first {
 		switch s.scenario {

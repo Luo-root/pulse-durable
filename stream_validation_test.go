@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"fmt"
+	"io"
 	"reflect"
 	"testing"
 
@@ -223,6 +224,276 @@ func TestManagedHistoryValidationAcceptsLegitimateRecords(t *testing.T) {
 			}
 			if !reflect.DeepEqual(before, p.s.record) {
 				t.Fatal("history validation changed the record")
+			}
+		})
+	}
+}
+
+// Complete the same root whose message has already contributed a plain value.
+func completeManagedValueNode(p streamProtocol, skipped bool) pulse.CheckpointCommit {
+	descriptor := p.output.Stream
+	descriptor.Terminal = pulse.StreamCompleted
+	value := pulse.CheckpointOutput{Key: p.value, State: pulse.SlotStateReady, Value: 42}
+	if skipped {
+		value.State, value.Value = pulse.SlotStateSkipped, nil
+	}
+	return pulse.CheckpointCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: p.processor.Scope,
+		Node: pulse.NodeCheckpoint{NodeID: "processor", Reason: pulse.NodeCompleted, Outputs: []pulse.CheckpointOutput{
+			{Key: p.outKey, State: pulse.SlotStateReady, Stream: &descriptor}, value}},
+		Streams: []pulse.CheckpointStreamFinish{{Site: p.site, Attempt: p.processor.Scope, Stream: descriptor.ID, Terminal: pulse.StreamCompleted}}}
+}
+
+func TestCompleteNodeRetainsEffectiveManagedValues(t *testing.T) {
+	for _, skipped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("message-skipped-%t", skipped), func(t *testing.T) {
+			p := committedAttemptValues(t, skipped)
+			before := cloneRecord(p.s.record)
+			if err := p.s.commit(t.Context(), completeManagedValueNode(p, !skipped)); err == nil {
+				t.Fatal("complete node discarded or changed a confirmed message value")
+			}
+			stored, err := p.s.session.Load(t.Context())
+			if err != nil || !reflect.DeepEqual(before, stored) || !reflect.DeepEqual(before, p.s.record) {
+				t.Fatalf("rejected commit changed history: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfirmedManagedValuesMustMatchCompleteNode(t *testing.T) {
+	p := committedAttemptValues(t, false)
+	if err := p.s.commit(context.Background(), completeManagedValueNode(p, false)); err != nil {
+		t.Fatal(err)
+	}
+	managedID := managedKey(p.s.record.RootScope, p.processor.Scope, "processor")
+	mutateNode := func(change func(*ValueRecord)) func(*RunRecord) {
+		return func(r *RunRecord) {
+			scope := r.Scopes[r.RootScope]
+			node := scope.Nodes["processor"]
+			for i := range node.Outputs {
+				if node.Outputs[i].Name == "value" {
+					change(&node.Outputs[i])
+				}
+			}
+			scope.Nodes["processor"] = node
+			r.Scopes[r.RootScope] = scope
+		}
+	}
+	mutateManaged := func(change func(*ValueRecord)) func(*RunRecord) {
+		return func(r *RunRecord) {
+			managed := r.Managed[managedID]
+			change(&managed.Values[0])
+			r.Managed[managedID] = managed
+		}
+	}
+	skip := func(v *ValueRecord) { v.State, v.Data, v.Digest = "skipped", nil, "" }
+	payload := func(data string) func(*ValueRecord) {
+		return func(v *ValueRecord) { v.Data = []byte(data); v.Digest = digest(v.Data) }
+	}
+	cases := map[string]func(*RunRecord){
+		"node-skipped":    mutateNode(skip),
+		"managed-skipped": mutateManaged(skip),
+		"node-payload":    mutateNode(payload("43")),
+		"managed-payload": mutateManaged(payload("43")),
+		// Even two spellings that decode to 42 must obey the existing encoded-value contract.
+		"encoded-bytes": mutateManaged(payload("42 ")),
+		"node-missing": func(r *RunRecord) {
+			scope := r.Scopes[r.RootScope]
+			node := scope.Nodes["processor"]
+			node.Outputs = node.Outputs[:1]
+			scope.Nodes["processor"] = node
+		},
+		"node-name":    mutateNode(func(v *ValueRecord) { v.Name = "unknown" }),
+		"managed-name": mutateManaged(func(v *ValueRecord) { v.Name = "unknown" }),
+		"type":         mutateManaged(func(v *ValueRecord) { v.TypeID = "go/string" }),
+		"version":      mutateManaged(func(v *ValueRecord) { v.Version = "unknown" }),
+		"digest":       mutateManaged(func(v *ValueRecord) { v.Digest = digest([]byte("43")) }),
+		"payload":      mutateManaged(payload("not JSON")),
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			record := cloneRecord(p.s.record)
+			mutate(&record)
+			before := cloneRecord(record)
+			state := &runState{def: p.s.def, record: record}
+			if err := state.validateLoaded(); err == nil {
+				t.Fatal("conflicting or invalid confirmed values accepted")
+			}
+			if !reflect.DeepEqual(before, state.record) {
+				t.Fatal("validation changed rejected history")
+			}
+		})
+	}
+	for _, scenario := range []string{"ready", "skipped", "empty-managed-values", "ordinary-only", "older-generation", "active"} {
+		t.Run(scenario, func(t *testing.T) {
+			record := cloneRecord(p.s.record)
+			switch scenario {
+			case "skipped":
+				mutateNode(skip)(&record)
+				mutateManaged(skip)(&record)
+			case "empty-managed-values":
+				managed := record.Managed[managedID]
+				managed.Values = nil // A message is allowed to contribute no plain values.
+				record.Managed[managedID] = managed
+			case "ordinary-only":
+				record.Messages, record.Managed = nil, nil
+			case "older-generation":
+				key := streamKey(streamID(p.input.Stream.ID))
+				stream := record.Streams[key]
+				stream.Stream.ID.Generation++
+				record.Streams[key] = stream // The confirmed message keeps its old generation.
+			case "active":
+				record = cloneRecord(committedAttemptValues(t, false).s.record)
+			}
+			before := cloneRecord(record)
+			state := &runState{def: p.s.def, record: record}
+			if err := state.validateLoaded(); err != nil {
+				t.Fatalf("legitimate value history rejected: %v", err)
+			}
+			if !reflect.DeepEqual(before, state.record) {
+				t.Fatal("validation changed legitimate history")
+			}
+		})
+	}
+}
+
+func TestManagedValuesFollowEffectiveRetryOwner(t *testing.T) {
+	for _, scenario := range []string{"active-retry", "failed-retry", "failed-retry-ancestor"} {
+		t.Run(scenario, func(t *testing.T) {
+			p := newStreamProtocol(t)
+			ctx := context.Background()
+			root := p.processor
+			retry, err := p.s.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: p.site, Parent: root.Scope, NodeID: "processor", Boundary: "retry", Limit: 2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.processor = retry
+			if scenario == "failed-retry-ancestor" {
+				p.processor, err = p.s.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: p.site, Parent: retry.Scope, NodeID: "processor", Boundary: "inner", Limit: 2})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := p.append(1); err != nil {
+				t.Fatal(err)
+			}
+			message, err := p.s.openMessage(ctx, p.messageRequest(1, 1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.s.commitMessage(ctx, pulse.CheckpointMessageCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: message.Attempt.Scope,
+				Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: 1}},
+				Values: []pulse.CheckpointOutput{{Key: p.value, State: pulse.SlotStateReady, Value: 42}}}); err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "active-retry" {
+				if err := p.s.failAttempt(ctx, retry.Scope); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := p.s.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: p.site, Parent: root.Scope, NodeID: "processor", Boundary: "retry", Limit: 2}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p.processor = root
+			// Failed Retry values are historical; a later successful attempt may skip.
+			if err := p.s.commit(ctx, completeManagedValueNode(p, scenario != "active-retry")); err != nil {
+				t.Fatalf("complete node compared an ineffective Retry value: %v", err)
+			}
+			if err := p.s.validateLoaded(); err != nil {
+				t.Fatalf("legitimate Retry history rejected: %v", err)
+			}
+			if scenario == "active-retry" {
+				// A live Retry is not another root: its confirmed contribution must match.
+				for key, managed := range p.s.record.Managed {
+					managed.Values[0].State, managed.Values[0].Data, managed.Values[0].Digest = "skipped", nil, ""
+					p.s.record.Managed[key] = managed
+				}
+				if err := p.s.validateLoaded(); err == nil {
+					t.Fatal("valid Retry ancestor hid a same-root conflict")
+				}
+			}
+		})
+	}
+}
+
+func TestManagedValuesStayWithinValidGraphOwner(t *testing.T) {
+	child := testGraph(t, "value-child")
+	number, result := pulse.NewKey[int]("number"), pulse.NewKey[int]("result")
+	input := pulse.NewKey[pulse.Stream[int]]("input")
+	if err := child.DeclareInput(pulse.NewPort(number)); err != nil {
+		t.Fatal(err)
+	}
+	testAdd(t, child, pulse.NewNode("source", "", pulse.Requires(number), pulse.Provides(input), func(rc *pulse.RunCtx) error {
+		n, err := pulse.Get(rc, number)
+		if err != nil {
+			return err
+		}
+		writer, err := pulse.OpenStream(rc, input, pulse.WithBuffer(1), pulse.WithStreamSource("numbers", true))
+		if err != nil {
+			return err
+		}
+		return writer.Send(n)
+	}))
+	testAdd(t, child, pulse.NewNode("processor", "", pulse.Requires(input), pulse.Provides(result), func(rc *pulse.RunCtx) error {
+		stream, err := pulse.Get(rc, input)
+		if err != nil {
+			return err
+		}
+		for {
+			delivery, err := stream.Receive(rc)
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err := pulse.HandleMessage(rc, delivery, func(rc *pulse.RunCtx, n int) error { return pulse.Set(rc, result, n) }); err != nil {
+				return err
+			}
+		}
+	}))
+	parent := testGraph(t, "value-parent")
+	for i, name := range []string{"left", "right"} {
+		if err := pulse.Sub(parent, name, "", []pulse.SubBind{pulse.Fix(number, 42+i)}, child); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := NewMemoryStore()
+	if _, err := testRuntime(t, store, NewCodecs()).Run(context.Background(), parent, pulse.Inputs{}, testOptions("run")); err != nil {
+		t.Fatal(err)
+	}
+	record := readRecord(t, store, "run")
+	def, err := inspectDefinition(parent, NewCodecs().snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Managed) != 2 {
+		t.Fatal("fixture lacks distinct processing roots with the same node and value names")
+	}
+	for _, scenario := range []string{"distinct-roots", "same-owner-conflict", "failed-graph-ancestor"} {
+		t.Run(scenario, func(t *testing.T) {
+			copy := cloneRecord(record)
+			for key, managed := range copy.Managed {
+				if copy.Scopes[managed.Scope].Path != "left" || scenario == "distinct-roots" {
+					continue
+				}
+				managed.Values[0].State, managed.Values[0].Data, managed.Values[0].Digest = "skipped", nil, ""
+				copy.Managed[key] = managed
+				if scenario == "failed-graph-ancestor" {
+					// The complete child node remains in history after its mount fails.
+					ancestor := copy.Attempts[managed.Scope]
+					ancestor.State = AttemptFailed
+					copy.Attempts[managed.Scope] = ancestor
+					delete(copy.Scopes[copy.RootScope].Nodes, "left")
+				}
+			}
+			before := cloneRecord(copy)
+			state := &runState{def: def, record: copy}
+			err := state.validateLoaded()
+			if (err != nil) != (scenario == "same-owner-conflict") {
+				t.Fatalf("owner/ancestry mismatch: %v", err)
+			}
+			if !reflect.DeepEqual(before, state.record) {
+				t.Fatal("owner validation changed history")
 			}
 		})
 	}

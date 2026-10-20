@@ -9,6 +9,34 @@ import (
 
 func equalValue(a, b ValueRecord) bool { return reflect.DeepEqual(a, b) }
 
+// Message values constrain only their exact complete-node root while the whole
+// processing ancestry is valid. Failed Retry and graph histories remain decodable
+// but cannot constrain a later successful owner's outputs.
+func (s *runState) checkManagedValues(scope string, node NodeRecord, managed ManagedRecord) error {
+	if managed.Scope != scope || managed.NodeID != node.NodeID {
+		return nil
+	}
+	_, rootID, err := s.rootAttempt(managed.Parent)
+	if err != nil {
+		return err
+	}
+	if rootID != node.Attempt || s.ancestry(managed.Parent, false) != nil {
+		return nil
+	}
+	for _, committed := range managed.Values {
+		found := false
+		for _, value := range node.Outputs {
+			if value.Name == committed.Name {
+				found = equalValue(value, committed)
+			}
+		}
+		if !found {
+			return fmt.Errorf("durable: node commit lost a confirmed message value")
+		}
+	}
+	return nil
+}
+
 func (s *runState) hasIncrementalSource(scope, key string, historical bool) bool {
 	for _, stream := range s.record.Streams {
 		if !s.streamComesFrom(scope, key, stream.Stream.ID, make(map[string]bool)) {
@@ -186,6 +214,11 @@ func (s *runState) validateStreams() error {
 			}
 			delete(keys, value.Name)
 			if _, err := s.def.decodeValue(key, value); err != nil {
+				return err
+			}
+		}
+		if complete, ok := scope.Nodes[managed.NodeID]; ok {
+			if err := s.checkManagedValues(managed.Scope, complete, managed); err != nil {
 				return err
 			}
 		}
