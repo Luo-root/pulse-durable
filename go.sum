@@ -10,5 +10,7 @@ github.com/Luo-root/pulse v0.4.2-0.20261020055532-12e50dc9914e h1:uz2xkvAOv7cNYg
 github.com/Luo-root/pulse v0.4.2-0.20261020055532-12e50dc9914e/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
 github.com/Luo-root/pulse v0.4.2-0.20261020102630-995752b4614a h1:UofnF64bXgMa8fG57HhRFfCJdr7l61aCepM4XsHlYHc=
 github.com/Luo-root/pulse v0.4.2-0.20261020102630-995752b4614a/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
+github.com/Luo-root/pulse v0.4.2-0.20261020134627-e064e0ebbc64 h1:+6VScxVPE85aTDaK1Oo8AfWcW2PS02cri8JZPBVZgVs=
+github.com/Luo-root/pulse v0.4.2-0.20261020134627-e064e0ebbc64/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
