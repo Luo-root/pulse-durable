@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -345,6 +346,253 @@ func confirmedManagedValuesProcess(t *testing.T, store durable.Store, dir, scena
 	}
 }
 
+// Each phase is a fresh process using the real filestore. Save may fail before
+// writing or after its real CAS succeeds; neither case may lose reliable classification.
+func TestSharedRestoreFailureAcrossProcesses(t *testing.T) {
+	for _, scenario := range []string{"store-error", "cancel-error", "committed-cancel-error"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir, name := t.TempDir(), "shared-restore-"+scenario
+			if err := streamRecoveryProcess(t, dir, name, "seed"); err != nil {
+				t.Fatal(err)
+			}
+			before := loadStreamRecord(t, dir)
+			if len(before.Streams) != 1 || callCount(dir, "source") != 1 {
+				t.Fatal("seed did not confirm one source")
+			}
+			for _, stream := range before.Streams {
+				if stream.Stream.ID.Generation != 1 || stream.Stream.Terminal != "completed" {
+					t.Fatal("seed was not complete generation 1")
+				}
+			}
+			// Continue to recovery even on a classification failure so the old-Core
+			// counterexample cannot be mistaken for record loss or an unjoined Save.
+			if err := streamRecoveryProcess(t, dir, name, "resume"); err != nil {
+				t.Errorf("classification: %v", err)
+			}
+			after := loadStreamRecord(t, dir)
+			if scenario == "committed-cancel-error" {
+				if after.Revision != before.Revision+1 {
+					t.Fatal("real Save did not advance exactly one revision")
+				}
+				for _, stream := range after.Streams {
+					if stream.Stream.ID.Generation != 2 {
+						t.Fatal("real Save did not retain generation 2")
+					}
+				}
+			} else if !reflect.DeepEqual(before, after) {
+				t.Fatal("uncommitted Save changed authoritative record")
+			}
+			if err := streamRecoveryProcess(t, dir, name, "recover"); err != nil {
+				t.Fatal(err)
+			}
+			recovered := loadStreamRecord(t, dir)
+			generation := uint64(2)
+			if scenario == "committed-cancel-error" {
+				generation = 3
+			}
+			for _, stream := range recovered.Streams {
+				if stream.Stream.ID.Generation != generation || stream.Stream.Terminal != "completed" {
+					t.Fatal("recovery lost authoritative generation/terminal")
+				}
+			}
+			if recovered.RootScope != before.RootScope || recovered.Revision != after.Revision+1 || callCount(dir, "source") != 1 {
+				t.Fatal("recovery changed run identity, revision or confirmed source calls")
+			}
+			t.Logf("three independent processes: generation=1→%d→%d revision=%d→%d→%d source_calls=1", generation-1, generation, before.Revision, after.Revision, recovered.Revision)
+		})
+	}
+}
+
+type sharedRestoreStore struct {
+	durable.Store
+	outer                context.Context
+	entered              chan context.Context
+	reply, settled       chan struct{}
+	once                 sync.Once
+	inflight, earlyClose atomic.Bool
+	committed            bool
+}
+
+type sharedRestoreSession struct {
+	durable.Session
+	owner *sharedRestoreStore
+}
+
+func (s *sharedRestoreStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
+	session, err := s.Store.Acquire(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &sharedRestoreSession{session, s}, nil
+}
+
+func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecord, revision uint64) error {
+	o := s.owner
+	for _, stream := range record.Streams {
+		if stream.Stream.ID.Generation != 2 {
+			continue
+		}
+		held := false
+		o.once.Do(func() { held = true })
+		if !held {
+			break
+		}
+		o.inflight.Store(true)
+		defer func() { o.inflight.Store(false); close(o.settled) }()
+		if o.committed {
+			if err := s.Session.Save(ctx, record, revision); err != nil {
+				return err
+			}
+		}
+		o.entered <- ctx
+		select {
+		case <-o.reply:
+		case <-o.outer.Done():
+			return o.outer.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errors.New("accepted restore Save failed")
+	}
+	return s.Session.Save(ctx, record, revision)
+}
+
+func (s *sharedRestoreSession) Close() error {
+	o := s.owner
+	if o.inflight.Load() {
+		o.earlyClose.Store(true)
+		select {
+		case <-o.settled:
+		case <-o.outer.Done():
+			return o.outer.Err()
+		}
+	}
+	return s.Session.Close()
+}
+
+func sharedRestoreAwait[T any](t *testing.T, ctx context.Context, signal <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-signal:
+		return value
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		var zero T
+		return zero
+	}
+}
+
+func sharedRestoreFailureProcess(t *testing.T, fs durable.Store, dir, scenario, phase string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	g, err := pulse.New("shared-restore", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pulse.NewKey[pulse.Stream[int]]("output")
+	if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pulse.ProduceStream(g, "source", "empty confirmed source", key, func(*pulse.RunCtx, *pulse.StreamWriter[int]) error {
+		logCall(dir, "source")
+		return nil
+	}, pulse.WithStreamSource("empty", true)); err != nil {
+		t.Fatal(err)
+	}
+	opts := durable.RunOptions{RunID: "stream-run", Version: "shared-restore/1"}
+	var execution *pulse.Execution
+	var sub *pulse.StreamSubscription[int]
+	opts.BeforeStart = func(e *pulse.Execution) error {
+		execution = e
+		var err error
+		sub, err = pulse.SubscribeStream(e, key)
+		return err
+	}
+	if phase != "resume" {
+		received := make(chan error, 1)
+		opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{GraphStarted: func(pulse.Site) {
+			go func() { _, err := sub.Receive(ctx); received <- err }()
+		}})}
+		rt, err := durable.New(fs, durable.NewCodecs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if phase == "seed" {
+			_, err = rt.Run(ctx, g, pulse.Inputs{}, opts)
+		} else {
+			_, err = rt.Resume(ctx, g, pulse.Inputs{}, opts)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sharedRestoreAwait(t, ctx, received); err != io.EOF {
+			t.Fatalf("healthy Receive=%v", err)
+		}
+		return
+	}
+	store := &sharedRestoreStore{Store: fs, outer: ctx, entered: make(chan context.Context, 1), reply: make(chan struct{}), settled: make(chan struct{}), committed: scenario == "shared-restore-committed-cancel-error"}
+	var release sync.Once
+	defer release.Do(func() { close(store.reply) })
+	rt, err := durable.New(store, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancellationFirst := scenario != "shared-restore-store-error"
+	ready, sourceCanceled := make(chan struct{}), make(chan struct{})
+	var graphReason pulse.NodeFinishReason
+	var graphErr error
+	var graphFinished atomic.Int32
+	opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{
+		GraphStarted: func(pulse.Site) {
+			go func() { _, _ = sub.Receive(ctx) }()
+			saveCtx := sharedRestoreAwait(t, ctx, store.entered)
+			if cancellationFirst {
+				execution.Cancel()
+				sharedRestoreAwait(t, ctx, saveCtx.Done())
+			}
+			close(ready)
+		},
+		Finished: func(_ pulse.Site, node string, reason pulse.NodeFinishReason, _ error) {
+			if node == "source" && reason == pulse.NodeCanceled {
+				close(sourceCanceled)
+			}
+		},
+		GraphFinished: func(_ pulse.Site, reason pulse.NodeFinishReason, err error) {
+			graphReason, graphErr = reason, err
+			graphFinished.Add(1)
+		},
+	})}
+	result := make(chan error, 1)
+	go func() { _, err := rt.Resume(ctx, g, pulse.Inputs{}, opts); result <- err }()
+	sharedRestoreAwait(t, ctx, ready)
+	if cancellationFirst {
+		sharedRestoreAwait(t, ctx, sourceCanceled)
+		if !errors.Is(execution.Err(), context.Canceled) {
+			t.Fatal("source cancellation was not first")
+		}
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("Runtime returned before Save reply: %v", err)
+	default:
+	}
+	release.Do(func() { close(store.reply) })
+	err = sharedRestoreAwait(t, ctx, result)
+	sharedRestoreAwait(t, ctx, store.settled)
+	var checkpoint, finalCheckpoint *pulse.CheckpointError
+	final := execution.Wait()
+	// Runtime joins its session-close result; compare the reliable error identity
+	// within that chain and keep Core's own terminal values exactly identical.
+	if !errors.As(err, &checkpoint) || !errors.As(final, &finalCheckpoint) || checkpoint != finalCheckpoint || execution.Err() != final || execution.Snapshot().Graph.Err != final || execution.Snapshot().Graph.Status != pulse.GraphStatusFailed || graphReason != pulse.NodeFailed || graphErr != final || graphFinished.Load() != 1 {
+		t.Errorf("accepted Save classification/observation lost: checkpoint=%t result=%v status=%s GraphFinished=%s/%d", checkpoint != nil, err, execution.Snapshot().Graph.Status, graphReason, graphFinished.Load())
+	}
+	if store.earlyClose.Load() {
+		t.Error("Runtime closed session before admitted Save returned")
+	}
+	t.Logf("Save admitted and joined: checkpoint=%t status=%s source_calls=%d", checkpoint != nil, execution.Snapshot().Graph.Status, callCount(dir, "source"))
+}
+
 func streamRecoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -453,6 +701,10 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	}
 	if strings.HasPrefix(scenario, "confirmed-values-") {
 		confirmedManagedValuesProcess(t, store, dir, scenario, phase)
+		return
+	}
+	if strings.HasPrefix(scenario, "shared-restore-") {
+		sharedRestoreFailureProcess(t, store, dir, scenario, phase)
 		return
 	}
 	backend := &streamInjectedStore{Store: store, scenario: scenario, first: phase == "run"}
