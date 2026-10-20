@@ -21,10 +21,10 @@ Outputs are published to downstream nodes after storage confirms the checkpoint 
 Requires **Go 1.25 or later**. Durable is currently a development version with no formal release. Pin the public development revision for reproducible installation:
 
 ```sh
-go get github.com/Luo-root/pulse-durable@9fda63212a51fc04e44e771cb09e06a9a06b1c7b
+go get github.com/Luo-root/pulse-durable@887892d6d64f5d9c589675edea7fa12680332045
 ```
 
-That revision's `go.mod` pins Pulse `v0.4.2-0.20261020102630-995752b4614a`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
+That revision's `go.mod` pins Pulse `v0.4.2-0.20261020134627-e064e0ebbc64`. See [Installation](site/en/guide/installation.md) for the complete steps to create a new module.
 
 Prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's benchmark module is not an official backend.
 
