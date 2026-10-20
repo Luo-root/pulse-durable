@@ -755,6 +755,8 @@ func TestCheckpointWriterTerminalSerializesWithStop(t *testing.T) {
 func TestCheckpointHostReceiveCannotCancelSharedRestore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
+	type contextKey struct{}
+	ctx = context.WithValue(ctx, contextKey{}, "shared-restore")
 	g := testGraph(t, "host-first-restore")
 	key := pulse.NewKey[pulse.Stream[int]]("out")
 	if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
@@ -804,18 +806,25 @@ func TestCheckpointHostReceiveCannotCancelSharedRestore(t *testing.T) {
 		}
 	}
 	var e *pulse.Execution
+	var sharedOpenCtx context.Context
 	callCtx, cancelCall := context.WithCancel(ctx)
 	defer cancelCall()
 	result := make(chan error, 1)
 	observer := pulse.ObserverFunc{GraphStarted: func(pulse.Site) {
 		go func() { _, err := sub.Receive(callCtx); result <- err }()
 		openCtx := testAwait(t, ctx, entered) // Observer precedes all internal workers.
+		sharedOpenCtx = openCtx
+		deadline, hasDeadline := openCtx.Deadline()
+		wantDeadline, wantHasDeadline := ctx.Deadline()
+		if openCtx.Value(contextKey{}) != "shared-restore" || hasDeadline != wantHasDeadline || !deadline.Equal(wantDeadline) {
+			t.Error("shared Open lost root values or deadline")
+		}
 		cancelCall()
 		if err := testAwait(t, ctx, result); !errors.Is(err, context.Canceled) {
 			t.Errorf("single Receive cancellation=%v", err)
 		}
-		if openCtx != e.Context() || openCtx.Err() != nil {
-			t.Error("single Receive owns or canceled the shared Open")
+		if openCtx.Err() != nil || e.Context().Err() != nil {
+			t.Error("single Receive canceled the shared Open or execution")
 		}
 		once.Do(func() { close(release) })
 	}}
@@ -836,5 +845,8 @@ func TestCheckpointHostReceiveCannotCancelSharedRestore(t *testing.T) {
 	}
 	if err := e.Wait(); err != nil || calls.Load() != 1 {
 		t.Fatalf("healthy restored run failed or reentered source: err=%v calls=%d", err, calls.Load())
+	}
+	if sharedOpenCtx == nil || !errors.Is(sharedOpenCtx.Err(), context.Canceled) {
+		t.Error("shared Open did not retain root execution cancellation")
 	}
 }
