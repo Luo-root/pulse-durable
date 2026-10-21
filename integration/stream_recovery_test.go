@@ -403,14 +403,321 @@ func TestSharedRestoreFailureAcrossProcesses(t *testing.T) {
 	}
 }
 
+// Cancellation of a restored child must leave the mount resumable. The host
+// consumes and explicitly Acks the original tail only on healthy recovery.
+func TestNestedRestoredCancellationAcrossProcesses(t *testing.T) {
+	for _, scenario := range []string{"healthy", "cancel-child", "cancel-root"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir, name := t.TempDir(), "nested-restore-"+scenario
+			if err := streamRecoveryProcess(t, dir, name, "seed"); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			before := loadStreamRecord(t, dir)
+			assertNestedRestoredTail(t, before, 1, 1)
+			if len(before.Attempts) != 3 || len(before.Scopes) != 2 || len(before.Scopes[before.RootScope].Nodes) != 0 {
+				t.Fatal("seed did not retain one active mount and its two child attempts")
+			}
+			for id, attempt := range before.Attempts {
+				want := durable.AttemptActive
+				if attempt.NodeID == "source" {
+					want = durable.AttemptConfirmed
+				}
+				if attempt.Index != 1 || attempt.Limit != 1 || attempt.State != want {
+					t.Fatalf("seed attempt %s: %+v", id, attempt)
+				}
+			}
+			for _, phase := range []string{"resume", "recover"} {
+				encoded, err := json.Marshal(before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("record phase=before-%s %s", phase, encoded)
+				// Keep the third process even if classification failed: its concrete
+				// Resume result distinguishes lost recovery eligibility from lost data.
+				if err := streamRecoveryProcess(t, dir, name, phase); err != nil {
+					t.Errorf("%s: %v", phase, err)
+				}
+				after := loadStreamRecord(t, dir)
+				encoded, err = json.Marshal(after)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("record phase=%s %s", phase, encoded)
+				canceled := phase == "resume" && scenario != "healthy"
+				generation, pending := uint64(2), 0
+				if phase == "recover" {
+					generation = 3
+				}
+				if canceled {
+					pending = 1
+				}
+				assertNestedRestoredTail(t, after, generation, pending)
+				if after.RootScope != before.RootScope || after.RunID != before.RunID || after.Version != before.Version || after.Definition != before.Definition || after.Inputs != before.Inputs || after.Revision <= before.Revision || len(after.Attempts) != len(before.Attempts) || callCount(dir, "source") != 1 {
+					t.Error("recovery changed identity/budget, failed to save or reran the confirmed source")
+				}
+				for id, attempt := range before.Attempts {
+					next, ok := after.Attempts[id]
+					identity := next
+					identity.State = attempt.State
+					if !ok || identity != attempt {
+						t.Errorf("attempt identity/index/limit changed: %s before=%+v after=%+v", id, attempt, next)
+					}
+					if canceled {
+						if next.State != attempt.State {
+							t.Errorf("cancel-only changed attempt %s (%s): %s -> %s", id, attempt.NodeID, attempt.State, next.State)
+						}
+					} else if next.State != durable.AttemptConfirmed {
+						t.Errorf("successful recovery left attempt %s (%s) %s", id, attempt.NodeID, next.State)
+					}
+				}
+				if canceled {
+					if len(after.Scopes[after.RootScope].Nodes) != 0 || !reflect.DeepEqual(before.Scopes, after.Scopes) {
+						t.Error("cancel-only confirmed or changed a complete node")
+					}
+					for id, stream := range before.Streams {
+						if !reflect.DeepEqual(stream.Pending, after.Streams[id].Pending) {
+							t.Error("cancellation consumed the pending tail")
+						}
+					}
+				} else if after.Scopes[after.RootScope].Nodes["mount"].Reason != "completed" {
+					t.Error("healthy recovery did not confirm the mount")
+				}
+				before = after
+			}
+		})
+	}
+}
+
+func assertNestedRestoredTail(t *testing.T, record durable.RunRecord, generation uint64, pending int) {
+	t.Helper()
+	if len(record.Streams) != 1 {
+		t.Fatalf("streams=%d, want one confirmed source", len(record.Streams))
+	}
+	for _, stream := range record.Streams {
+		node := record.Scopes[stream.Stream.ID.Scope].Nodes["source"]
+		if stream.Stream.ID.Generation != generation || stream.Stream.Terminal != "completed" || stream.Stream.Stopped || stream.LastSequence != 1 || stream.AckedThrough != uint64(1-pending) || len(stream.Pending) != pending || node.Reason != "completed" || record.Attempts[node.Attempt].State != durable.AttemptConfirmed {
+			t.Errorf("confirmed source/tail changed: generation=%d want=%d terminal=%s stopped=%t last=%d ack=%d pending=%d want=%d source=%+v", stream.Stream.ID.Generation, generation, stream.Stream.Terminal, stream.Stream.Stopped, stream.LastSequence, stream.AckedThrough, len(stream.Pending), pending, node)
+		}
+		if stream.Cursor == nil || string(stream.Cursor.Data) != "7" || (pending == 1 && (len(stream.Pending) != 1 || stream.Pending[0].Sequence != 1 || string(stream.Pending[0].Value.Data) != "7")) {
+			t.Error("lost original source position or pending value")
+		}
+	}
+}
+
+func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scenario, phase string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	child, err := pulse.New("restored-child", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside, outside := pulse.NewKey[pulse.Stream[int]]("inside"), pulse.NewKey[pulse.Stream[int]]("outside")
+	if err := child.DeclareOutput(pulse.NewPort(inside)); err != nil {
+		t.Fatal(err)
+	}
+	holdStarted, sourceFinished := make(chan struct{}), make(chan struct{})
+	if err := pulse.ProduceStream(child, "source", "confirmed tail", inside, func(_ *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+		select {
+		case <-holdStarted:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		logCall(dir, "source")
+		return writer.SendAt(7, 7)
+	}, pulse.WithBuffer(1), pulse.WithStreamSource("nested/7", true)); err != nil {
+		t.Fatal(err)
+	}
+	canceled := phase == "seed" || (phase == "resume" && scenario != "nested-restore-healthy")
+	if err := child.Add(pulse.NewNode("hold", "keep mount active", nil, nil, func(rc *pulse.RunCtx) error {
+		close(holdStarted)
+		if canceled {
+			<-rc.Context().Done()
+			// The restored source must latch its result before this live node can
+			// return a separately classified cancellation.
+			select {
+			case <-sourceFinished:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return rc.Context().Err()
+		}
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	root, err := pulse.New("restored-root", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.DeclareOutput(pulse.NewPort(outside)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pulse.Sub(root, "mount", "live child", []pulse.SubBind{pulse.Out(inside, outside)}, child); err != nil {
+		t.Fatal(err)
+	}
+	store := &sharedRestoreStore{Store: fs, outer: ctx, entered: make(chan context.Context, 1), reply: make(chan struct{}), settled: make(chan struct{}), committed: scenario == "nested-restore-cancel-root", success: true}
+	var release sync.Once
+	defer release.Do(func() { close(store.reply) })
+	var backend durable.Store = fs
+	if phase == "resume" {
+		backend = store
+	}
+	rt, err := durable.New(backend, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	type finish struct {
+		reason pulse.NodeFinishReason
+		err    error
+	}
+	sourceEvents, graphEvents := make(chan finish, 1), make(chan finish, 1)
+	childStarted := make(chan *pulse.Execution, 1)
+	reader := make(chan error, 1)
+	var execution *pulse.Execution
+	var sub *pulse.StreamSubscription[int]
+	opts := durable.RunOptions{RunID: "stream-run", Version: "nested-restore/1", BeforeStart: func(e *pulse.Execution) error {
+		execution = e
+		var err error
+		sub, err = pulse.SubscribeStream(e, outside)
+		return err
+	}}
+	opts.ExecOptions = []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{
+		GraphStarted: func(site pulse.Site) {
+			if site.Path == "mount" {
+				childStarted <- execution.Snapshot().Nodes[0].Child
+			}
+			if site.Path == "" && !canceled {
+				go func() {
+					delivery, err := sub.Receive(ctx)
+					if err == nil && (delivery.Value != 7 || delivery.Sequence != 1) {
+						err = fmt.Errorf("original tail=%d sequence=%d", delivery.Value, delivery.Sequence)
+					}
+					// A completed healthy control has already consumed its tail.
+					if phase == "recover" && scenario == "nested-restore-healthy" {
+						if err == io.EOF {
+							reader <- nil
+							return
+						}
+						err = fmt.Errorf("already Acked tail replayed: %v", err)
+					}
+					if err == nil {
+						err = delivery.Ack()
+					}
+					if err == nil {
+						_, err = sub.Receive(ctx)
+						if err == io.EOF {
+							err = nil
+						} else {
+							err = fmt.Errorf("after original Ack: want EOF, got %v", err)
+						}
+					}
+					reader <- err
+				}()
+			}
+		},
+		Finished: func(site pulse.Site, node string, reason pulse.NodeFinishReason, err error) {
+			if site.Path == "mount" && node == "source" {
+				close(sourceFinished)
+				sourceEvents <- finish{reason, err}
+				if phase == "seed" {
+					execution.Cancel()
+				}
+			}
+		},
+		GraphFinished: func(site pulse.Site, reason pulse.NodeFinishReason, err error) {
+			if site.Path == "" {
+				graphEvents <- finish{reason, err}
+			}
+		},
+	})}
+	if phase == "seed" {
+		if _, err := rt.Run(ctx, root, pulse.Inputs{}, opts); !errors.Is(err, context.Canceled) {
+			t.Fatalf("seed must interrupt active mount: %v", err)
+		}
+		return
+	}
+	result := make(chan error, 1)
+	go func() { _, err := rt.Resume(ctx, root, pulse.Inputs{}, opts); result <- err }()
+	if phase == "recover" {
+		if err := sharedRestoreAwait(t, ctx, result); err != nil {
+			var scopeFailure *pulse.CheckpointScopeFailure
+			t.Fatalf("third-process Resume: scope_failure=%t err=%v", errors.As(err, &scopeFailure), err)
+		}
+		if err := sharedRestoreAwait(t, ctx, reader); err != nil {
+			t.Fatal(err)
+		}
+		if execution.Snapshot().Graph.Status != pulse.GraphStatusCompleted {
+			t.Fatal("third process did not complete")
+		}
+		return
+	}
+	nested := sharedRestoreAwait(t, ctx, childStarted)
+	saveCtx := sharedRestoreAwait(t, ctx, store.entered)
+	// Save holds Durable's record mutex; the active hold attempt may still be
+	// waiting to re-enter its body. Never wait for that body while Save is held.
+	if nested == nil || nested.Context().Err() != nil || execution.Context().Err() != nil || saveCtx.Err() != nil {
+		t.Fatal("shared restore Save was not admitted with a healthy root and live child")
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- execution.Wait() }()
+	if canceled {
+		if scenario == "nested-restore-cancel-child" {
+			nested.Cancel()
+		} else {
+			execution.Cancel()
+		}
+		source := sharedRestoreAwait(t, ctx, sourceEvents)
+		if source.reason != pulse.NodeCanceled || !errors.Is(source.err, context.Canceled) {
+			t.Errorf("restored source cancellation: reason=%s err=%v", source.reason, source.err)
+		}
+		for name, done := range map[string]<-chan error{"Runtime": result, "Wait": waited} {
+			select {
+			case err := <-done:
+				t.Fatalf("%s returned before admitted Save reply: %v", name, err)
+			default:
+			}
+		}
+	}
+	release.Do(func() { close(store.reply) })
+	runErr := sharedRestoreAwait(t, ctx, result)
+	sharedRestoreAwait(t, ctx, store.settled)
+	final := sharedRestoreAwait(t, ctx, waited)
+	graph := sharedRestoreAwait(t, ctx, graphEvents)
+	snapshot := execution.Snapshot()
+	var checkpoint *pulse.CheckpointError
+	wantStatus, wantReason := pulse.GraphStatusCompleted, pulse.NodeCompleted
+	if canceled {
+		wantStatus, wantReason = pulse.GraphStatusCanceled, pulse.NodeCanceled
+		if !errors.Is(runErr, context.Canceled) || errors.As(runErr, &checkpoint) {
+			t.Errorf("cancel-only result=%v checkpoint=%t", runErr, checkpoint != nil)
+		}
+	} else {
+		if runErr != nil {
+			t.Error(runErr)
+		}
+		if err := sharedRestoreAwait(t, ctx, reader); err != nil {
+			t.Error(err)
+		}
+		if source := sharedRestoreAwait(t, ctx, sourceEvents); source.reason != pulse.NodeCompleted || source.err != nil {
+			t.Errorf("healthy restored source: reason=%s err=%v", source.reason, source.err)
+		}
+	}
+	if snapshot.Graph.Status != wantStatus || graph.reason != wantReason || !errors.Is(runErr, final) || execution.Wait() != final || execution.Err() != final || snapshot.Graph.Err != final || graph.err != final || store.earlyClose.Load() || !store.closed.Load() || !store.succeeded.Load() {
+		t.Errorf("Save/Wait/Runtime/Session disagree: status=%s want=%s GraphFinished=%s err=%v final=%v earlyClose=%t closed=%t Save_succeeded=%t", snapshot.Graph.Status, wantStatus, graph.reason, runErr, final, store.earlyClose.Load(), store.closed.Load(), store.succeeded.Load())
+	}
+	t.Logf("admitted Save succeeded=%t and joined; source_before_reply=%t root_status=%s source_calls=%d", store.succeeded.Load(), canceled, snapshot.Graph.Status, callCount(dir, "source"))
+}
+
 type sharedRestoreStore struct {
 	durable.Store
-	outer                context.Context
-	entered              chan context.Context
-	reply, settled       chan struct{}
-	once                 sync.Once
-	inflight, earlyClose atomic.Bool
-	committed            bool
+	outer                        context.Context
+	entered                      chan context.Context
+	reply, settled               chan struct{}
+	once                         sync.Once
+	inflight, earlyClose, closed atomic.Bool
+	succeeded                    atomic.Bool
+	committed, success           bool
 }
 
 type sharedRestoreSession struct {
@@ -450,6 +757,14 @@ func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecor
 		case <-o.outer.Done():
 			return o.outer.Err()
 		}
+		if o.success {
+			var err error
+			if !o.committed {
+				err = s.Session.Save(ctx, record, revision)
+			}
+			o.succeeded.Store(err == nil)
+			return err
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -460,6 +775,7 @@ func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecor
 
 func (s *sharedRestoreSession) Close() error {
 	o := s.owner
+	defer o.closed.Store(true)
 	if o.inflight.Load() {
 		o.earlyClose.Store(true)
 		select {
@@ -597,8 +913,9 @@ func streamRecoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamRecoveryProcessHelper$", "-test.count=1")
-	cmd.Env = append(os.Environ(), "PULSE_STREAM_DIR="+dir, "PULSE_STREAM_CASE="+scenario, "PULSE_STREAM_PHASE="+phase)
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamRecoveryProcessHelper$", "-test.count=1", "-test.timeout=12s")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PULSE_STREAM_DIR="+dir, "PULSE_STREAM_CASE="+scenario, "PULSE_STREAM_PHASE="+phase, "GORACE=atexit_sleep_ms=0")
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
 		t.Logf("%s/%s: %s", scenario, phase, output)
@@ -705,6 +1022,10 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	}
 	if strings.HasPrefix(scenario, "shared-restore-") {
 		sharedRestoreFailureProcess(t, store, dir, scenario, phase)
+		return
+	}
+	if strings.HasPrefix(scenario, "nested-restore-") {
+		nestedRestoredCancellationProcess(t, store, dir, scenario, phase)
 		return
 	}
 	backend := &streamInjectedStore{Store: store, scenario: scenario, first: phase == "run"}
