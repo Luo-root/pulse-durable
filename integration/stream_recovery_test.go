@@ -709,6 +709,324 @@ func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scen
 	t.Logf("admitted Save succeeded=%t and joined; source_before_reply=%t root_status=%s source_calls=%d", store.succeeded.Load(), canceled, snapshot.Graph.Status, callCount(dir, "source"))
 }
 
+// A local Fork cancellation returned by a healthy node is a final business
+// failure. Real filestore records and fresh processes must retain that verdict.
+func TestForkWaitFailureAcrossProcesses(t *testing.T) {
+	for _, entry := range []string{"open", "receive"} {
+		t.Run(entry, func(t *testing.T) {
+			dir, scenario := t.TempDir(), "fork-wait-"+entry
+			var seed durable.RunRecord
+			if entry == "receive" {
+				if err := streamRecoveryProcess(t, dir, scenario, "seed"); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+				seed = loadStreamRecord(t, dir)
+				assertNestedRestoredTail(t, seed, 1, 1)
+				if len(seed.Attempts) != 3 || callCount(dir, "source") != 1 || callCount(dir, "sink") != 1 {
+					t.Fatal("seed did not retain one confirmed source and active mount/consumer")
+				}
+				for id, attempt := range seed.Attempts {
+					want := durable.AttemptActive
+					if attempt.NodeID == "source" {
+						want = durable.AttemptConfirmed
+					}
+					if attempt.State != want || attempt.Index != 1 || attempt.Limit != 1 {
+						t.Fatalf("seed attempt %s: %+v", id, attempt)
+					}
+				}
+				encoded, err := json.Marshal(seed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("record phase=seed %s", encoded)
+			}
+			phase, node, calls := "run", "source", 1
+			if entry == "receive" {
+				phase, node, calls = "resume", "sink", 2
+			}
+			if err := streamRecoveryProcess(t, dir, scenario, phase); err != nil {
+				t.Errorf("local Fork classification: %v", err)
+			}
+			before := loadStreamRecord(t, dir)
+			encoded, err := json.Marshal(before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("record phase=failed %s", encoded)
+			found := false
+			for id, attempt := range before.Attempts {
+				if attempt.Index != 1 || attempt.Limit != 1 {
+					t.Errorf("attempt budget changed: %s %+v", id, attempt)
+				}
+				if entry == "receive" {
+					previous, ok := seed.Attempts[id]
+					identity := attempt
+					identity.State = previous.State
+					if !ok || identity != previous {
+						t.Errorf("restoring changed attempt identity: %s seed=%+v after=%+v", id, previous, attempt)
+					}
+				}
+				if attempt.NodeID == node {
+					found = true
+					if attempt.Parent != before.RootScope || attempt.Boundary != "" || attempt.State != durable.AttemptFailed {
+						t.Errorf("local Fork failure not confirmed: %s %+v", id, attempt)
+					}
+				}
+			}
+			if !found || callCount(dir, node) != calls {
+				t.Errorf("missing failed node or wrong body calls: node=%s calls=%d want=%d", node, callCount(dir, node), calls)
+			}
+			if entry == "receive" {
+				assertNestedRestoredTail(t, before, 2, 1)
+				if before.RootScope != seed.RootScope || len(before.Attempts) != len(seed.Attempts) || callCount(dir, "source") != 1 {
+					t.Error("local cancellation changed identity/attempt count or reran the confirmed source")
+				}
+			} else if len(before.Attempts) != 1 {
+				t.Errorf("attempts=%d, want one final root attempt", len(before.Attempts))
+			}
+			// Always run the last process, including on old Core: an actual allowed
+			// Resume plus another body call is stronger evidence than classification alone.
+			if err := streamRecoveryProcess(t, dir, scenario, "recover"); err != nil {
+				t.Errorf("failed-scope Resume: %v", err)
+			}
+			after := loadStreamRecord(t, dir)
+			encoded, err = json.Marshal(after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("record phase=recover %s", encoded)
+			if !reflect.DeepEqual(before, after) || callCount(dir, node) != calls || callCount(dir, "source") != 1 {
+				t.Error("rejected Resume changed the full record, attempt identity/index/limit or business calls")
+			}
+		})
+	}
+}
+
+func forkWaitFailureProcess(t *testing.T, fs durable.Store, dir, scenario, phase string) {
+	t.Helper()
+	fmt.Printf("fork wait process: case=%s phase=%s pid=%d ppid=%d\n", scenario, phase, os.Getpid(), os.Getppid())
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	receive := scenario == "fork-wait-receive"
+	injected := phase == "run" || phase == "resume"
+	generation, node := uint64(1), "source"
+	if receive {
+		generation, node = 2, "sink"
+	}
+	store := &sharedRestoreStore{Store: fs, outer: ctx, entered: make(chan context.Context, 1), reply: make(chan struct{}), settled: make(chan struct{}), success: true, generation: generation}
+	var release, startChild sync.Once
+	childStart := make(chan struct{})
+	defer release.Do(func() { close(store.reply) })
+	defer startChild.Do(func() { close(childStart) })
+	var saves, beforeStarts, restored, starts atomic.Int32
+	var backend durable.Store = &streamInjectedStore{Store: fs, saves: &saves}
+	if injected {
+		backend = store
+	}
+	rt, err := durable.New(backend, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := pulse.New("fork-wait-"+node, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := pulse.NewKey[pulse.Stream[int]]("output")
+	forks := make(chan *pulse.RunCtx, 1)
+	type bodyResult struct {
+		ownerHealthy, executionHealthy bool
+		err                            error
+	}
+	type finish struct {
+		reason pulse.NodeFinishReason
+		err    error
+	}
+	bodies, finished, graphFinished := make(chan bodyResult, 1), make(chan finish, 1), make(chan finish, 1)
+	ownerEntered := make(chan struct{})
+	var execution *pulse.Execution
+	body := func(rc *pulse.RunCtx) error {
+		logCall(dir, node)
+		var input pulse.Stream[int]
+		if receive {
+			var err error
+			input, err = pulse.Get(rc, key)
+			if err != nil {
+				return err
+			}
+			close(ownerEntered)
+			if phase == "seed" {
+				<-rc.Context().Done()
+				return rc.Context().Err()
+			}
+		}
+		fork := rc.Fork()
+		defer fork.Cancel()
+		forks <- fork
+		var err error
+		if receive {
+			var delivery pulse.Delivery[int]
+			delivery, err = input.Receive(fork)
+			if err == nil {
+				if delivery.Value != 7 || delivery.Sequence != 1 {
+					return fmt.Errorf("original tail changed: %+v", delivery)
+				}
+				if err = delivery.Ack(); err == nil {
+					_, err = input.Receive(fork)
+					if err == io.EOF {
+						err = nil
+					}
+				}
+			}
+		} else {
+			_, err = pulse.OpenStream(fork, key, pulse.WithBuffer(1), pulse.WithStreamSource("fork-wait/source", true))
+		}
+		bodies <- bodyResult{rc.Context().Err() == nil, execution.Context().Err() == nil, err}
+		return err
+	}
+	if receive {
+		child, err := pulse.New("fork-wait-source", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		inside := pulse.NewKey[pulse.Stream[int]]("inside")
+		if err := child.DeclareOutput(pulse.NewPort(inside)); err != nil {
+			t.Fatal(err)
+		}
+		if err := pulse.ProduceStream(child, "source", "confirmed tail", inside, func(rc *pulse.RunCtx, writer *pulse.StreamWriter[int]) error {
+			logCall(dir, "source")
+			select {
+			case <-ownerEntered:
+			case <-rc.Context().Done():
+				return rc.Context().Err()
+			}
+			return writer.SendAt(7, 7)
+		}, pulse.WithBuffer(1), pulse.WithStreamSource("fork-wait/source", true)); err != nil {
+			t.Fatal(err)
+		}
+		if err := pulse.Sub(g, "mount", "", []pulse.SubBind{pulse.Out(inside, key)}, child); err != nil {
+			t.Fatal(err)
+		}
+		err = g.Add(pulse.NewNode(node, "return only the local Fork error", pulse.Requires(key), nil, body))
+	} else {
+		if err := g.DeclareOutput(pulse.NewPort(key)); err != nil {
+			t.Fatal(err)
+		}
+		err = g.Add(pulse.NewNode(node, "return only the local Fork error", nil, pulse.Provides(key), body))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sub *pulse.StreamSubscription[int]
+	reader := make(chan error, 1)
+	started := make(chan *pulse.Execution, 1)
+	opts := durable.RunOptions{RunID: "stream-run", Version: "fork-wait/1", OnEvent: func(durable.Event) error { restored.Add(1); return nil }, BeforeStart: func(e *pulse.Execution) error {
+		beforeStarts.Add(1)
+		execution = e
+		if !receive {
+			var err error
+			sub, err = pulse.SubscribeStream(e, key)
+			if err != nil {
+				return err
+			}
+		}
+		started <- e
+		return nil
+	}, ExecOptions: []pulse.ExecOption{pulse.WithExecObserver(pulse.ObserverFunc{
+		GraphStarted: func(site pulse.Site) {
+			starts.Add(1)
+			if site.Path == "mount" && injected {
+				// Out is already bound, so the parent consumer can enter Receive.
+				// Its Open must start before restored source submission; otherwise
+				// that Open's record mutex could block the consumer's OpenAttempt.
+				sharedRestoreAwait(t, ctx, childStart)
+			}
+			if site.Path == "" && !receive {
+				go func() { _, err := sub.Receive(ctx); reader <- err }()
+			}
+		},
+		Finished: func(site pulse.Site, id string, reason pulse.NodeFinishReason, err error) {
+			if phase == "seed" && site.Path == "mount" && id == "source" {
+				execution.Cancel()
+			}
+			if site.Path == "" && id == node {
+				finished <- finish{reason, err}
+			}
+		},
+		GraphFinished: func(site pulse.Site, reason pulse.NodeFinishReason, err error) {
+			if site.Path == "" {
+				graphFinished <- finish{reason, err}
+			}
+		},
+	})}}
+	if phase == "seed" {
+		if _, err := rt.Run(ctx, g, pulse.Inputs{}, opts); !errors.Is(err, context.Canceled) {
+			t.Fatalf("seed must interrupt the mount/consumer after source confirmation: %v", err)
+		}
+		return
+	}
+	result := make(chan error, 1)
+	go func() {
+		var err error
+		if phase == "run" {
+			_, err = rt.Run(ctx, g, pulse.Inputs{}, opts)
+		} else {
+			_, err = rt.Resume(ctx, g, pulse.Inputs{}, opts)
+		}
+		result <- err
+	}()
+	if phase == "recover" {
+		err := sharedRestoreAwait(t, ctx, result)
+		var scopeFailure *pulse.CheckpointScopeFailure
+		var checkpoint *pulse.CheckpointError
+		rejected := errors.As(err, &scopeFailure)
+		fmt.Printf("fork wait recover: scope_failure=%t checkpoint=%t Save=%d BeforeStart=%d restored=%d Start=%d source_calls=%d node_calls=%d err=%v\n", rejected, errors.As(err, &checkpoint), saves.Load(), beforeStarts.Load(), restored.Load(), starts.Load(), callCount(dir, "source"), callCount(dir, node), err)
+		if !rejected || errors.As(err, &checkpoint) || scopeFailure.Scope != loadStreamRecord(t, dir).RootScope || saves.Load()+beforeStarts.Load()+restored.Load()+starts.Load() != 0 {
+			t.Error("failed local Fork attempt remained resumable or reached Save/events/BeforeStart/Start")
+		}
+		return
+	}
+	e := sharedRestoreAwait(t, ctx, started)
+	fork := sharedRestoreAwait(t, ctx, forks)
+	saveCtx := sharedRestoreAwait(t, ctx, store.entered)
+	if e.Context().Err() != nil || fork.Context().Err() != nil || saveCtx.Err() != nil {
+		t.Fatal("Fork/Execution/shared Save not healthy at admission")
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- e.Wait() }()
+	fork.Cancel()
+	returned := sharedRestoreAwait(t, ctx, bodies)
+	if !returned.ownerHealthy || !returned.executionHealthy || !errors.Is(returned.err, context.Canceled) || saveCtx.Err() != nil {
+		t.Fatalf("local cancellation escaped its owner or canceled shared Save: %+v Save=%v", returned, saveCtx.Err())
+	}
+	// Save holds the record mutex and FailAttempt needs it. Wait only for the
+	// business-return barrier, never Finished, before allowing the real CAS.
+	for name, done := range map[string]<-chan error{"Runtime": result, "Wait": waited} {
+		select {
+		case err := <-done:
+			t.Fatalf("%s returned before admitted Save reply: %v", name, err)
+		default:
+		}
+	}
+	release.Do(func() { close(store.reply) })
+	sharedRestoreAwait(t, ctx, store.settled)
+	startChild.Do(func() { close(childStart) })
+	runErr := sharedRestoreAwait(t, ctx, result)
+	final := sharedRestoreAwait(t, ctx, waited)
+	event, graph := sharedRestoreAwait(t, ctx, finished), sharedRestoreAwait(t, ctx, graphFinished)
+	var checkpoint *pulse.CheckpointError
+	snapshot := e.Snapshot()
+	fmt.Printf("fork wait result: owner_healthy=%t execution_healthy=%t node=%s graph=%s Save_succeeded=%t earlyClose=%t closed=%t source_calls=%d node_calls=%d\n", returned.ownerHealthy, returned.executionHealthy, event.reason, snapshot.Graph.Status, store.succeeded.Load(), store.earlyClose.Load(), store.closed.Load(), callCount(dir, "source"), callCount(dir, node))
+	if !errors.Is(runErr, context.Canceled) || errors.As(runErr, &checkpoint) || !errors.Is(runErr, final) || e.Wait() != final || e.Err() != final || snapshot.Graph.Err != final || graph.err != final || !store.succeeded.Load() || store.earlyClose.Load() || !store.closed.Load() {
+		t.Errorf("local error or successful shared Save lost: Runtime=%v Wait=%v saved=%t earlyClose=%t closed=%t", runErr, final, store.succeeded.Load(), store.earlyClose.Load(), store.closed.Load())
+	}
+	if event.reason != pulse.NodeFailed || !errors.Is(event.err, context.Canceled) || snapshot.Graph.Status != pulse.GraphStatusFailed || graph.reason != pulse.NodeFailed {
+		t.Errorf("healthy node returned local Fork error: node=%s graph=%s GraphFinished=%s, want failed", event.reason, snapshot.Graph.Status, graph.reason)
+	}
+	if !receive {
+		sharedRestoreAwait(t, ctx, reader)
+	}
+}
+
 type sharedRestoreStore struct {
 	durable.Store
 	outer                        context.Context
@@ -718,6 +1036,7 @@ type sharedRestoreStore struct {
 	inflight, earlyClose, closed atomic.Bool
 	succeeded                    atomic.Bool
 	committed, success           bool
+	generation                   uint64
 }
 
 type sharedRestoreSession struct {
@@ -735,8 +1054,12 @@ func (s *sharedRestoreStore) Acquire(ctx context.Context, id string) (durable.Se
 
 func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecord, revision uint64) error {
 	o := s.owner
+	generation := o.generation
+	if generation == 0 {
+		generation = 2
+	}
 	for _, stream := range record.Streams {
-		if stream.Stream.ID.Generation != 2 {
+		if stream.Stream.ID.Generation != generation {
 			continue
 		}
 		held := false
@@ -1026,6 +1349,10 @@ func TestStreamRecoveryProcessHelper(t *testing.T) {
 	}
 	if strings.HasPrefix(scenario, "nested-restore-") {
 		nestedRestoredCancellationProcess(t, store, dir, scenario, phase)
+		return
+	}
+	if strings.HasPrefix(scenario, "fork-wait-") {
+		forkWaitFailureProcess(t, store, dir, scenario, phase)
 		return
 	}
 	backend := &streamInjectedStore{Store: store, scenario: scenario, first: phase == "run"}
