@@ -23,7 +23,7 @@ Requires Go 1.25 or later and a writable local directory.
 mkdir durable-subgraphs
 cd durable-subgraphs
 go mod init example.com/durable-subgraphs
-go get github.com/Luo-root/pulse-durable@f6b3feeb2cc58a421db3fe7048c1126f00a8aab8
+go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
 ```
 
 The example uses a fixed RunID and `./checkpoints`. Start in a new directory without a record for this example. Assign a new RunID for a new demonstration rather than automatically deleting old records.

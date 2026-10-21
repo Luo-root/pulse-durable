@@ -25,7 +25,7 @@
 
 ## 版本与范围
 
-本套文档描述公开开发修订 `f6b3feeb2cc58a421db3fe7048c1126f00a8aab8`（Go 实际解析为 `v0.0.0-20261021041843-f6b3feeb2cc5`）所包含的 API；Durable 当前尚无正式 release。该修订依赖 Pulse `v0.4.2-0.20261021041444-b1b147d4c134`，要求 Go 1.25 或更高版本。
+本套文档描述公开开发修订 `f46adb637745d864649685cf481675d5dc0ca904`（Go 实际解析为 `v0.0.0-20261021082000-f46adb637745`）所包含的 API；Durable 当前尚无正式 release。该修订依赖 Pulse `v0.4.2-0.20261021081643-be778722b781`，要求 Go 1.25 或更高版本。
 
 支持普通值、受管流、显式状态、静态子图，以及内置 Retry 和消息预算。MemoryStore 只提供进程内协议；文件 Store 面向本机单宿主。宿主可通过[切面与 Cancel/Resume](../guide/composition.md)组合审批等待及按轮工具调用；内置唤醒服务、分布式运行管理、deterministic replay 和外部副作用 exactly-once 不在当前实现内。
 
