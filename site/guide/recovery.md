@@ -10,7 +10,7 @@
 mkdir durable-recovery
 cd durable-recovery
 go mod init example.com/durable-recovery
-go get github.com/Luo-root/pulse-durable@887892d6d64f5d9c589675edea7fa12680332045
+go get github.com/Luo-root/pulse-durable@f6b3feeb2cc58a421db3fe7048c1126f00a8aab8
 ```
 
 Durable 尚无正式 release，安装命令固定到公开开发修订。使用一个尚未运行过本例的新模块目录；如果已有检查点，先阅读本页的“重复运行”说明。

@@ -43,7 +43,7 @@ Run both processes from the [recovery tutorial](recovery.md) and keep `durable-r
 mkdir durable-storage
 cd durable-storage
 go mod init example.com/durable-storage
-go get github.com/Luo-root/pulse-durable@887892d6d64f5d9c589675edea7fa12680332045
+go get github.com/Luo-root/pulse-durable@f6b3feeb2cc58a421db3fe7048c1126f00a8aab8
 ```
 
 Requires Go 1.25 or later. Save this complete program as `main.go`:
