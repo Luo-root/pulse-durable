@@ -12,6 +12,11 @@
   <a href="https://luo-root.github.io/pulse-durable/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/Luo-root/pulse-durable/stargazers"><img src="https://img.shields.io/github/stars/Luo-root/pulse-durable?style=social" alt="Stars"></a>
+  <a href="https://github.com/Luo-root/pulse-durable/graphs/contributors"><img src="https://img.shields.io/github/contributors/Luo-root/pulse-durable?style=social" alt="Contributors"></a>
+</p>
+
 Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检查点存储与恢复。你仍然使用 Pulse 定义图、节点和输入输出，通过 Durable 的 `Run` 创建一次运行，通过 `Resume` 恢复已有运行。
 
 完整节点链的检查点被存储确认后，输出才会发布给下游。恢复会复用有效作用域内已确认的节点成果，未确认的节点从函数开头重新执行。Durable 不保存 Go 调用栈，也不自动撤销数据库写入、HTTP 请求等外部副作用。
@@ -159,3 +164,14 @@ go test -race -count=1 ./...
 ## 许可
 
 本项目采用 [MIT 许可](LICENSE)，Copyright © 2026 Luo-root。Logo 中的字体轮廓素材保留[第三方字体许可](.github/assets/FONT-LICENSE.txt)。
+
+## ⭐ 支持 pulse-durable
+
+为 Pulse 工作流提供检查点存储与恢复能力。
+
+如果你在做长流程、需要跨进程恢复的执行，Star 一下能帮它被更多人看到 —— 对个人维护的开源项目帮助很大。
+
+- 遇到问题或想要功能：[提交 issue](https://github.com/Luo-root/pulse-durable/issues)
+- 觉得好用但暂时没需求：点右上角的 ⭐ 就够了
+- 想参与开发：[贡献指南](CONTRIBUTING.md)
+
