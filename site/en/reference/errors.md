@@ -8,10 +8,10 @@ Use this page to decide what to do after Run/Resume fails. Identify reliable che
 | --- | --- | --- |
 | Argument or definition error | Nil Runtime/context/graph, empty RunID/Version, invalid RunID/Version UTF-8, invalid graph, missing Codec, unsupported type, or streaming declaration | Fix the call or configuration; these preflight contract errors are not CheckpointError |
 | `durable.ErrBusy` | An active session owns the RunID during Acquire | Coordinate with the existing owner; Acquire does not wait, and deleting lock files does not resolve contention |
-| `durable.ErrNotFound` | Resume loads a RunID with no record | Check storage and identity; use Run for genuinely new work |
+| `durable.ErrNotFound` | Resume loads a RunID with no record | Check the original storage and identity; continue Run only after confirming that this new Run never established its initial record, without automatic fallback |
 | `durable.ErrConflict` | Existing RunID, or mismatched root recovery identity, Version, definition, or inputs; also registration and CAS conflicts | Check original contracts and the method; do not overwrite old records |
-| `*pulse.CheckpointError` | Reliable Store, Codec, recovery protocol, or callback operation fails | Stop this execution, resolve the cause, then reload the authoritative record with Resume |
-| Host cancellation or deadline | The current host context was actually canceled or expired | Recover the same run with a valid new context and the original compatible conditions |
+| `*pulse.CheckpointError` | Reliable Store, Codec, recovery protocol, or callback operation fails | Stop this execution and resolve the cause; choose Run or Resume using the record prerequisites below |
+| Host cancellation or deadline | The current host context was actually canceled or expired | Use a valid new context and choose Run or Resume using the record prerequisites below; preserve the original identity and compatible conditions |
 | Real business failure | A node or business Aspect returns a real error; a confirmed scope failure returns `*pulse.CheckpointScopeFailure` during recovery (original error identity is not persisted) | Consume the existing Retry budget; Resume does not replenish it after final failure |
 
 A `CheckpointError` cause chain may also match `ErrConflict`, `context.Canceled`, or `pulse.ErrSkipped`. For example, a CAS conflict at a reliable-save boundary remains a reliable failure. Do not downgrade it to an ordinary argument conflict or normal skip. Normal root Run/Resume identity conflicts, missing records, and ownership contention retain their original categories.
@@ -44,6 +44,16 @@ func classify(err error) string {
 
 Identify `CheckpointError` first, then use `errors.Is/As` to inspect its underlying cause and select a repair action. `CheckpointError.Operation` identifies the reliable operation; `Err` and `Unwrap` preserve its error chain.
 
+## Confirm the record before choosing Run or Resume
+
+`CheckpointError` does not prove that a record exists. A new `Run` encodes inputs before its first save. If encoding fails, there may still be no record, and calling `Resume` directly after repair returns `ErrNotFound`.
+
+Wait for the original call to finish and confirm ownership has been released. Check the original storage location and RunID, then read authoritative state through an exclusive session. The inspection tool on the [Storage page](../guide/storage.md) can do this; close its session before calling Runtime:
+
+1. **An existing valid, compatible record**: call `Resume` with the original graph definition, inputs, Version, and Codec contract. The reloaded record determines reusable results, terminal state, and remaining budget; Resume does not reopen an exhausted root budget.
+2. **Confirmed absence of this new Run's initial record**: repair the initialization failure and continue `Run` under the original compatible conditions. `Run` still reloads and refuses to overwrite an existing record.
+3. **Read failure, corruption, or uncertain identity**: investigate first instead of treating it as absence. Neither `CheckpointError` nor a single `ErrNotFound` justifies automatic fallback to `Run`.
+
 ## Uncertain saves
 
 A failed Save has two possible outcomes:
@@ -53,7 +63,7 @@ A failed Save has two possible outcomes:
 
 Runtime stops this execution without treating the proposed record as its confirmed in-memory state, automatically rolling back, or repeating Save. Do not overwrite the backend with the previous record or blindly retry an old expectedRevision.
 
-After resolving the cause, call Resume with a new or reused Runtime. It reloads: valid results that were actually confirmed are reused, and nodes that remain unconfirmed run again. A returned Save error alone cannot prove that a particular business action must or must not repeat.
+After resolving the cause, confirm the record prerequisites above. For an existing valid, compatible record, call Resume with a new or reused Runtime; it reloads and reuses results or continues unconfirmed nodes subject to terminal state and remaining budget. A failed initial Save may already have established a record. Continue Run only after checking the original storage and identity and confirming the initial record was never established. A returned Save error alone proves neither absence of a record nor whether a particular business action must repeat.
 
 Later errors do not roll back confirmed results. A Session close failure is also joined into the returned error as CheckpointError. Even when the actual Execution completed, the Runtime call can fail during cleanup. Handle the returned error and investigate storage/ownership state; a completed Snapshot alone does not prove the entire call was error-free.
 
@@ -86,7 +96,7 @@ RunRecord does not automatically save business error text, but it does save enco
 1. Preserve RunID, business version, storage location, and the returned error category without changing the original record.
 2. For CheckpointError, identify the reliable operation and underlying cause first. Do not automatically start new business work.
 3. For Busy, inspect ownership; for NotFound, inspect directory and identity; for Conflict, inspect the method, version, definition, and inputs.
-4. Resume with the original compatible conditions after repair, letting the reloaded record determine valid results and remaining budget.
+4. After repair, wait for the original call to finish and confirm ownership release. Check the original storage and identity and reload authoritative state: use Resume for an existing valid, compatible record, or continue Run only after confirming this new Run never established its initial record. Read failures are not absence; Resume retains the original terminal-state and remaining-budget constraints.
 5. Explicitly allocate a new RunID for new business conditions or a new complete budget, while managing retention of the old record.
 
 ## Next steps

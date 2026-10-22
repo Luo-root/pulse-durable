@@ -27,7 +27,7 @@ if err != nil {
 }
 ```
 
-The directory must not be empty. `New` creates it when necessary and resolves a relative path to an absolute path when creating the Store. A new process creating another Store must still resolve to the original checkpoint directory.
+The directory path string must not be empty; the directory itself may be empty. `New` creates it when necessary and resolves a relative path to an absolute path when creating the Store. A new process creating another Store must still resolve to the original checkpoint directory.
 
 On platforms with Unix permission bits, new directories use `0700` and new files use `0600`. Existing directory permissions are unchanged. Windows uses directory ACLs. The host manages directory access, backups, and retention; checkpoints are not encrypted containers.
 
@@ -120,7 +120,9 @@ RunRecord contains serializable data only. Scope and attempt identities are pers
 
 A save can finish writing and then fail during a confirmation step. For example, a record file may have been replaced before directory sync fails. A returned error therefore does not prove the disk still holds the old record.
 
-Runtime stops this execution without advancing its confirmed in-memory record, rolling back, or automatically retrying that write. Resolve the underlying issue and call a new `Resume` so it reloads the authoritative record. If the node was confirmed, reuse its result. If it remains unconfirmed, re-enter it according to recovery rules.
+Runtime stops this execution without advancing its confirmed in-memory record, rolling back, or automatically retrying that write. Resolve the cause, wait for the original call to finish, and confirm ownership has been released. Check the original directory and RunID, then reload authoritative state through an exclusive session; close that inspection session before calling Runtime.
+
+Use `Resume` for an existing valid, compatible record: reuse confirmed results and handle unconfirmed nodes under recovery rules, while retaining terminal-state and original Retry-budget constraints. Continue `Run` with the original inputs, version, and Codec contract only after confirming that this new `Run` never established its initial record. For example, initial input encoding can return `CheckpointError` before the first Save. Conversely, a failed initial Save may already have committed; do not infer absence or automatically turn `ErrNotFound` into `Run`. Investigate permission, corruption, and read failures instead of treating them as absence. See [Error handling](../reference/errors.md) for the decision procedure.
 
 Custom backends must also permit and document this situation. Do not automatically repeat a failed save using an old revision, or overwrite the actual record with an old in-memory snapshot.
 

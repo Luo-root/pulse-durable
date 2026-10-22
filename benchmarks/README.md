@@ -51,7 +51,7 @@ go test -race -count=1 -timeout=180s ./...
 
 Linux/macOS 将可执行文件命名为 `workflow`。真实恢复测试会启动刚编译的测试可执行文件，不需要外部服务或凭据。
 
-使用 Pulse 仓库的统一采样器（根据两仓位置调整路径）：
+先从 `benchmarks/workflow` 回到本 Durable 仓库根目录（`cd ../..`），再使用 Pulse 仓库的统一采样器（根据两仓位置调整路径）。以下采样和单场景命令均从本仓根目录执行：
 
 ```sh
 python ../pulse/benchmarks/tools/run_matrix.py --suite workflow --module benchmarks/workflow --binary benchmarks/workflow/workflow.exe --out benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4
