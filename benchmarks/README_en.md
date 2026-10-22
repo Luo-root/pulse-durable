@@ -51,7 +51,7 @@ go test -race -count=1 -timeout=180s ./...
 
 On Linux/macOS, name the executable `workflow`. Recovery tests launch the compiled test executable; no external service or credentials are needed.
 
-Use the shared sampler from the Pulse repository, adjusting paths for your checkouts:
+First return from `benchmarks/workflow` to this Durable repository's root (`cd ../..`), then use the shared sampler from the Pulse repository, adjusting paths for your checkouts. Run both the sampling and single-scenario commands below from this repository's root:
 
 ```sh
 python ../pulse/benchmarks/tools/run_matrix.py --suite workflow --module benchmarks/workflow --binary benchmarks/workflow/workflow.exe --out benchmarks/results/local-workflow --sizes 1,10,100,1000,10000 --rounds 1 --repeats 5 --procs 4 --parallelism 4

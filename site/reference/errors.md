@@ -8,10 +8,10 @@
 | --- | --- | --- |
 | 参数或定义错误 | nil Runtime/context/图、空 RunID/Version、非法 RunID/Version UTF-8、无效图、缺少 Codec、不支持的类型或流式声明 | 修正调用或配置；这些前置契约错误不归为 CheckpointError |
 | `durable.ErrBusy` | Acquire 时同一 RunID 已有活动会话 | 由宿主协调现有所有者；Acquire 不等待，不能删除锁文件解除占用 |
-| `durable.ErrNotFound` | Resume 加载时没有该 RunID 的记录 | 核对存储与身份；确实是新业务时使用 Run |
+| `durable.ErrNotFound` | Resume 加载时没有该 RunID 的记录 | 核对原存储与身份；仅在确认本次新 Run 的首次记录尚未建立时继续 Run，不自动回退 |
 | `durable.ErrConflict` | RunID 已存在，或根恢复身份、Version、定义、输入不一致；也用于注册或 CAS 冲突 | 核对原始契约与调用方式，不覆盖旧记录 |
-| `*pulse.CheckpointError` | Store、Codec、恢复协议或恢复回调的可靠操作失败 | 停止本次，处理原因；后续 Resume 重新读取权威记录 |
-| 宿主取消或到期 | 当前宿主 context 确实被取消或到期 | 用有效的新 context 恢复原运行；保留原身份与兼容条件 |
+| `*pulse.CheckpointError` | Store、Codec、恢复协议或恢复回调的可靠操作失败 | 停止本次并处理原因；按下文记录前提选择 Run 或 Resume |
+| 宿主取消或到期 | 当前宿主 context 确实被取消或到期 | 换用有效的新 context，按下文记录前提选择 Run 或 Resume；保留原身份与兼容条件 |
 | 真实业务失败 | 节点或业务切面返回真实错误；恢复已确认 scope 失败时返回 `*pulse.CheckpointScopeFailure`（不保存原错误身份） | 消耗已有 Retry 预算；最终失败不会通过 Resume 获得新预算 |
 
 一个 `CheckpointError` 的原因链仍可能匹配 `ErrConflict`、`context.Canceled` 或 `pulse.ErrSkipped`。例如 CAS 冲突发生在可靠保存边界时，它仍首先是可靠失败；不能降为普通参数冲突或正常跳过。根 Run/Resume 的正常身份冲突、记录不存在和占用保持原分类。
@@ -44,6 +44,16 @@ func classify(err error) string {
 
 先识别 `CheckpointError`，随后可通过 `errors.Is/As` 检查其底层原因，定位具体修复动作。`CheckpointError.Operation` 描述可靠操作，`Err` 与 `Unwrap` 保留错误链。
 
+## 先确认记录，再选择 Run 或 Resume
+
+`CheckpointError` 不代表记录已经建立。新 `Run` 在首次保存之前就要编码输入；这一步失败时，仍可能没有任何记录，修复后直接 `Resume` 会返回 `ErrNotFound`。
+
+等待原调用结束并确认所有权释放后，核对原存储位置与 RunID，再通过独占会话读取权威状态；可使用[存储页](../guide/storage.md)的检查工具，检查会话关闭后再调用 Runtime：
+
+1. **已有有效且兼容的记录**：按原图定义、输入、Version 与 Codec 契约调用 `Resume`，由重新加载的记录决定可复用成果、终态及剩余预算；它不会重开已经耗尽的根预算。
+2. **确认本次新 Run 的首次记录尚未建立**：修复初始化故障后，按原兼容条件继续 `Run`；`Run` 仍会重新加载并拒绝覆盖已有记录。
+3. **读取故障、损坏或身份有疑问**：先排查，不将其视为不存在；不能仅凭 `CheckpointError` 或一次 `ErrNotFound` 自动回退到 `Run`。
+
 ## 保存结果不确定
 
 Save 报错有两种可能：
@@ -53,7 +63,7 @@ Save 报错有两种可能：
 
 Runtime 停止本次执行，不把 proposed record 当成自己的已确认内存状态，不自动回滚或重复 Save。不要据此用旧记录覆盖后端，也不要盲目重试旧 expectedRevision。
 
-处理原因后，新建或复用 Runtime 调用 Resume。它重新 Load：实际已经确认的有效成果会复用；实际仍未确认的节点会重做。Save 返回错误本身不能证明某个业务动作必须重做或不重做。
+处理原因后，按上节先确认记录前提。已有有效且兼容记录时，新建或复用 Runtime 调用 Resume，重新 Load 后按终态和剩余预算复用成果或继续未确认节点。首次 Save 报错也可能已经建立记录；只有核对原存储与身份并确认首次记录未建立，才继续 Run。Save 返回错误本身不能证明记录不存在，也不能证明某个业务动作必须重做或不重做。
 
 已确认成果不会因为后续错误而回滚。关闭 Session 失败也会作为 CheckpointError 与返回错误合并；即使实际 Execution 已完成，Runtime 调用仍可能因收尾错误返回失败。此时应处理返回错误并查明存储/所有权状态，不能仅按 Snapshot 的 completed 判定整个调用无误。
 
@@ -86,7 +96,7 @@ RunRecord 不自动保存业务错误文本，但会保存编码输出。错误�
 1. 保留 RunID、业务版本、存储位置和返回错误分类，避免修改原记录。
 2. 存在 CheckpointError 时先定位可靠操作与底层原因；不要自动启动新的业务运行。
 3. Busy 时核对当前所有者；NotFound 时核对目录和身份；Conflict 时核对方法、版本、定义与输入。
-4. 修复后按原兼容条件 Resume，由重新加载的记录决定有效成果和剩余预算。
+4. 修复后等待原调用结束并确认所有权释放，核对原存储与身份并重新读取权威状态：已有有效兼容记录才 Resume；确认本次新 Run 的首次记录尚未建立才继续 Run。读取失败不能当作不存在，Resume 仍遵守原终态与剩余预算。
 5. 新业务条件或需要新的完整预算时，明确分配新 RunID，并继续管理旧记录的保留策略。
 
 ## 下一步
