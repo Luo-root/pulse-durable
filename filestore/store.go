@@ -11,7 +11,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +21,8 @@ import (
 	"unicode/utf8"
 
 	durable "github.com/Luo-root/pulse-durable"
+	"github.com/Luo-root/pulse-durable/internal/runlock"
+	"github.com/Luo-root/pulse-durable/recordio"
 )
 
 // Store 将每个运行的完整记录保存在调用方指定的目录中。
@@ -70,18 +71,12 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 		return nil, errors.New("filestore: run ID is not UTF-8")
 	}
 	base := fileBase(runID)
-	lock, err := os.OpenFile(filepath.Join(s.dir, base+".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := runlock.Acquire(ctx, filepath.Join(s.dir, base+".lock"))
 	if err != nil {
-		return nil, fmt.Errorf("filestore: open lock: %w", err)
-	}
-	if err := lockFile(lock); err != nil {
-		return nil, errors.Join(err, lock.Close())
-	}
-	if err := checkContext(ctx); err != nil {
-		return nil, errors.Join(err, unlockFile(lock), lock.Close())
+		return nil, fmt.Errorf("filestore: acquire lock: %w", err)
 	}
 	if err := removeStaleTemporaries(s.dir, base); err != nil {
-		return nil, errors.Join(err, unlockFile(lock), lock.Close())
+		return nil, errors.Join(err, lock.Close())
 	}
 	return &session{
 		dir:   s.dir,
@@ -140,7 +135,7 @@ type session struct {
 	dir      string
 	path     string
 	runID    string
-	lock     *os.File
+	lock     *runlock.Lock
 	closed   bool
 	closeErr error
 }
@@ -175,12 +170,9 @@ func (s *session) load() (durable.RunRecord, error) {
 	if err != nil {
 		return durable.RunRecord{}, fmt.Errorf("filestore: read record: %w", err)
 	}
-	var record durable.RunRecord
-	if err := json.Unmarshal(data, &record); err != nil {
+	record, err := recordio.Decode(data)
+	if err != nil {
 		return durable.RunRecord{}, fmt.Errorf("filestore: decode record: %w", err)
-	}
-	if !validJSONText(data) {
-		return durable.RunRecord{}, errors.New("filestore: stored JSON contains invalid Unicode strings")
 	}
 	if record.RunID != s.runID {
 		return durable.RunRecord{}, errors.New("filestore: stored run ID does not match session")
@@ -219,11 +211,7 @@ func (s *session) Save(ctx context.Context, record durable.RunRecord, expected u
 	if current.Revision != expected {
 		return fmt.Errorf("filestore: stored revision differs from expected revision: %w", durable.ErrConflict)
 	}
-	// JSON 会静默替换非法 UTF-8，须先确认全部元数据可原样编码。
-	if !validMetadata(record) {
-		return errors.New("filestore: record metadata is not UTF-8")
-	}
-	data, err := json.Marshal(record)
+	data, err := recordio.Encode(record)
 	if err != nil {
 		return fmt.Errorf("filestore: encode record: %w", err)
 	}
@@ -264,7 +252,6 @@ func (s *session) Close() error {
 		return s.closeErr
 	}
 	s.closed = true
-	// 即使显式解锁失败，关闭句柄仍让操作系统释放本会话持有的锁。
-	s.closeErr = errors.Join(unlockFile(s.lock), s.lock.Close())
+	s.closeErr = s.lock.Close()
 	return s.closeErr
 }

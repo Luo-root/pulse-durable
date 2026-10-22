@@ -17,7 +17,7 @@ Loading still validates retained history from failed attempts, checking the sour
 
 ## 1. Create an example module
 
-Requires Go 1.25 or later and a writable local directory.
+Requires Go 1.26 or later and a writable local directory.
 
 ```sh
 mkdir durable-subgraphs

@@ -4,13 +4,13 @@
 
 ## 1. 检查前置条件
 
-需要 Go 1.25 或更高版本。执行：
+需要 Go 1.26 或更高版本。执行：
 
 ```sh
 go version
 ```
 
-预期版本为 `go1.25.0` 或更高。还需要能够访问 Go 模块代理或 GitHub；模块下载失败时，应先检查网络与当前 `GOPROXY` 配置。
+预期版本为 `go1.26.0` 或更高。还需要能够访问 Go 模块代理或 GitHub；模块下载失败时，应先检查网络与当前 `GOPROXY` 配置。
 
 ## 2. 创建模块并安装
 
@@ -25,9 +25,9 @@ go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca90
 
 Durable 当前没有正式 release。这条命令固定到公开开发修订，Go 会将它解析为伪版本 `v0.0.0-20261021082000-f46adb637745` 并写入 `go.mod`。不要将它当作已发布的 `v0.1`。
 
-按维护者 2026-10-18 确认的发布顺序，Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。Pulse 独立评测模块中的 SQLite 实现不属于正式后端，也不满足该发布前置。
+按维护者 2026-10-18 确认的发布顺序，Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。当前 `sqlitestore` 是仓内源码开发模块，尚无公开可安装版本；不要为它编造 `go get` 发布命令。其独立验证见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。
 
-该修订固定依赖 Pulse：
+该修订固定依赖 Pulse；这条公开安装入口只代表历史 API baseline，不包含当前仓内新增的 `sqlitestore` 模块，也不表示最新依赖已回写到该旧修订：
 
 ```text
 v0.4.2-0.20261021081643-be778722b781
@@ -75,7 +75,7 @@ import (
 
 | 现象 | 处理方式 |
 | --- | --- |
-| Go 版本过低 | 使用 Go 1.25 或更高版本后重新安装 |
+| Go 版本过低 | 使用 Go 1.26 或更高版本后重新安装 |
 | 模块下载失败 | 检查网络、代理和错误中指出的模块地址，再重试下载 |
 | `go list` 的 Pulse 版本不同 | 检查现有 `go.mod` 和工作区；已有较高版本会参与 Go 模块版本选择 |
 | 添加代码后提示依赖缺失 | 在模块目录重新执行固定版本的 `go get`，然后执行 `go mod tidy` |

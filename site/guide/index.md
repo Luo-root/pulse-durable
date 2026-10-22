@@ -6,7 +6,7 @@ Pulse 负责图定义、依赖调度、切面和本次执行的观测；Durable 
 
 ## 开始之前
 
-需要 Go 1.25 或更高版本，以及能够下载 Go 模块的环境。Durable 尚无正式 release，教程固定使用公开开发修订。你不需要先实现自己的存储后端：最小示例使用 `MemoryStore`，恢复教程使用自带的 `filestore`。
+需要 Go 1.26 或更高版本，以及能够下载 Go 模块的环境。Durable 尚无正式 release，教程固定使用公开开发修订。你不需要先实现自己的存储后端：最小示例使用 `MemoryStore`，恢复教程使用自带的 `filestore`。
 
 如果还不熟悉 Pulse 的图、类型化 Key 和声明出口，可以先阅读 [Pulse 快速开始](https://luo-root.github.io/pulse/guide/quickstart)。Durable 教程会给出自己的完整代码与依赖版本。
 

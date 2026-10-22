@@ -20,7 +20,7 @@ Use `RegisterJSON[T]` for concrete types suitable for standard JSON. Implement `
 
 ## 2. Run a business struct example
 
-Requires Go 1.25 or later. Create a new module:
+Requires Go 1.26 or later. Create a new module:
 
 ```sh
 mkdir durable-codecs

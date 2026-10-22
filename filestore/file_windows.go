@@ -3,42 +3,14 @@
 package filestore
 
 import (
-	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
-
-	durable "github.com/Luo-root/pulse-durable"
 )
 
 var (
-	kernel32     = syscall.NewLazyDLL("kernel32.dll")
-	lockFileEx   = kernel32.NewProc("LockFileEx")
-	unlockFileEx = kernel32.NewProc("UnlockFileEx")
-	moveFileEx   = kernel32.NewProc("MoveFileExW")
+	kernel32   = syscall.NewLazyDLL("kernel32.dll")
+	moveFileEx = kernel32.NewProc("MoveFileExW")
 )
-
-func lockFile(file *os.File) error {
-	var overlapped syscall.Overlapped
-	// LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY，锁住固定的第一个字节。
-	ok, _, err := lockFileEx.Call(file.Fd(), 0x2|0x1, 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
-	if ok != 0 {
-		return nil
-	}
-	if err == syscall.Errno(33) { // ERROR_LOCK_VIOLATION
-		return durable.ErrBusy
-	}
-	return fmt.Errorf("filestore: lock file: %w", err)
-}
-
-func unlockFile(file *os.File) error {
-	var overlapped syscall.Overlapped
-	ok, _, err := unlockFileEx.Call(file.Fd(), 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
-	if ok != 0 {
-		return nil
-	}
-	return fmt.Errorf("filestore: unlock file: %w", err)
-}
 
 func replaceFile(source, target string) error {
 	from, err := syscall.UTF16PtrFromString(source)

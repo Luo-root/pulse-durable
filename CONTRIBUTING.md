@@ -16,7 +16,7 @@ English and Chinese sections are equivalent. If they disagree, the English text 
 
 ### Local development
 
-Use **Go 1.25.0 or later**. The module pins its public Pulse dependency in `go.mod`; normal validation must use that version rather than a local replacement.
+Use **Go 1.26.0 or later**. The module pins its public Pulse dependency in `go.mod`; normal validation must use that version rather than a local replacement.
 
 Disable workspace overrides for the current shell:
 
@@ -39,6 +39,19 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
+The optional `sqlitestore` module is validated separately because it is an independent module and is not part of the root module commands. With the repository workspace disabled:
+
+```powershell
+cd sqlitestore
+$env:GOWORK = 'off'
+go mod tidy
+go build ./...
+go vet ./...
+go test -race -count=1 ./...
+```
+
+This validates the current source tree only; it is not a release-install check. Do not claim power-loss, network-filesystem, backup/restore, migration, or distributed-coordination acceptance without a separate test.
+
 Use the active Go toolchain's formatter. In Bash:
 
 ```sh
@@ -59,7 +72,7 @@ CI runs build, vet, formatting and race tests on **Linux and Windows**, includin
 ### Repository layout and design boundaries
 
 - The root package owns `Runtime`, Run/Resume, Store records and Codec contracts; it imports Pulse.
-- `filestore/` implements the local persistent backend; `integration/` checks real process interruption and recovery.
+- `filestore/` implements the local persistent backend; `sqlitestore/` is an independent Go 1.26 SQLite backend under source development; `integration/` checks real process interruption and recovery.
 - `example_test.go` collects executable node, subgraph and managed-stream examples.
 - `site/` holds the bilingual documentation and VitePress site; `.github/assets/` holds the brand sources.
 
@@ -107,7 +120,7 @@ Pulse Durable 为 Pulse 工作流提供检查点存储与恢复，目前是开�
 
 ### 本地开发
 
-需要 **Go 1.25.0 或更新版本**。`go.mod` 固定公开的 Pulse 依赖；正常验证使用该版本，不依赖本地替换。
+需要 **Go 1.26.0 或更新版本**。`go.mod` 固定公开的 Pulse 依赖；正常验证使用该版本，不依赖本地替换。
 
 先关闭当前 shell 的工作区覆盖：
 
@@ -130,6 +143,19 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
+可选的 `sqlitestore` 模块是独立模块，且不属于根模块命令，因此单独验证。关闭仓库工作区覆盖后执行：
+
+```powershell
+cd sqlitestore
+$env:GOWORK = 'off'
+go mod tidy
+go build ./...
+go vet ./...
+go test -race -count=1 ./...
+```
+
+这只验证当前源码树，不是发布安装检查。没有单独实测时，不要宣称已验收断电、网络文件系统、备份/恢复、迁移或分布式协调。
+
 格式检查使用当前 Go 工具链。Bash：
 
 ```sh
@@ -150,7 +176,7 @@ CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包
 ### 仓库结构与设计边界
 
 - 根包维护 `Runtime`、Run/Resume、Store 记录与 Codec 契约，依赖 Pulse。
-- `filestore/` 是本地持久化后端；`integration/` 验证真实进程中断与恢复。
+- `filestore/` 是本地持久化后端；`sqlitestore/` 是仓内开发中的独立 Go 1.26 SQLite 后端；`integration/` 验证真实进程中断与恢复。
 - `example_test.go` 集中提供节点、子图和受管流的可执行示例。
 - `site/` 保存双语文档与 VitePress 站点；`.github/assets/` 保存品牌源文件。
 

@@ -7,7 +7,7 @@
 <p align="center">Pulse 工作流的检查点存储与恢复</p>
 
 <p align="center">
-  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.25%2B-2563eb" alt="Go 1.25+"></a>
+  <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.26%2B-2563eb" alt="Go 1.26+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2563eb" alt="MIT license"></a>
   <a href="https://luo-root.github.io/pulse-durable/"><img src="https://img.shields.io/badge/docs-中文%20%7C%20English-2563eb" alt="双语文档"></a>
 </p>
@@ -23,15 +23,15 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 
 ## 安装
 
-需要 **Go 1.25 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
+需要 **Go 1.26 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
 
 ```sh
 go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
 ```
 
-该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261021081643-be778722b781`。完整的新模块操作见[安装](site/guide/installation.md)。
+该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261021081643-be778722b781`；这里保留它仅作为历史 API baseline，不表示该旧修订包含当前源码的最新依赖或 SQLite 模块。完整的新模块操作见[安装](site/guide/installation.md)。
 
-当前发布顺序为 Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。Pulse 评测模块的 SQLite 适配器不属于正式后端。
+当前发布顺序为 Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。可选的 `sqlitestore` 是 Go 1.26 的仓内源码开发模块，尚无公开可安装版本；不要据此编造 `go get` 发布命令。其独立验证和边界见 [`sqlitestore/README.md`](sqlitestore/README.md)。
 
 ## 最小示例
 
