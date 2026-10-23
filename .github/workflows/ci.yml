@@ -65,6 +65,13 @@ jobs:
           cache-dependency-path: sqlitestore/go.sum
       - name: Download SQLite module dependencies
         run: go mod download
+      - name: Use current checkout for source regression
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/durable-sqlite.work"
+          GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/sqlitestore"
+          mv go.work "$work"
+          echo "GOWORK=$work" >> "$GITHUB_ENV"
       - name: Build SQLite Store
         run: go build ./...
       - name: Vet SQLite Store
@@ -99,6 +106,13 @@ jobs:
           cache-dependency-path: postgresstore/go.sum
       - name: Download PostgreSQL module dependencies
         run: go mod download
+      - name: Use current checkout for source regression
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/durable-postgres.work"
+          GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/postgresstore"
+          mv go.work "$work"
+          echo "GOWORK=$work" >> "$GITHUB_ENV"
       - name: Build PostgreSQL Store
         run: go build ./...
       - name: Vet PostgreSQL Store

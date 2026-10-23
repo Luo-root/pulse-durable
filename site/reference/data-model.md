@@ -143,7 +143,7 @@ type Session interface {
 }
 ```
 
-Store 须并发安全，不同 RunID 可以独立使用。同一 RunID 已被持有时，Acquire 立即返回 `ErrBusy`；Session 从 Acquire 到 Close 独占该运行。
+Store 须并发安全，不同 RunID 可以独立使用。Acquire 检测到同一 RunID 已被持有时返回 `ErrBusy`，不等待该运行释放所有权；连接容量及网络检测仍可能需要等待，具体边界由后端说明。Session 从 Acquire 到 Close 独占该运行。PostgreSQL 的本地 pending 检查、30 秒申请上限及关闭清理边界见[存储指南](../guide/storage.md)。
 
 Load 返回隔离副本，无记录时返回 `ErrNotFound`。Save 原子比较并交换，核对记录 RunID 与会话一致：
 

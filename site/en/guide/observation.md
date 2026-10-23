@@ -1,6 +1,6 @@
 # Observation and stable run identity
 
-This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets public Durable revision `f46adb637745d864649685cf481675d5dc0ca904`, pinned by [installation](installation.md); there is no formal release. This revision pins public Core development commit `be778722b781ad97f2846848dcd9dacdc0e501e7` (`v0.4.2-0.20261021081643-be778722b781`), with no local replace in default builds.
+This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets public Durable development version `v0.0.0-20261023040750-1b397e91c878`, pinned by [installation](installation.md), depends on Pulse `v0.5.0`, and requires Go 1.26. Durable `v0.1.0` has not been released; default builds use no local replace.
 
 ## Distinguish runs, processes and attempts
 
