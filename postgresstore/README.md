@@ -18,7 +18,9 @@ DSN 直接交给 pgx 解析，支持 PostgreSQL URI 或 key/value 格式。不�
 
 首次连接会创建并严格检查 `pulse_durable` schema。固定版本为 1，元数据表为 `pulse_durable.schema_meta`，运行记录表为 `pulse_durable.runs`。记录以 `BYTEA` 保存 recordio 原始 JSON，revision 以十进制 `TEXT` 保存，因而覆盖完整 uint64 范围。陌生或错误的 schema 版本会拒绝继续使用。
 
-每个 `Acquire` 从连接池取得一条连接，并在该连接上执行 `pg_try_advisory_lock`。同一 RunID 的竞争立即返回 `durable.ErrBusy`；不同 RunID 可以并行。Session 在 `Close` 前一直占用该连接，Load/Save 也只走该连接。Close 先释放 advisory lock，再归还连接；Store.Close 会关闭活动 Session，且可重复调用。PostgreSQL 连接断开时 advisory lock 会由服务端释放，但旧 worker 不会自动接管，也没有 fencing token、分布式租约或任务派发语义。
+同一 Store 中已持有或正在申请的 RunID，`Acquire` 立即返回 `durable.ErrBusy`。跨 Store 的竞争须先从连接池取得连接，再完成 `pg_try_advisory_lock` 网络检测；检测到占用后返回 `ErrBusy`，不等待现有运行释放锁。连接池容量与网络检测的总等待默认最多 30 秒，调用方更短的 deadline 优先；池满而无法检测远端占用时，超时返回 `context.DeadlineExceeded`，不会伪报 `ErrBusy`。不同 RunID 可以并行，但仍受连接池容量限制。
+
+Session 在 `Close` 前一直占用该连接，Load/Save 也只走该连接。Close 先释放 advisory lock，确认成功才归还连接；解锁失败或结果不确定时销毁连接，清理最长 5 秒。Store.Close 会取消正在申请的 Acquire、关闭活动 Session，并等待资源清理，且可重复调用。PostgreSQL 连接断开时 advisory lock 会由服务端释放，但旧 worker 不会自动接管，也没有 fencing token、分布式租约或任务派发语义。
 
 Save 使用短事务执行首次唯一插入或 revision CAS 更新。提交错误不自动重试，因为提交后返回错误时结果可能已经落库；调用方应停止本次运行并重新 Load 判断结果。网络故障、数据库重启、连接池耗尽等错误应由调用方按业务策略处理。
 
@@ -59,7 +61,9 @@ The initialization fragment above requires imports for `postgresstore` and `os`,
 
 Initialization creates and strictly checks schema `pulse_durable`, version 1, with tables `pulse_durable.schema_meta` and `pulse_durable.runs`. Records retain recordio's original JSON as `BYTEA`; decimal `TEXT` revisions preserve the complete uint64 range. Unknown or incorrect schema versions are rejected.
 
-Each `Acquire` obtains a pool connection and uses `pg_try_advisory_lock` on it. Same-RunID contention immediately returns `durable.ErrBusy`; different RunIDs may proceed concurrently. Session retains that connection until Close, and Load/Save use it exclusively. Close unlocks before returning the connection; Store.Close closes active Sessions and is repeatable. PostgreSQL releases advisory locks when a connection disconnects, but an old worker does not automatically take over. There are no fencing tokens, distributed leases, or dispatch semantics.
+Within the same Store, `Acquire` immediately returns `durable.ErrBusy` for a RunID already held or pending acquisition. Across Stores, it must first obtain a pool connection and complete the `pg_try_advisory_lock` network check; detected contention returns `ErrBusy` without waiting for the existing run to release its lock. Pool capacity and network checks share a default maximum wait of 30 seconds, with a shorter caller deadline taking precedence. If pool exhaustion prevents checking remote ownership, timeout returns `context.DeadlineExceeded`, not a fabricated `ErrBusy`. Different RunIDs may proceed concurrently, subject to pool capacity.
+
+Session retains that connection until Close, and Load/Save use it exclusively. Close returns the connection only after confirmed advisory unlock; a failed or uncertain unlock destroys the connection, with cleanup bounded to five seconds. Store.Close cancels pending acquisitions, closes active Sessions, waits for resource cleanup, and is repeatable. PostgreSQL releases advisory locks when a connection disconnects, but an old worker does not automatically take over. There are no fencing tokens, distributed leases, or dispatch semantics.
 
 Save uses a short transaction for an initial unique insert or revision CAS update. Commit errors are not automatically retried: a write may have committed before the error is returned. Stop the current execution and reload to determine authoritative state. The host handles network failures, database restarts, and pool exhaustion according to application policy. Use PostgreSQL backup tools such as `pg_dump`, and include `pulse_durable` in backup/restore drills.
 

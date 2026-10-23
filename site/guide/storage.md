@@ -16,7 +16,7 @@
 
 `sqlitestore` 和 `postgresstore` 是独立 Go 1.26 模块；当前后端修订的公开安装 pin 待推送后核验，暂按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)使用临时 `go.work` 验证源码，不使用发布依赖 `replace`。Durable `v0.1.0` 尚未发布。
 
-`postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
+`postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。同一 Store 已持有或 pending 的 RunID 立即返回 `ErrBusy`；跨 Store 须取得连接并完成 `pg_try_advisory_lock` 网络检测，检测到占用后返回 `ErrBusy`，不等待锁释放。池容量与网络检测的总等待默认最多 30 秒，caller 更短 deadline 优先；池满而无法判断远端占用时返回 `context.DeadlineExceeded`，不伪报 `ErrBusy`。Store.Close 取消 pending Acquire 并等待资源清理；解锁失败或结果不确定时销毁连接，清理最长 5 秒。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
 
 `sqlitestore`：驱动 `modernc.org/sqlite v1.60.1` 内嵌 SQLite 3.53.4；`NewContext(ctx, path)` 支持取消数据库初始化。构造设置并读回验证 WAL、FULL (2) 与 busy_timeout=5000ms。数据库必须专用，v1 严格匹配 DDL 并拒绝额外 schema 对象；旁边的 `.init.lock` 构造锁必须保留。`New(path)` 只接受数据库文件路径，会创建父目录并在旁边创建 `.runlocks/`；新目录/文件分别使用 0700/0600（Windows 由 ACL 管理）。完整 `RunRecord` 以 JSON BLOB 保存，`revision` 为十进制 TEXT；短事务使用 `BEGIN IMMEDIATE`，SQLite busy timeout 为 5000ms，运行期间不持有数据库事务。它只适用于支持 OS 文件锁的本机文件系统，不支持分布式协调、迁移或跨后端导入。
 
@@ -118,7 +118,7 @@ go run . -dir ../durable-recovery/checkpoints -run-id recovery-demo-001
 
 通常业务只使用 Runtime；实现后端时，需要满足以下步骤：
 
-1. `Acquire(ctx, runID)` 获得该 RunID 的独占会话。同一 RunID 正被持有时立即返回 `ErrBusy`，不同 RunID 可以独立使用。
+1. `Acquire(ctx, runID)` 获得该 RunID 的独占会话。检测到同一 RunID 正被持有时返回 `ErrBusy`，不等待该运行释放所有权；连接容量与网络检测的等待由后端约定，不同 RunID 可以独立使用。
 2. `Load(ctx)` 返回隔离副本，没有记录时返回 `ErrNotFound`。权限、损坏或读取故障不能伪装成不存在。
 3. `Save(ctx, record, expectedRevision)` 原子比较并交换记录。首次 expected 为 `0`、新 Revision 为 `1`；后续 Revision 必须为 expected 加一，且记录 RunID 与会话一致。
 4. CAS 条件不符时返回 `ErrConflict`，旧记录不变。成功后记录完整可读，不能暴露半份更新。

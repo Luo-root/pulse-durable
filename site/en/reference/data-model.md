@@ -143,7 +143,7 @@ type Session interface {
 }
 ```
 
-Store must be concurrency safe, with independent use of different RunIDs. Acquire immediately returns `ErrBusy` for an owned RunID. Session exclusively owns that run from Acquire until Close.
+Store must be concurrency safe, with independent use of different RunIDs. Acquire returns `ErrBusy` when it detects that a RunID is owned, without waiting for that run to release ownership. Connection capacity and network detection may still require waiting, as specified by the backend. Session exclusively owns that run from Acquire until Close. See [Storage](../guide/storage.md) for PostgreSQL's local pending check, 30-second acquisition bound, and shutdown cleanup.
 
 Load returns an isolated copy, or `ErrNotFound` if no record exists. Save performs atomic compare-and-swap and checks that the record RunID matches the session:
 

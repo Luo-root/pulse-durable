@@ -19,7 +19,8 @@ var ErrConflict = errors.New("durable: revision or run conflict")
 const RecordFormat = 2
 
 // Store 为一个 RunID 提供独占会话。实现须并发安全，且不同 RunID 可独立使用。
-// 同一 RunID 已被持有时，Acquire 立即返回 ErrBusy；Close 释放所有权。
+// Acquire 不等待已占用的 RunID 释放，检测到占用时返回 ErrBusy；Close 释放所有权。
+// 后端获取连接与网络检测可能受容量和 context 限制，具体等待边界由后端声明。
 // 跨进程互斥和持久性由具体后端声明，MemoryStore 不提供这两项保证。
 type Store interface {
 	Acquire(context.Context, string) (Session, error)

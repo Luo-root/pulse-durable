@@ -260,11 +260,11 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	if s.closed || acquireCtx.Err() != nil {
 		closed := s.closed
 		s.mu.Unlock()
-		x.closeLocked()
+		cleanupErr := x.closeLocked()
 		if closed {
-			return nil, os.ErrClosed
+			return nil, errors.Join(os.ErrClosed, cleanupErr)
 		}
-		return nil, acquireCtx.Err()
+		return nil, errors.Join(acquireCtx.Err(), cleanupErr)
 	}
 	s.sessions[x] = struct{}{}
 	s.mu.Unlock()
