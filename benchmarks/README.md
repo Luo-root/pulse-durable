@@ -13,11 +13,17 @@
 
 两种持久后端完成相同业务任务，但存储事务、历史格式、重放与断电保证并不相同。filestore 不承诺断电持久性；MemoryStore 不证明进程重启后的恢复。内存组和文件组分别读，不与纯内存 DAG 排成同一张榜。
 
-固定版本：
+## 当前依赖与历史实验
+
+当前可复跑源码固定 Go `1.26.0`、Pulse `v0.5.0`、Durable `v0.1.0`；旧双框架模块的对照仍保留 go-workflows `v1.4.2`，其 pure-Go SQLite 依赖为 `modernc.org/sqlite v1.27.0`。这只是源码依赖对齐正式版本，不表示下面的历史数据已在这些版本或 Go 1.26 上重跑。
+
+2026-10-17 历史实验的采样版本保持不变：
 
 - Durable `v0.0.0-20261016143640-e47e51eda579`。
 - Pulse `v0.4.2-0.20261016143631-7d70e1e14771`。
-- go-workflows `v1.4.2`，其 pure-Go SQLite 依赖固定为 `modernc.org/sqlite v1.27.0`。
+- go-workflows `v1.4.2`，pure-Go SQLite `modernc.org/sqlite v1.27.0`。
+
+本模块只保留旧 Durable / go-workflows 双框架实验，不能混入最新 Pulse（可靠维度加 Durable）/ Eino / Temporal 统一对照。最新正式版本的 SQLite 三框架实验由 [Core production 模块](https://github.com/Luo-root/pulse/tree/main/benchmarks/production)交付；此处不预填尚未取得的结果。
 
 模块无 replace。运行前记录版本、校验和与二进制 SHA256，不使用 `@latest`；补充的 `module-origins.json` 查询同版本公共代理实际提供的 Origin，未提供或获取失败的条目明确标记，不编造 Hash。
 
@@ -39,11 +45,13 @@ SQLite 内存和文件组都通过公开 WithDB 构造器设置单连接并保�
 
 ## 构建与复跑
 
-先设置 `GOWORK=off` 和 `GOFLAGS=-buildvcs=false`，保持无 replace，使用 Go 1.25 自动工具链。从本仓根目录，在隔离模块验证：
+先设置 `GOWORK=off` 和 `GOFLAGS=-buildvcs=false`，保持无 replace，使用 Go 1.26.0 工具链，并记录 `go version`、`go env GOTOOLCHAIN` 与实际工具链路径。从本仓根目录，在隔离模块验证（只做正确性检查，不产生新的性能报告）：
 
 ```sh
 cd benchmarks/workflow
+go version
 go mod download
+go mod verify
 go build -o workflow.exe .
 go vet ./...
 go test -race -count=1 -timeout=180s ./...
@@ -70,7 +78,7 @@ benchmarks/workflow/workflow.exe -engine go-workflows -backend file -nodes 100 -
 
 ## 读数据与保留规则
 
-[2026-10-17 历史报告](../site/guide/performance.md)使用上面的固定版本和后端配置，不代表后续统一框架的生产对比。[精简证据说明](reports/2026-10-17/README.md)记录环境、原始 JSONL 哈希和采集连续性；源码仓只保留以下汇总及报告实际引用的 6 张 PNG：
+[2026-10-17 历史报告](../site/guide/performance.md)使用上面单列的历史采样版本和后端配置，历史数据保持不变；不代表当前正式依赖的重测或后续统一框架的生产对比。[精简证据说明](reports/2026-10-17/README.md)记录环境、原始 JSONL 哈希和采集连续性；源码仓只保留以下汇总及报告实际引用的 6 张 PNG：
 
 - [普通运行汇总](reports/2026-10-17/workflow-summary.csv)：rounds=1/256，按引擎、后端和规模分组。
 - [增长耗时汇总](reports/2026-10-17/growth-summary.csv)与[存储增长汇总](reports/2026-10-17/storage-summary.csv)：后者区分 complete/partial，不把未完成前缀当成完整运行。

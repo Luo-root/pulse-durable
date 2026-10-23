@@ -1,5 +1,7 @@
 # 规模与性能
 
+> 新测量入口：[2026-10-23 正式版 SQLite 与恢复报告](https://github.com/Luo-root/pulse/blob/main/site/reference/sqlite-formal-20261023.md)（Core v0.5.0、Durable/sqlitestore v0.1.0；限定范围，COMPLETED_WITH_ERRORS）。本页历史数据不变。
+
 > 本页是旧版本的历史样本。合并后最新版与 Eino、Temporal 固定同三列的新对比见[统一生产框架对照](./production-comparison.md)，覆盖执行、观测、资源、可靠确认和恢复。
 
 这份报告测量同一个长链任务在 1、10、100、1000、10000 个业务步骤下的成本：加上检查点、可靠记录和进程恢复以后，要付出多少时间、累计分配和写出。它与 [Pulse 纯内存报告](https://github.com/Luo-root/pulse/blob/main/site/reference/performance.md) 分组阅读，不能混成同一张速度榜。

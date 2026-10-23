@@ -1,7 +1,7 @@
-github.com/Luo-root/pulse v0.4.2-0.20261016143631-7d70e1e14771 h1:z3Wf7fgLBsRBBk0Poh/3kT2Zb7tQ6sgYPMP8HzwL7SY=
-github.com/Luo-root/pulse v0.4.2-0.20261016143631-7d70e1e14771/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
-github.com/Luo-root/pulse-durable v0.0.0-20261016143640-e47e51eda579 h1:GQUp6ZXUDH6KlVgE3qdo2bI50IWNOFAOPmCjrySqUmc=
-github.com/Luo-root/pulse-durable v0.0.0-20261016143640-e47e51eda579/go.mod h1:Pcv+naPTQWokJUdJqnmilNyx2nIFdXXKg+Dh4vDCRUA=
+github.com/Luo-root/pulse v0.5.0 h1:t/FOipguUOOkNoZ5ZtaDj1wKnqD2sHlRuRbrEMwUNVY=
+github.com/Luo-root/pulse v0.5.0/go.mod h1:wtEVi9DLDOeeiHkSg36zpSujObOSdmZgA6jPsOGt3hY=
+github.com/Luo-root/pulse-durable v0.1.0 h1:6zj760QF9U3e4esnoHEjSSXDwBhOOZAddGtOz1S7xdo=
+github.com/Luo-root/pulse-durable v0.1.0/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
 github.com/benbjohnson/clock v1.3.0 h1:ip6w0uFQkncKQ979AypyG0ER7mqUSBdKLOgAle/AT8A=
 github.com/benbjohnson/clock v1.3.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
 github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
