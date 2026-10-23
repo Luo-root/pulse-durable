@@ -10,10 +10,10 @@ You need Go 1.26 or later and access to Go module downloads. Run:
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
-If you already created a module in [Installation](installation.md), continue in that module directory. Durable has no formal release yet; this tutorial pins a public development revision.
+If you created a module in [Installation](installation.md), continue there. This tutorial targets the v0.1.0 API and Pulse v0.5.0. This is release preparation: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for publication status; installation commands are unavailable before their tags are published.
 
 ## 2. Create main.go
 

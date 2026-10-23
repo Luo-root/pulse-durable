@@ -1,6 +1,6 @@
 # Observation and stable run identity
 
-This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets public Durable development version `v0.0.0-20261023040750-1b397e91c878`, pinned by [installation](installation.md), depends on Pulse `v0.5.0`, and requires Go 1.26. Durable `v0.1.0` has not been released; default builds use no local replace.
+This page is for service developers who need to tell a fresh retry from recovery of an unfinished attempt. The example targets the Durable `v0.1.0` API, depends on Pulse `v0.5.0`, and requires Go 1.26. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for publication status; [installation commands](installation.md) are unavailable before tag publication. Default builds use no local replace.
 
 ## Distinguish runs, processes and attempts
 

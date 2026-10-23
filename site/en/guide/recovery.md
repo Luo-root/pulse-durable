@@ -10,10 +10,10 @@ You need Go 1.26 or later and a writable local directory. Run both processes fro
 mkdir durable-recovery
 cd durable-recovery
 go mod init example.com/durable-recovery
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
-Durable has no formal release yet; the command pins a public development revision. Use a new module directory where this example has not run before. If checkpoints already exist, read “Repeat runs and new work” below first.
+This page targets the v0.1.0 API and Pulse v0.5.0. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for publication status: installation is unavailable before tag publication. Use a new module directory where this example has not run before; if checkpoints exist, read “Repeat runs and new work” first.
 
 ## 2. Create main.go
 

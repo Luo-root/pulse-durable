@@ -25,7 +25,7 @@ Normal skip means no business value and can finish successfully. Reliable storag
 
 ## Version and scope
 
-This reference describes the current source contracts. Root-module tutorials pin public development version `v0.0.0-20261023040750-1b397e91c878`, which depends on Pulse `v0.5.0` and requires Go 1.26 or later. Durable `v0.1.0` has not been released. Current independent backend sources are not the older submodule baseline at that root pin; public backend installation pins must be verified after pushing the current revisions. See [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md) for source validation. Historical performance pages retain their stated measurement versions.
+This reference targets the Durable `v0.1.0` API, depends on Pulse `v0.5.0`, and requires Go 1.26 or later. This is release preparation, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases); installation commands are unavailable before their respective tags are published. See [Installation](../guide/installation.md) for the independent backend tag names and [SQLite](../guide/sqlite.md) / [PostgreSQL](../guide/postgresql.md) for complete usage. Historical performance pages retain their stated measurement versions.
 
 Supports ordinary values, managed streams, explicit state, static child graphs, and built-in Retry and message budgets. MemoryStore provides only the in-process protocol; FileStore targets one local host. Hosts can compose approval waits and per-round tool calls with [aspects and Cancel/Resume](../guide/composition.md). A built-in wake-up service, distributed run management, deterministic replay, and exactly-once external effects are outside the current implementation.
 

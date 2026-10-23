@@ -23,15 +23,18 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 
 ## 安装
 
-需要 **Go 1.26 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
+本文以目标 **Durable v0.1.0** 为 API 基线，需要 **Go 1.26 或更高版本**，依赖 Pulse **v0.5.0**。
+
+**发版准备中，尚不称已发布。** tag 发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；相应 tag 发布前，以下安装命令尚不可用。
 
 ```sh
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
+# 可选后端，按需安装：
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
 ```
 
-该修订的 `go.mod` 固定依赖 Pulse `v0.5.0`。完整的新模块操作与依赖核对见[安装](site/guide/installation.md)。
-
-该入口固定公开开发版本 `v0.0.0-20261023040750-1b397e91c878`，要求 Go 1.26，依赖 Pulse v0.5.0；**Durable v0.1.0 尚未发布**。可选的 `sqlitestore` 和 `postgresstore` 是独立模块；已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，不是 Durable v0.1.0 正式 tag。源码验证与边界见 [`sqlitestore/README.md`](sqlitestore/README.md)、[`postgresstore/README.md`](postgresstore/README.md) 和[贡献指南](CONTRIBUTING.md)。
+两个后端是独立模块。三 tag 命名、发布前开发 pin 备选及依赖核对见[安装](site/guide/installation.md)；完整使用见 [SQLite](site/guide/sqlite.md) 与 [PostgreSQL](site/guide/postgresql.md)，源码验证见[贡献指南](CONTRIBUTING.md)。
 
 ## 最小示例
 
@@ -125,12 +128,14 @@ result: 42 ready
 | 任务 | 文档 |
 | --- | --- |
 | 了解定位与阅读顺序 | [指南概览](site/guide/index.md) |
-| 安装开发版本并检查依赖 | [安装](site/guide/installation.md) |
+| 安装 v0.1.0 并检查依赖与发布状态 | [安装](site/guide/installation.md) |
 | 完成第一次运行并读取出口 | [快速开始](site/guide/quickstart.md) |
 | 保留检查点并在新进程中恢复 | [进程退出后恢复](site/guide/recovery.md) |
 | 组合子图并理解 Retry 恢复 | [子图与重试](site/guide/subgraphs.md) |
 | 保存业务结构体与自定义类型 | [值编码](site/guide/codecs.md) |
 | 使用文件存储或实现 Store | [存储](site/guide/storage.md) |
+| 使用 SQLite 并在新进程中恢复 | [SQLite 教程](site/guide/sqlite.md) |
+| 使用 PostgreSQL 并管理连接与权限 | [PostgreSQL 教程](site/guide/postgresql.md) |
 | 估算 1–10000 步的运行、存储与恢复成本，复跑同任务对照 | [规模与性能](site/guide/performance.md) · [评测源码与方法](benchmarks/README.md) |
 | 核对 API、记录和错误规则 | [参考概览](site/reference/index.md)、[执行契约](site/reference/execution.md)、[数据模型](site/reference/data-model.md)、[错误处理](site/reference/errors.md) |
 

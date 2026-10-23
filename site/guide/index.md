@@ -6,7 +6,7 @@ Pulse 负责图定义、依赖调度、切面和本次执行的观测；Durable 
 
 ## 开始之前
 
-需要 Go 1.26 或更高版本，以及能够下载 Go 模块的环境。Durable 尚无正式 release，教程固定使用公开开发修订。你不需要先实现自己的存储后端：最小示例使用 `MemoryStore`，恢复教程使用自带的 `filestore`。
+需要 Go 1.26 或更高版本，以及能够下载 Go 模块的环境。现行教程以目标 Durable v0.1.0 为 API 基线、依赖 Pulse v0.5.0，不代表已经发布；状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，tag 发布前安装命令尚不可用。最小示例使用 `MemoryStore`，恢复教程使用 `filestore`；也有完整的 SQLite 和 PostgreSQL 教程。
 
 如果还不熟悉 Pulse 的图、类型化 Key 和声明出口，可以先阅读 [Pulse 快速开始](https://luo-root.github.io/pulse/guide/quickstart)。Durable 教程会给出自己的完整代码与依赖版本。
 
@@ -25,6 +25,8 @@ Pulse 负责图定义、依赖调度、切面和本次执行的观测；Durable 
 | 将多个阶段组合为子图，并保留 Retry 进度 | [子图与重试](subgraphs.md) |
 | 保存结构体、命名类型或特殊编码 | [值编码](codecs.md) |
 | 选择存储目录，检查锁占用，接入其他后端 | [存储](storage.md) |
+| 使用本机 SQLite 并在第二个进程恢复 | [SQLite 教程](sqlite.md) |
+| 使用 PostgreSQL，配置 DSN、权限与连接 | [PostgreSQL 教程](postgresql.md) |
 
 业务函数已经调用外部系统，却尚未完成检查点确认时，恢复可能再次调用它。请在接入业务时确定幂等键、事务或 outbox 的边界。
 

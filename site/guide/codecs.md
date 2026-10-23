@@ -1,5 +1,7 @@
 # 值编码
 
+本页以目标 Durable v0.1.0 为 API 基线，需要 Go 1.26+、Pulse v0.5.0。发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；tag 发布前安装命令尚不可用，备选见[安装](installation.md)。
+
 本页适用于在检查点中保存业务结构体、命名类型或需要特殊编码的值。Durable 按真实 Go 类型查找 Codec：类型看起来相似，或底层类型相同，不代表它们使用同一个注册项。
 
 ## 1. 确定哪些类型需要注册
@@ -26,7 +28,7 @@
 mkdir durable-codecs
 cd durable-codecs
 go mod init example.com/durable-codecs
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
 将以下完整程序保存为 `main.go`。它注册 `Document`，运行一次，再从同一进程内的存储恢复并读取结构体出口。

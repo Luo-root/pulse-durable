@@ -8,7 +8,7 @@ home:
   lead: Checkpoint encoding, storage, and recovery for Pulse workflows. Rebuild the same definition with the original RunID and inputs, then re-enter unconfirmed functions from the beginning.
   primary: { text: Complete a first run, link: /en/guide/quickstart }
   secondary: { text: Practice exit and recovery, link: /en/guide/recovery }
-  version: Development docs · Go 1.26+ · No released tag yet
+  version: Target v0.1.0 · Go 1.26+ · Pulse v0.5.0 · Release status on GitHub Releases
   flowTitle: Recover from a durable checkpoint
   flowLabel: Restore the confirmed first step, execute the unconfirmed second step, and read the final result
   flow:
@@ -19,7 +19,7 @@ home:
   pathsLabel: DOCUMENTATION
   pathsTitle: From a first run to reliable recovery
   paths:
-    - { title: Start and recover, description: Install the development version and exit a real process before resuming., action: Read the introduction, link: /en/guide/ }
+    - { title: Start and recover, description: Check v0.1.0 publication status and exit a real process before resuming., action: Read the introduction, link: /en/guide/ }
     - { title: Integrate your application, description: Encode business values and configure storage, subgraphs, and retries., action: Choose a guide, link: /en/guide/subgraphs }
     - { title: Check recovery rules, description: Look up versions, inputs, ownership, revisions, and failure handling., action: Open the reference, link: /en/reference/ }
   companion:

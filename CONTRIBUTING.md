@@ -1,6 +1,6 @@
 # Contributing to Pulse Durable
 
-Pulse Durable provides checkpoint storage and recovery for Pulse workflows. It is currently a development project with no formal release. Contributions are welcome.
+Pulse Durable provides checkpoint storage and recovery for Pulse workflows. Documentation targets the v0.1.0 API baseline (Go 1.26+, Pulse v0.5.0). This is release preparation, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag status. Versioned installation commands are unavailable before the corresponding tags are published. Contributions are welcome.
 
 English and Chinese sections are equivalent. If they disagree, the English text is the reference. Participation follows the [Code of Conduct](CODE_OF_CONDUCT.md); contributions are made under the repository's [MIT License](LICENSE).
 
@@ -52,7 +52,7 @@ foreach ($module in @('sqlitestore', 'postgresstore')) {
 }
 ```
 
-To validate the current root and both backend sources together, from the checkout root create a temporary workspace. If `go.work` already exists, stop and preserve it; do not overwrite it. This is source-checkout validation, not proof of public backend installation. Current backend installation pins must be verified after pushing; Durable `v0.1.0` has not been released.
+To validate the current root and both backend sources together, from the checkout root create a temporary workspace. If `go.work` already exists, stop and preserve it; do not overwrite it. This is source-checkout validation, not proof of public backend installation. The target installation versions are `@v0.1.0`; root `v0.1.0`, `sqlitestore/v0.1.0`, and `postgresstore/v0.1.0` are separate tags. Their publication status is determined by GitHub Releases; source validation does not publish them.
 
 ```powershell
 $previousGowork = $env:GOWORK
@@ -89,7 +89,7 @@ CI runs build, vet, formatting and race tests on **Linux and Windows**, includin
 ### Repository layout and design boundaries
 
 - The root package owns `Runtime`, Run/Resume, Store records and Codec contracts; it imports Pulse.
-- `filestore/` implements the local persistent backend; `sqlitestore/` and `postgresstore/` are independent Go 1.26 SQLite and PostgreSQL backends under source development; `integration/` checks real process interruption and recovery.
+- `filestore/` implements the local persistent backend; `sqlitestore/` and `postgresstore/` are independent Go 1.26 SQLite and PostgreSQL backends; `integration/` checks real process interruption and recovery.
 - `example_test.go` collects executable node, subgraph and managed-stream examples.
 - `site/` holds the bilingual documentation and VitePress site; `.github/assets/` holds the brand sources.
 
@@ -101,7 +101,7 @@ For new behavior, add a focused regression that demonstrates the observable cont
 
 ### Documentation
 
-Update `README.md` and `README_en.md` together. Guides live in `site/guide/` and `site/en/guide/`; references live in `site/reference/` and `site/en/reference/`. Keep paired pages consistent, and distinguish public pinned development revisions from formal releases.
+Update `README.md` and `README_en.md` together. Guides live in `site/guide/` and `site/en/guide/`; references live in `site/reference/` and `site/en/reference/`. Keep paired pages consistent. Current tutorials target v0.1.0, Go 1.26+ and Pulse v0.5.0; distinguish the target API baseline from published tags and keep historical measurement versions unchanged. Development pins belong only in the installation alternative.
 
 For documentation or site changes, with Node.js 22 and npm available:
 
@@ -125,7 +125,7 @@ The maintainer decides merging and releases. Passing CI does not by itself autho
 
 ## 中文
 
-Pulse Durable 为 Pulse 工作流提供检查点存储与恢复，目前是开发阶段项目，尚无正式 release。参与项目须遵守[行为准则](CODE_OF_CONDUCT.md)，贡献采用仓库的 [MIT 许可](LICENSE)。
+Pulse Durable 为 Pulse 工作流提供检查点存储与恢复。文档以 v0.1.0 为目标 API 基线（Go 1.26+、Pulse v0.5.0）。这是发版准备，不代表已发布；tag 状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，相应 tag 发布前版本安装命令尚不可用。参与项目须遵守[行为准则](CODE_OF_CONDUCT.md)，贡献采用仓库的 [MIT 许可](LICENSE)。
 
 ### 开工之前
 
@@ -173,7 +173,7 @@ foreach ($module in @('sqlitestore', 'postgresstore')) {
 }
 ```
 
-若要一起验证当前根模块与两个后端源码，在 checkout 根目录创建临时工作区。已有 `go.work` 时停止并保留，不覆盖。此步骤验证源码 checkout，不证明公开后端可安装。当前后端安装 pin 须在推送后核验；Durable `v0.1.0` 尚未发布。
+若要一起验证当前根模块与两个后端源码，在 checkout 根目录创建临时工作区。已有 `go.work` 时停止并保留，不覆盖。此步骤验证源码 checkout，不证明公开后端可安装。目标安装版本为 `@v0.1.0`；根 `v0.1.0`、`sqlitestore/v0.1.0`、`postgresstore/v0.1.0` 是独立 tag。发布状态以 GitHub Releases 为准；源码验证不会发布它们。
 
 ```powershell
 $previousGowork = $env:GOWORK
@@ -210,7 +210,7 @@ CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包
 ### 仓库结构与设计边界
 
 - 根包维护 `Runtime`、Run/Resume、Store 记录与 Codec 契约，依赖 Pulse。
-- `filestore/` 是本地持久化后端；`sqlitestore/` 和 `postgresstore/` 是仓内开发中的独立 Go 1.26 SQLite 与 PostgreSQL 后端；`integration/` 验证真实进程中断与恢复。
+- `filestore/` 是本地持久化后端；`sqlitestore/` 和 `postgresstore/` 是独立 Go 1.26 SQLite 与 PostgreSQL 后端；`integration/` 验证真实进程中断与恢复。
 - `example_test.go` 集中提供节点、子图和受管流的可执行示例。
 - `site/` 保存双语文档与 VitePress 站点；`.github/assets/` 保存品牌源文件。
 
@@ -222,7 +222,7 @@ CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包
 
 ### 文档
 
-`README.md` 与 `README_en.md` 同步维护。指南位于 `site/guide/` 与 `site/en/guide/`，参考位于 `site/reference/` 与 `site/en/reference/`。双语事实和示例对应，并区分固定的公开开发提交与正式 release。
+`README.md` 与 `README_en.md` 同步维护。指南位于 `site/guide/` 与 `site/en/guide/`，参考位于 `site/reference/` 与 `site/en/reference/`。双语事实和示例对应。现行教程以 v0.1.0、Go 1.26+、Pulse v0.5.0 为目标，区分目标 API 基线与已发布 tag，历史测量版本保持不动。开发 pin 只放安装页备选。
 
 修改文档或站点时，准备 Node.js 22 与 npm，执行：
 

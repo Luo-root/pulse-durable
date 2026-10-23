@@ -1,5 +1,7 @@
 # 子图与重试
 
+本页以目标 Durable v0.1.0 为 API 基线，需要 Go 1.26+、Pulse v0.5.0。发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；tag 发布前安装命令尚不可用，备选见[安装](installation.md)。
+
 本页适用于将多个业务阶段封装为静态子图，并希望中断后复用子图内部成果的工作流。先完成[快速开始](quickstart.md)和[进程退出后恢复](recovery.md)，再运行本页的子图示例。
 
 ## 子图恢复的两种情况
@@ -23,7 +25,7 @@
 mkdir durable-subgraphs
 cd durable-subgraphs
 go mod init example.com/durable-subgraphs
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
 下面使用固定 RunID 和 `./checkpoints`。首次执行应使用没有本例记录的新目录；再次开始新的演示应分配新 RunID，不能自动删除旧记录。
