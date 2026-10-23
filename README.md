@@ -26,12 +26,12 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 需要 **Go 1.26 或更高版本**。Durable 当前是开发版本，尚无正式 release；下面固定到公开开发修订，便于重复安装：
 
 ```sh
-go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
+go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 ```
 
-该修订的 `go.mod` 固定依赖 Pulse `v0.4.2-0.20261021081643-be778722b781`；这里保留它仅作为历史 API baseline，不表示该旧修订包含当前源码的最新依赖或 SQLite 模块。完整的新模块操作见[安装](site/guide/installation.md)。
+该修订的 `go.mod` 固定依赖 Pulse `v0.5.0`。完整的新模块操作与依赖核对见[安装](site/guide/installation.md)。
 
-当前发布顺序为 Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。可选的 `sqlitestore` 是 Go 1.26 的仓内源码开发模块，尚无公开可安装版本；不要据此编造 `go get` 发布命令。其独立验证和边界见 [`sqlitestore/README.md`](sqlitestore/README.md)。
+该入口固定公开开发版本 `v0.0.0-20261023040750-1b397e91c878`，要求 Go 1.26，依赖 Pulse v0.5.0；**Durable v0.1.0 尚未发布**。可选的 `sqlitestore` 和 `postgresstore` 是独立模块；当前后端修订的公开安装 pin 待推送后核验，不把旧子模块基线当作当前源码的可安装版本。源码验证与边界见 [`sqlitestore/README.md`](sqlitestore/README.md)、[`postgresstore/README.md`](postgresstore/README.md) 和[贡献指南](CONTRIBUTING.md)。
 
 ## 最小示例
 

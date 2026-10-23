@@ -39,16 +39,33 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
-The optional `sqlitestore` module is validated separately because it is an independent module and is not part of the root module commands. With the repository workspace disabled:
+Optional `sqlitestore` and `postgresstore` are independent modules, excluded from root `./...`. First validate each module independently against its public root dependency, with `GOWORK=off`:
 
 ```powershell
-cd sqlitestore
-$env:GOWORK = 'off'
-go mod tidy
-go build ./...
-go vet ./...
-go test -race -count=1 ./...
+foreach ($module in @('sqlitestore', 'postgresstore')) {
+    Push-Location $module
+    go mod download
+    go build ./...
+    go vet ./...
+    go test -race -count=1 ./...
+    Pop-Location
+}
 ```
+
+To validate the current root and both backend sources together, from the checkout root create a temporary workspace. If `go.work` already exists, stop and preserve it; do not overwrite it. This is source-checkout validation, not proof of public backend installation. Current backend installation pins must be verified after pushing; Durable `v0.1.0` has not been released.
+
+```powershell
+$previousGowork = $env:GOWORK
+$env:GOWORK = 'off'
+go work init . ./sqlitestore ./postgresstore
+$env:GOWORK = (Join-Path (Get-Location) 'go.work')
+go build ./... ./sqlitestore/... ./postgresstore/...
+go vet ./... ./sqlitestore/... ./postgresstore/...
+go test -race -count=1 ./... ./sqlitestore/... ./postgresstore/...
+$env:GOWORK = $previousGowork
+```
+
+Remove the temporary `go.work`/`go.work.sum` after validation; never commit them or add release dependency `replace` directives. PostgreSQL integration tests require a separate opt-in: set `PULSE_POSTGRES_TEST_DSN` to an isolated disposable database, then run `go test -race -count=1 ./postgresstore/...` in that workspace. Tests execute **`DROP SCHEMA IF EXISTS pulse_durable CASCADE`** and recreate it. **Never use a business database.** Without a DSN, database tests skip; that is not database acceptance. See [`postgresstore/README.md`](postgresstore/README.md).
 
 This validates the current source tree only; it is not a release-install check. Do not claim power-loss, network-filesystem, backup/restore, migration, or distributed-coordination acceptance without a separate test.
 
@@ -67,12 +84,12 @@ $durableGofmt = Join-Path (go env GOROOT) 'bin/gofmt.exe'
 
 The formatter's output must be empty; `gofmt -l` can list files while returning exit code 0. Preserve UTF-8 and LF line endings.
 
-CI runs build, vet, formatting and race tests on **Linux and Windows**, including `filestore` and real process-exit/recovery integration tests. Tests use local temporary data and require no API credentials. Initial module downloads need access to a Go module source or an existing cache.
+CI runs build, vet, formatting and race tests on **Linux and Windows**, including `filestore` and real process-exit/recovery integration tests. Root and SQLite tests use local temporary data and require no API credentials. PostgreSQL database tests are separate, opt-in tests requiring an isolated test DSN. Initial module downloads need access to a Go module source or an existing cache.
 
 ### Repository layout and design boundaries
 
 - The root package owns `Runtime`, Run/Resume, Store records and Codec contracts; it imports Pulse.
-- `filestore/` implements the local persistent backend; `sqlitestore/` is an independent Go 1.26 SQLite backend under source development; `integration/` checks real process interruption and recovery.
+- `filestore/` implements the local persistent backend; `sqlitestore/` and `postgresstore/` are independent Go 1.26 SQLite and PostgreSQL backends under source development; `integration/` checks real process interruption and recovery.
 - `example_test.go` collects executable node, subgraph and managed-stream examples.
 - `site/` holds the bilingual documentation and VitePress site; `.github/assets/` holds the brand sources.
 
@@ -143,16 +160,33 @@ go vet ./...
 go test -race -count=1 -timeout=180s ./...
 ```
 
-可选的 `sqlitestore` 模块是独立模块，且不属于根模块命令，因此单独验证。关闭仓库工作区覆盖后执行：
+可选的 `sqlitestore` 和 `postgresstore` 是独立模块，根模块 `./...` 不包含它们。先保持 `GOWORK=off`，分别核验公开根依赖：
 
 ```powershell
-cd sqlitestore
-$env:GOWORK = 'off'
-go mod tidy
-go build ./...
-go vet ./...
-go test -race -count=1 ./...
+foreach ($module in @('sqlitestore', 'postgresstore')) {
+    Push-Location $module
+    go mod download
+    go build ./...
+    go vet ./...
+    go test -race -count=1 ./...
+    Pop-Location
+}
 ```
+
+若要一起验证当前根模块与两个后端源码，在 checkout 根目录创建临时工作区。已有 `go.work` 时停止并保留，不覆盖。此步骤验证源码 checkout，不证明公开后端可安装。当前后端安装 pin 须在推送后核验；Durable `v0.1.0` 尚未发布。
+
+```powershell
+$previousGowork = $env:GOWORK
+$env:GOWORK = 'off'
+go work init . ./sqlitestore ./postgresstore
+$env:GOWORK = (Join-Path (Get-Location) 'go.work')
+go build ./... ./sqlitestore/... ./postgresstore/...
+go vet ./... ./sqlitestore/... ./postgresstore/...
+go test -race -count=1 ./... ./sqlitestore/... ./postgresstore/...
+$env:GOWORK = $previousGowork
+```
+
+验证后移除临时 `go.work`/`go.work.sum`，不提交这些文件，也不加入发布依赖 `replace`。PostgreSQL 集成测试需另外显式启用：设置 `PULSE_POSTGRES_TEST_DSN` 指向隔离、可丢弃的测试数据库，再在该工作区执行 `go test -race -count=1 ./postgresstore/...`。测试执行 **`DROP SCHEMA IF EXISTS pulse_durable CASCADE`** 并重建，**绝不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表数据库验收通过。详见 [`postgresstore/README.md`](postgresstore/README.md)。
 
 这只验证当前源码树，不是发布安装检查。没有单独实测时，不要宣称已验收断电、网络文件系统、备份/恢复、迁移或分布式协调。
 
@@ -171,12 +205,12 @@ $durableGofmt = Join-Path (go env GOROOT) 'bin/gofmt.exe'
 
 判据是**输出为空**；`gofmt -l` 即使列出了文件也可能返回 0。文件保持 UTF-8 与 LF。
 
-CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包含 `filestore` 和真实进程退出/恢复集成测试。测试只使用本地临时数据，不需要 API 凭据；首次下载模块需要能访问模块源或已有缓存。
+CI 在 **Linux 和 Windows** 上执行 build、vet、格式与 race 测试，包含 `filestore` 和真实进程退出/恢复集成测试。根模块与 SQLite 测试只使用本地临时数据，不需要 API 凭据；PostgreSQL 真实数据库测试独立、显式启用，需要隔离测试 DSN；首次下载模块需要能访问模块源或已有缓存。
 
 ### 仓库结构与设计边界
 
 - 根包维护 `Runtime`、Run/Resume、Store 记录与 Codec 契约，依赖 Pulse。
-- `filestore/` 是本地持久化后端；`sqlitestore/` 是仓内开发中的独立 Go 1.26 SQLite 后端；`integration/` 验证真实进程中断与恢复。
+- `filestore/` 是本地持久化后端；`sqlitestore/` 和 `postgresstore/` 是仓内开发中的独立 Go 1.26 SQLite 与 PostgreSQL 后端；`integration/` 验证真实进程中断与恢复。
 - `example_test.go` 集中提供节点、子图和受管流的可执行示例。
 - `site/` 保存双语文档与 VitePress 站点；`.github/assets/` 保存品牌源文件。
 

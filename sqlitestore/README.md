@@ -4,7 +4,7 @@
 
 可选的本机 SQLite 文件存储，沿用 Pulse Durable 的 `Store` / `Session` 与完整 `RunRecord` 契约。独立模块要求 **Go 1.26**，驱动为纯 Go `modernc.org/sqlite v1.60.1`，内嵌 SQLite **3.53.4**。Durable 根模块统一要求 Go 1.26，依赖 Pulse v0.5.0；使用 MemoryStore 或 filestore 时不必引入 SQLite。
 
-**目前仅为源码开发状态，尚无公开发布的可安装版本。** 本模块的 `require pulse-durable v0.0.0` 与 `replace github.com/Luo-root/pulse-durable => ..` 仅供仓内开发，不是发布依赖。历史文档固定的旧根修订只是历史 API baseline，不包含本模块或当前根依赖。
+**Durable v0.1.0 尚未发布。** 当前后端源码修订的公开安装 pin 待推送后核验，不把旧子模块基线当作当前源码的可安装版本。根模块公开开发 pin 为 `v0.0.0-20261023040750-1b397e91c878`；源码验证使用临时 `go.work`，不向发布依赖加入本地 `replace`。三个模块的验证步骤见[贡献指南](../CONTRIBUTING.md)。
 
 ### API 与存储边界
 
@@ -20,25 +20,24 @@
 
 ### 完整本地运行示例 / Complete local example
 
-在包含当前改动的仓库根目录新建示例子目录（下列命令适用于 PowerShell；需 Go 1.26）。两个本地 replace 都必须保留，因为依赖模块的 replace 不会传递：
+在包含当前改动的仓库根目录执行下列 PowerShell 命令（Go 1.26）。仅创建未跟踪的临时工作区，不修改模块发布依赖；已有 `go.work` 时停止并保留，不覆盖。
 
-From the checkout containing this source, create a local example directory using PowerShell and Go 1.26. Both replacements are required: a dependency's replace directive does not propagate.
+From the current checkout root, run these PowerShell commands with Go 1.26. Use an untracked temporary workspace, not release dependency replacements. If `go.work` already exists, stop and preserve it rather than overwriting it.
 
 ```powershell
 $env:GOWORK = 'off'
+go work init . ./sqlitestore ./postgresstore
+$env:GOWORK = (Join-Path (Get-Location) 'go.work')
 mkdir sqlite-example
 cd sqlite-example
 go mod init example.com/sqlite-example
 go mod edit -go=1.26.0
-go mod edit -require=github.com/Luo-root/pulse-durable@v0.0.0
-go mod edit -require=github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0
-go mod edit -replace=github.com/Luo-root/pulse-durable=..
-go mod edit -replace=github.com/Luo-root/pulse-durable/sqlitestore=../sqlitestore
+go work use .
 ```
 
-保存以下完整程序为 `main.go`，执行 `go mod tidy` 和 `go run .`，预期输出 `result: 42 ready`。首次使用示例数据库执行；再次执行会因 RunID 已存在而失败，应对已有记录使用 Resume，而非覆盖。
+保存以下完整程序为 `main.go`，执行 `go run .`，预期输出 `result: 42 ready`。首次使用示例数据库执行；再次执行会因 RunID 已存在而失败，应对已有记录使用 Resume，而非覆盖。
 
-Save this complete program as `main.go`, then run `go mod tidy` and `go run .`. Expect `result: 42 ready` with a fresh example database. Repeating Run with the same RunID fails; use Resume for an existing record rather than overwriting it.
+Save this complete program as `main.go`, then run `go run .`. Expect `result: 42 ready` with a fresh example database. Repeating Run with the same RunID fails; use Resume for an existing record rather than overwriting it.
 
 ```go
 package main
@@ -97,15 +96,15 @@ func run() (err error) {
 
 根模块 `go test ./...` 不包含此独立模块。以下命令从仓库根目录开始，要求 Go 1.26；不修改发布状态。
 
-Root `go test ./...` does not include this independent module. From the repository root, use Go 1.26:
+Root `go test ./...` does not include this independent module. From the repository root, use Go 1.26. Create the temporary workspace only once; if the example above already created it, reuse it. After validation, restore the previous `GOWORK` setting and remove only the temporary workspace files you created. / 临时工作区只创建一次；若上面的示例已创建，直接复用。验证后恢复原 `GOWORK`，仅移除自己创建的临时工作区文件：
 
 ```powershell
-cd sqlitestore
 $env:GOWORK = 'off'
-go mod tidy
-go build ./...
-go vet ./...
-go test -race -count=1 ./...
+go work init . ./sqlitestore ./postgresstore
+$env:GOWORK = (Join-Path (Get-Location) 'go.work')
+go build ./sqlitestore/...
+go vet ./sqlitestore/...
+go test -race -count=1 ./sqlitestore/...
 ```
 
 测试覆盖运行锁的真实子进程竞争、两 Store 竞争、不同 RunID 并发、CAS、完整 uint64、损坏记录、context、关闭和数据隔离；最终实现还覆盖并发初始化与取消。它们不代替断电、网络文件系统、备份/恢复、迁移或分布式场景的单独验收。
@@ -114,7 +113,7 @@ go test -race -count=1 ./...
 
 This optional local SQLite backend implements the existing Durable `Store` / `Session` and complete `RunRecord` contracts. Its independent module requires **Go 1.26**, uses pure-Go `modernc.org/sqlite v1.60.1`, and embeds **SQLite 3.53.4**. The Durable root module requires Go 1.26 and Pulse v0.5.0; MemoryStore and filestore do not pull in SQLite.
 
-**Source development only: there is no publicly released installable version yet.** The module's root requirement `v0.0.0` and `replace => ..` are repository-local development wiring, not a release dependency. Historical pinned root revisions describe an older API baseline, not this module or the current root dependency.
+**Durable v0.1.0 has not been released.** Public installation pins for the current backend source revision must be verified after pushing; the older submodule baseline is not an installable version of the current source. The public root development pin is `v0.0.0-20261023040750-1b397e91c878`. Validate source with a temporary `go.work`, without adding local `replace` directives to release dependencies. See [Contributing](../CONTRIBUTING.md) for all three modules.
 
 ### API and operational boundaries
 

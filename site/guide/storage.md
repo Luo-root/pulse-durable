@@ -9,11 +9,16 @@
 | `durable.NewMemoryStore()` | 示例、单元测试、进程内协议验证 | 进程内独占会话与 CAS；不保留进程退出后的记录 |
 | `filestore.New(dir)` | 本机工作流的退出与重启恢复 | 同一 RunID 的本机跨进程文件锁、文件记录与原子替换 |
 | `sqlitestore.New(path)` | 本机 SQLite 文件、需要完整 JSON 记录与短事务 CAS | 同一 RunID 的本机 OS 锁；SQLite `BEGIN IMMEDIATE` 短事务、FULL 同步、busy timeout 5000ms |
+| `postgresstore.New(ctx, dsn)` | PostgreSQL 检查点数据库 | 同一 RunID 的会话级 advisory lock；完整 JSON BYTEA 记录与短事务 revision CAS，无 fencing/派发保证 |
 | 自定义 `durable.Store` | 由宿主明确存储及协调要求的环境 | 必须实现 Store/Session 契约，另行说明持久性和所有权保证 |
 
 `filestore` 依赖文件系统的独占锁与同目录原子替换，不提供分布式租约、fencing 或跨机器派发，也不承诺断电时的持久性。不能仅凭把目录放到网络共享上，就将其当作分布式运行管理。
 
-`sqlitestore` 是仓内开发中的独立 Go 1.26 模块，当前尚未公开发布可安装版本；其 `go.mod` 使用仓内 `replace`，不能用公开 `go get` 命令安装。驱动 `modernc.org/sqlite v1.60.1` 内嵌 SQLite 3.53.4；`NewContext(ctx, path)` 支持取消数据库初始化。构造设置并读回验证 WAL、FULL (2) 与 busy_timeout=5000ms。数据库必须专用，v1 严格匹配 DDL 并拒绝额外 schema 对象；旁边的 `.init.lock` 构造锁必须保留。`New(path)` 只接受数据库文件路径，会创建父目录并在旁边创建 `.runlocks/`；新目录/文件分别使用 0700/0600（Windows 由 ACL 管理）。完整 `RunRecord` 以 JSON BLOB 保存，`revision` 为十进制 TEXT；短事务使用 `BEGIN IMMEDIATE`，SQLite busy timeout 为 5000ms，运行期间不持有数据库事务。它只适用于支持 OS 文件锁的本机文件系统，不支持分布式协调、迁移或跨后端导入。
+`sqlitestore` 和 `postgresstore` 是独立 Go 1.26 模块；当前后端修订的公开安装 pin 待推送后核验，暂按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)使用临时 `go.work` 验证源码，不使用发布依赖 `replace`。Durable `v0.1.0` 尚未发布。
+
+`postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
+
+`sqlitestore`：驱动 `modernc.org/sqlite v1.60.1` 内嵌 SQLite 3.53.4；`NewContext(ctx, path)` 支持取消数据库初始化。构造设置并读回验证 WAL、FULL (2) 与 busy_timeout=5000ms。数据库必须专用，v1 严格匹配 DDL 并拒绝额外 schema 对象；旁边的 `.init.lock` 构造锁必须保留。`New(path)` 只接受数据库文件路径，会创建父目录并在旁边创建 `.runlocks/`；新目录/文件分别使用 0700/0600（Windows 由 ACL 管理）。完整 `RunRecord` 以 JSON BLOB 保存，`revision` 为十进制 TEXT；短事务使用 `BEGIN IMMEDIATE`，SQLite busy timeout 为 5000ms，运行期间不持有数据库事务。它只适用于支持 OS 文件锁的本机文件系统，不支持分布式协调、迁移或跨后端导入。
 
 SQLite 初始化与示例见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。关闭时先停止业务运行并关闭 Session，再关闭 Store；Save 返回错误时按 Store 契约重新 Load，不推断是否已经提交。FULL 同步不等于已完成断电实测验收，备份、恢复与目录保留由宿主负责。
 
@@ -48,7 +53,7 @@ if err != nil {
 mkdir durable-storage
 cd durable-storage
 go mod init example.com/durable-storage
-go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
+go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 ```
 
 需要 Go 1.26 或更高版本。保存以下完整程序为 `main.go`：

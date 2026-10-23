@@ -20,17 +20,17 @@ Run these commands where you want to keep the example. You may choose a differen
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
+go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 ```
 
-Durable has no formal release yet. This command pins a public development revision. Go resolves it to pseudo-version `v0.0.0-20261021082000-f46adb637745` and writes that version to `go.mod`. It is not a released `v0.1`.
+Durable `v0.1.0` has not been released. This command pins the resolved public development pseudo-version `v0.0.0-20261023040750-1b397e91c878`, not a formal tag. Go writes this version to `go.mod`.
 
-The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. The current `sqlitestore` is a source-development module inside this repository and has no publicly installable version yet; do not invent a `go get` release command. See [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md) for independent validation.
+Optional `sqlitestore` and `postgresstore` are independent modules. Public installation pins for the current backend source revisions must be verified after pushing; the older submodule baseline at this root pin is not an installable version of the current backends. For now, validate source with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without adding local `replace` directives to release dependencies.
 
-The revision pins Pulse; this public installation entry is only a historical API baseline. It does not include the current repository's `sqlitestore` module, and does not mean the latest dependencies were backported to that old revision:
+This root revision pins Pulse:
 
 ```text
-v0.4.2-0.20261021081643-be778722b781
+v0.5.0
 ```
 
 You normally do not need to install Pulse separately. Go module version selection can retain a higher Pulse dependency already present in your project. For an existing application, inspect the resolved version and validate that combination.
@@ -43,7 +43,7 @@ Run:
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-In the new module created above, expect Durable `v0.0.0-20261021082000-f46adb637745` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
+In the new module created above, expect Durable `v0.0.0-20261023040750-1b397e91c878` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
 
 If your machine uses `go.work` and you want to check this module independently, temporarily disable the workspace. In PowerShell:
 

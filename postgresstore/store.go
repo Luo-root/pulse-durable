@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	durable "github.com/Luo-root/pulse-durable"
@@ -29,11 +30,14 @@ const initAdvisoryKey int64 = 0x50554c5345445552
 var _ durable.Store = (*Store)(nil)
 
 type Store struct {
-	pool     *pgxpool.Pool
-	mu       sync.Mutex
-	sessions map[*session]struct{}
-	closed   bool
-	closeErr error
+	pool      *pgxpool.Pool
+	mu        sync.Mutex
+	sessions  map[*session]struct{}
+	closed    bool
+	closeErr  error
+	pending   map[string]context.CancelFunc
+	inflight  sync.WaitGroup
+	closeDone chan struct{}
 }
 
 // New creates or validates the durable schema using dsn. Passwords are never
@@ -69,19 +73,12 @@ func (s *Store) initialize(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return scrubPGError(err)
 	}
-	defer c.Release()
 	if _, err = c.Exec(ctx, `SELECT pg_advisory_lock($1)`, initAdvisoryKey); err != nil {
+		discardConn(c)
 		return scrubPGError(err)
 	}
 	defer func() {
-		var unlocked bool
-		err := c.QueryRow(context.Background(), `SELECT pg_advisory_unlock($1)`, initAdvisoryKey).Scan(&unlocked)
-		if err != nil {
-			resultErr = errors.Join(resultErr, scrubPGError(err))
-		}
-		if !unlocked {
-			resultErr = errors.Join(resultErr, errors.New("postgresstore: initialization lock was not held"))
-		}
+		resultErr = errors.Join(resultErr, unlockConn(c, initAdvisoryKey))
 	}()
 	tx, err := c.Begin(ctx)
 	if err != nil {
@@ -196,6 +193,14 @@ func scrubPGError(err error) error {
 	return err
 }
 
+// acquisitionTimeout bounds pool and network waits even with a background
+// context. A saturated local pool cannot determine whether another Store holds
+// the run lock: expiration returns context.DeadlineExceeded, not ErrBusy.
+const acquisitionTimeout = 30 * time.Second
+const cleanupTimeout = 5 * time.Second
+
+// Acquire rejects locally reserved/held run IDs immediately with ErrBusy.
+// Other acquisitions wait at most 30 seconds (or the caller's shorter deadline).
 func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, error) {
 	if ctx == nil {
 		return nil, errors.New("postgresstore: nil context")
@@ -207,26 +212,62 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 		return nil, errors.New("postgresstore: run ID must be nonempty UTF-8")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil, os.ErrClosed
 	}
-	conn, err := s.pool.Acquire(ctx)
+	if _, busy := s.pending[runID]; busy {
+		s.mu.Unlock()
+		return nil, durable.ErrBusy
+	}
+	for x := range s.sessions {
+		if x.runID == runID {
+			s.mu.Unlock()
+			return nil, durable.ErrBusy
+		}
+	}
+	acquireCtx, cancel := context.WithTimeout(ctx, acquisitionTimeout)
+	if s.pending == nil {
+		s.pending = make(map[string]context.CancelFunc)
+	}
+	s.pending[runID] = cancel
+	s.inflight.Add(1)
+	s.mu.Unlock()
+	defer func() {
+		cancel()
+		s.mu.Lock()
+		delete(s.pending, runID)
+		s.mu.Unlock()
+		s.inflight.Done()
+	}()
+	conn, err := s.pool.Acquire(acquireCtx)
 	if err != nil {
-		return nil, scrubPGError(err)
+		return nil, s.acquireError(err)
 	}
 	key := advisoryKey(runID)
 	var locked bool
-	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
-		conn.Release()
-		return nil, scrubPGError(err)
+	if err = conn.QueryRow(acquireCtx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
+		// The server may have acquired the lock before the response was lost.
+		discardConn(conn)
+		return nil, s.acquireError(err)
 	}
 	if !locked {
 		conn.Release()
-		return nil, durable.ErrBusy
+		return nil, s.acquireError(durable.ErrBusy)
 	}
 	x := &session{store: s, conn: conn, runID: runID, key: key}
+	s.mu.Lock()
+	if s.closed || acquireCtx.Err() != nil {
+		closed := s.closed
+		s.mu.Unlock()
+		x.closeLocked()
+		if closed {
+			return nil, os.ErrClosed
+		}
+		return nil, acquireCtx.Err()
+	}
 	s.sessions[x] = struct{}{}
+	s.mu.Unlock()
 	return x, nil
 }
 
@@ -240,19 +281,35 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		done := s.closeDone
+		s.mu.Unlock()
+		<-done
 		return s.closeErr
 	}
 	s.closed = true
-	for x := range s.sessions {
-		x.mu.Lock()
-		s.closeErr = errors.Join(s.closeErr, x.closeLocked())
-		x.mu.Unlock()
-		delete(s.sessions, x)
+	s.closeDone = make(chan struct{})
+	for _, cancel := range s.pending {
+		cancel()
 	}
+	sessions := make([]*session, 0, len(s.sessions))
+	for x := range s.sessions {
+		sessions = append(sessions, x)
+	}
+	s.mu.Unlock()
+	var closeErr error
+	for _, x := range sessions {
+		closeErr = errors.Join(closeErr, x.Close())
+	}
+	// No Add can occur after closed was set under mu. Acquirers clean up any
+	// connections/locks obtained concurrently before announcing completion.
+	s.inflight.Wait()
 	s.pool.Close()
-	return s.closeErr
+	s.mu.Lock()
+	s.closeErr = closeErr
+	close(s.closeDone)
+	s.mu.Unlock()
+	return closeErr
 }
 
 type session struct {
@@ -375,16 +432,50 @@ func (x *session) closeLocked() error {
 		return x.closeErr
 	}
 	x.closed = true
-	_, x.closeErr = x.conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, x.key)
-	x.conn.Release()
-	return scrubPGError(x.closeErr)
+	x.closeErr = unlockConn(x.conn, x.key)
+	return x.closeErr
 }
+func (s *Store) acquireError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return os.ErrClosed
+		}
+	}
+	return scrubPGError(err)
+}
+
+func discardConn(c *pgxpool.Conn) {
+	conn := c.Hijack()
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	_ = conn.Close(ctx)
+}
+
+func unlockConn(c *pgxpool.Conn, key int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	var unlocked bool
+	err := c.QueryRow(ctx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked)
+	if err != nil || !unlocked {
+		discardConn(c)
+		if err != nil {
+			return scrubPGError(err)
+		}
+		return errors.New("postgresstore: advisory lock state uncertain")
+	}
+	c.Release()
+	return nil
+}
+
 func (x *session) Close() error {
-	x.store.mu.Lock()
-	defer x.store.mu.Unlock()
 	x.mu.Lock()
-	defer x.mu.Unlock()
 	err := x.closeLocked()
+	x.mu.Unlock()
+	x.store.mu.Lock()
 	delete(x.store.sessions, x)
+	x.store.mu.Unlock()
 	return err
 }

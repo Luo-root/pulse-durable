@@ -20,17 +20,17 @@ go version
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
+go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 ```
 
-Durable 当前没有正式 release。这条命令固定到公开开发修订，Go 会将它解析为伪版本 `v0.0.0-20261021082000-f46adb637745` 并写入 `go.mod`。不要将它当作已发布的 `v0.1`。
+Durable `v0.1.0` 尚未发布。这条命令固定已解析的公开开发伪版本 `v0.0.0-20261023040750-1b397e91c878`，不是正式 tag；Go 会将该版本写入 `go.mod`。
 
-按维护者 2026-10-18 确认的发布顺序，Pulse 先准备 v0.5.0，Durable 暂不发版；须先完成并验收 [#40 的正式数据库 Store](https://github.com/Luo-root/pulse-durable/issues/40)，再考虑首次发布。当前 `sqlitestore` 是仓内源码开发模块，尚无公开可安装版本；不要为它编造 `go get` 发布命令。其独立验证见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。
+可选的 `sqlitestore` 和 `postgresstore` 是独立模块。当前后端源码修订的公开安装 pin 须在推送后另行核验，不能把该根 pin 下的旧子模块基线当作当前后端的可安装版本。暂使用[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)中的临时 `go.work` 验证源码，不在发布依赖中加入本地 `replace`。
 
-该修订固定依赖 Pulse；这条公开安装入口只代表历史 API baseline，不包含当前仓内新增的 `sqlitestore` 模块，也不表示最新依赖已回写到该旧修订：
+该根修订固定依赖 Pulse：
 
 ```text
-v0.4.2-0.20261021081643-be778722b781
+v0.5.0
 ```
 
 通常不需要单独安装 Pulse。Go 模块的版本选择可能保留现有项目中更高的 Pulse 依赖；接入已有项目时，应核对实际解析版本，并验证该组合。
@@ -43,7 +43,7 @@ v0.4.2-0.20261021081643-be778722b781
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-在本页创建的新模块中，预期看到 Durable `v0.0.0-20261021082000-f46adb637745`，以及上面列出的 Pulse 版本。不要在安装步骤后立即执行 `go mod tidy`：尚未添加导入代码时，它会清除未使用的依赖。
+在本页创建的新模块中，预期看到 Durable `v0.0.0-20261023040750-1b397e91c878`，以及上面列出的 Pulse 版本。不要在安装步骤后立即执行 `go mod tidy`：尚未添加导入代码时，它会清除未使用的依赖。
 
 如果本机启用了 `go.work`，但需要单独核对当前模块，可暂时禁用工作区。在 PowerShell 中执行：
 

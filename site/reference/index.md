@@ -25,7 +25,7 @@
 
 ## 版本与范围
 
-本套文档描述公开开发修订 `f46adb637745d864649685cf481675d5dc0ca904`（Go 实际解析为 `v0.0.0-20261021082000-f46adb637745`）所包含的 API；Durable 当前尚无正式 release。该修订依赖 Pulse `v0.4.2-0.20261021081643-be778722b781`，要求 Go 1.25 或更高版本。
+本套参考描述当前源码的契约；根模块教程固定公开开发版本 `v0.0.0-20261023040750-1b397e91c878`，依赖 Pulse `v0.5.0`，要求 Go 1.26 或更高版本。Durable `v0.1.0` 尚未发布。独立后端的当前源码不等于该根模块 pin 下的旧子模块基线；公开后端安装 pin 须在当前修订推送后另行核验，源码验证见[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)。历史性能页面保留各自标注的测量版本。
 
 支持普通值、受管流、显式状态、静态子图，以及内置 Retry 和消息预算。MemoryStore 只提供进程内协议；文件 Store 面向本机单宿主。宿主可通过[切面与 Cancel/Resume](../guide/composition.md)组合审批等待及按轮工具调用；内置唤醒服务、分布式运行管理、deterministic replay 和外部副作用 exactly-once 不在当前实现内。
 
