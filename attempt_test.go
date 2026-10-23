@@ -2,12 +2,14 @@ package durable
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/Luo-root/pulse"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/Luo-root/pulse"
+	"time"
 )
 
 func TestPersistentRetryLimitMismatchStopsBeforeBusiness(t *testing.T) {
@@ -242,5 +244,186 @@ func TestSaveFailureLeavesRuntimeRecordUnchanged(t *testing.T) {
 	}
 	if err := state.save(ctx, proposed); err == nil || store.saves.Load() != 1 {
 		t.Fatal("uncertain Save was retried")
+	}
+}
+
+func TestAttemptObservationReportsAllocationAndActiveReclamation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	g := testGraph(t, "observed")
+	testAdd(t, g, pulse.NewNode("work", "真实桥分支", nil, nil, nil))
+	definition, err := inspectDefinition(g, NewCodecs().snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := NewMemoryStore().Acquire(ctx, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	state := &runState{session: session, def: definition, record: RunRecord{
+		RunID: "run", Version: "1", Definition: definition.fingerprint, RootScope: "root",
+		Scopes: map[string]ScopeRecord{"root": {Graph: "observed", Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{},
+	}}
+	if err := state.save(ctx, cloneRecord(state.record)); err != nil {
+		t.Fatal(err)
+	}
+	open := func(req pulse.CheckpointAttemptRequest, resumed bool) pulse.CheckpointAttempt {
+		t.Helper()
+		a, err := state.openAttempt(ctx, req)
+		if err != nil || a.Resumed == nil || *a.Resumed != resumed {
+			t.Fatalf("resumed=%v cursor=%+v err=%v", resumed, a, err)
+		}
+		return a
+	}
+	rootReq := pulse.CheckpointAttemptRequest{Site: pulse.Site{Graph: "observed", Execution: "first"}, Parent: "root", NodeID: "work", Limit: 1}
+	root := open(rootReq, false)
+	revision := state.record.Revision
+	rootReq.Site.Execution = "fresh-execution"
+	if active := open(rootReq, true); active.Scope != root.Scope || active.Index != root.Index || state.record.Revision != revision {
+		t.Fatal("active root reallocation changed identity or saved a new revision")
+	}
+	retryReq := pulse.CheckpointAttemptRequest{Site: rootReq.Site, Parent: root.Scope, NodeID: "work", Boundary: "aspect/0", Limit: 2}
+	first := open(retryReq, false)
+	revision = state.record.Revision
+	if active := open(retryReq, true); active.Scope != first.Scope || active.Index != 1 || state.record.Revision != revision {
+		t.Fatal("active Retry reallocation changed identity, budget or revision")
+	}
+	if err := state.failAttempt(ctx, first.Scope); err != nil {
+		t.Fatal(err)
+	}
+	second := open(retryReq, false)
+	if second.Scope == first.Scope || second.Index != 2 {
+		t.Fatalf("second allocation=%+v first=%+v", second, first)
+	}
+	if active := open(retryReq, true); active.Scope != second.Scope || active.Index != 2 {
+		t.Fatal("second active attempt was not reclaimed")
+	}
+	if err := state.failAttempt(ctx, second.Scope); err != nil {
+		t.Fatal(err)
+	}
+	revision = state.record.Revision
+	exhausted, err := state.openAttempt(ctx, retryReq)
+	if err != nil || !exhausted.Exhausted || exhausted.Index != 2 || exhausted.Resumed != nil || state.record.Revision != revision {
+		t.Fatalf("exhaustion changed budget or claimed active execution: %+v err=%v", exhausted, err)
+	}
+	data, err := json.Marshal(state.record)
+	if err != nil || strings.Contains(strings.ToLower(string(data)), "resumed") {
+		t.Fatalf("observation leaked into persistent format: %s err=%v", data, err)
+	}
+}
+
+func committedAttemptValues(t *testing.T, skipped bool) streamProtocol {
+	t.Helper()
+	p := newStreamProtocol(t)
+	ctx := context.Background()
+	if err := p.append(1); err != nil {
+		t.Fatal(err)
+	}
+	message, err := p.s.openMessage(ctx, p.messageRequest(1, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := pulse.CheckpointOutput{Key: p.value, State: pulse.SlotStateReady, Value: 42}
+	if skipped {
+		output.State, output.Value = pulse.SlotStateSkipped, nil
+	}
+	if err := p.s.commitMessage(ctx, pulse.CheckpointMessageCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: message.Attempt.Scope,
+		Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: 1}},
+		Values: []pulse.CheckpointOutput{output}}); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestActiveRootRestoresCommittedMessageValuesOnly(t *testing.T) {
+	p := committedAttemptValues(t, false)
+	ctx := context.Background()
+	request := pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.s.record.RootScope, NodeID: "processor", Limit: 1}
+	before := cloneRecord(p.s.record)
+	attempt, err := p.s.openAttempt(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Scope != p.processor.Scope || attempt.Index != 1 || attempt.Exhausted || len(attempt.Values) != 1 {
+		t.Fatalf("active root did not reclaim its values: %+v", attempt)
+	}
+	value := attempt.Values[0]
+	if value.Key != p.value || value.State != pulse.SlotStateReady || value.Value != 42 || value.Stream != nil {
+		t.Fatalf("incorrect restored value: %+v", value)
+	}
+	if !reflect.DeepEqual(before, p.s.record) {
+		t.Fatal("restoring ordinary values changed the durable record")
+	}
+	// Retry 和消息预算只返回自己的游标，不得夹带根节点输出。
+	retry := pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.processor.Scope, NodeID: "processor", Boundary: "aspect/0", Limit: 2}
+	for range 2 {
+		attempt, err := p.s.openAttempt(ctx, retry)
+		if err != nil || len(attempt.Values) != 0 {
+			t.Fatalf("Retry carried ordinary values: %+v %v", attempt, err)
+		}
+	}
+	if err := p.append(2); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		message, err := p.s.openMessage(ctx, p.messageRequest(2, 2))
+		if err != nil || len(message.Attempt.Values) != 0 {
+			t.Fatalf("message attempt carried ordinary values: %+v %v", message, err)
+		}
+	}
+	if err := p.s.failAttempt(ctx, p.processor.Scope); err != nil {
+		t.Fatal(err)
+	}
+	exhausted, err := p.s.openAttempt(ctx, request)
+	if err != nil || !exhausted.Exhausted || len(exhausted.Values) != 0 {
+		t.Fatalf("failed root restored values: %+v %v", exhausted, err)
+	}
+}
+
+func TestActiveRootRestoresSkippedMessageValue(t *testing.T) {
+	p := committedAttemptValues(t, true)
+	attempt, err := p.s.openAttempt(context.Background(), pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.s.record.RootScope, NodeID: "processor", Limit: 1})
+	if err != nil || len(attempt.Values) != 1 {
+		t.Fatalf("skipped value restore: %+v %v", attempt, err)
+	}
+	value := attempt.Values[0]
+	if value.Key != p.value || value.State != pulse.SlotStateSkipped || value.Value != nil || value.Stream != nil {
+		t.Fatalf("skip was changed during recovery: %+v", value)
+	}
+}
+
+func TestRestoredAttemptValuesRejectInvalidPayloads(t *testing.T) {
+	p := committedAttemptValues(t, false)
+	key := managedKey(p.s.record.RootScope, p.processor.Scope, "processor")
+	cases := map[string]func(*ManagedRecord){
+		"scope":              func(m *ManagedRecord) { m.Scope = p.source.Scope },
+		"parent":             func(m *ManagedRecord) { m.Parent = p.source.Scope },
+		"node":               func(m *ManagedRecord) { m.NodeID = "source" },
+		"undeclared":         func(m *ManagedRecord) { m.Values[0].Name = "undeclared" },
+		"duplicate":          func(m *ManagedRecord) { m.Values = append(m.Values, m.Values[0]) },
+		"stream":             func(m *ManagedRecord) { m.Values[0].Stream = &StreamDescriptorRecord{} },
+		"stream-declaration": func(m *ManagedRecord) { m.Values[0].Name = p.outKey.Name },
+		"pending":            func(m *ManagedRecord) { m.Values[0].State = "pending" },
+		"codec-type":         func(m *ManagedRecord) { m.Values[0].TypeID = "go/string" },
+		"codec-version":      func(m *ManagedRecord) { m.Values[0].Version = "2" },
+		"checksum":           func(m *ManagedRecord) { m.Values[0].Data = []byte("41") },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			record := cloneRecord(p.s.record)
+			managed := record.Managed[key]
+			mutate(&managed)
+			record.Managed[key] = managed
+			state := &runState{def: p.s.def, session: p.s.session, record: record}
+			before := cloneRecord(record)
+			_, err := state.openAttempt(context.Background(), pulse.CheckpointAttemptRequest{Site: p.site, Parent: record.RootScope, NodeID: "processor", Limit: 1})
+			if err == nil {
+				t.Fatal("invalid restored output accepted")
+			}
+			if !reflect.DeepEqual(before, state.record) {
+				t.Fatal("invalid recovery changed the record")
+			}
+		})
 	}
 }
