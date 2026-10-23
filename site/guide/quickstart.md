@@ -10,10 +10,10 @@
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
-如果已经按[安装](installation.md)创建模块，直接在那个模块目录继续。Durable 尚无正式 release，本教程固定使用公开开发修订。
+如果已按[安装](installation.md)创建模块，直接继续。本教程以目标 v0.1.0 为 API 基线，依赖 Pulse v0.5.0；这是发版准备，发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，相应 tag 发布前安装命令尚不可用。
 
 ## 2. 创建 main.go
 

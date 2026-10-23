@@ -78,6 +78,11 @@ jobs:
         run: go vet ./...
       - name: Test SQLite Store contracts and process ownership
         run: go test -race -count=1 -timeout=180s ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Run exact bilingual SQLite tutorial
+        run: python ../scripts/check_database_tutorials.py sqlite
 
   postgres-store:
     runs-on: ubuntu-latest
@@ -121,6 +126,13 @@ jobs:
         env:
           PULSE_POSTGRES_TEST_DSN: postgres://postgres:durable-ci@127.0.0.1:5432/durable_test?sslmode=disable
         run: go test -race -count=1 -timeout=180s ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Run exact bilingual PostgreSQL tutorial
+        env:
+          PULSE_POSTGRES_DSN: postgres://postgres:durable-ci@127.0.0.1:5432/durable_test?sslmode=disable
+        run: python ../scripts/check_database_tutorials.py postgresql
 
   benchmark-correctness:
     strategy:

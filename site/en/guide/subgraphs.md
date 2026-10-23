@@ -1,5 +1,7 @@
 # Subgraphs and retries
 
+This page targets the Durable v0.1.0 API, requiring Go 1.26+ and Pulse v0.5.0. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases): installation commands are unavailable before tag publication; see [Installation](installation.md) for alternatives.
+
 Use this page when composing business stages into a static child graph and reusing its internal results after interruption. Complete [Quick start](quickstart.md) and [Recovery after process exit](recovery.md) before running this example.
 
 ## Two kinds of child recovery
@@ -23,7 +25,7 @@ Requires Go 1.26 or later and a writable local directory.
 mkdir durable-subgraphs
 cd durable-subgraphs
 go mod init example.com/durable-subgraphs
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
 The example uses a fixed RunID and `./checkpoints`. Start in a new directory without a record for this example. Assign a new RunID for a new demonstration rather than automatically deleting old records.

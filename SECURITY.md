@@ -1,6 +1,6 @@
 # Security Policy
 
-This policy covers Pulse Durable, including the root runtime and the `filestore` backend. English and Chinese sections are equivalent.
+This policy covers Pulse Durable, including the root runtime and the `filestore`, `sqlitestore`, and `postgresstore` backends. English and Chinese sections are equivalent.
 
 ## Supported versions
 
@@ -46,7 +46,7 @@ Application-specific authorization, user-supplied business functions and custom 
 
 ## 中文
 
-本政策适用于 Pulse Durable 根运行时与 `filestore` 后端。
+本政策适用于 Pulse Durable 根运行时与 `filestore`、`sqlitestore`、`postgresstore` 后端。
 
 ### 支持范围
 

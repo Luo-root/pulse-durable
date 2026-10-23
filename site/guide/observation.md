@@ -1,6 +1,6 @@
 # 观测与稳定运行身份
 
-本页面向需要从日志判断“新重试，还是恢复了上次未完成尝试”的服务开发者。示例对应[安装页](installation.md)固定的公开 Durable 开发版本 `v0.0.0-20261023040750-1b397e91c878`，依赖 Pulse `v0.5.0`，要求 Go 1.26；Durable `v0.1.0` 尚未发布，默认构建不使用本地 replace。
+本页面向需要从日志判断“新重试，还是恢复了上次未完成尝试”的服务开发者。示例以目标 Durable `v0.1.0` 为 API 基线，依赖 Pulse `v0.5.0`，要求 Go 1.26；发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，tag 发布前[安装命令](installation.md)尚不可用。默认构建不使用本地 replace。
 
 ## 区分运行、进程与尝试
 

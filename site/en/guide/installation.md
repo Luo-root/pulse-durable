@@ -1,93 +1,99 @@
 # Installation
 
-Use this page to add Pulse Durable to a Go program for the first time. You will create a module with a pinned dependency, ready to run the complete program in [Quick start](quickstart.md).
+This page and current tutorials target the **Durable v0.1.0** API, require **Go 1.26+**, and depend on **Pulse v0.5.0**. This is release preparation, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag status. The v0.1.0 commands below are unavailable until the corresponding tags are published. Historical performance pages retain their measured versions.
 
 ## 1. Check prerequisites
-
-Requires Go 1.26 or later. Run:
 
 ```sh
 go version
 ```
 
-Expect `go1.26.0` or later. You also need access to a Go module proxy or GitHub. If downloads fail, check connectivity and your current `GOPROXY` setting first.
+Expect `go1.26.0` or later. Downloads need a Go module proxy or GitHub; check connectivity and `GOPROXY` first if they fail.
 
 ## 2. Create a module and install
-
-Run these commands where you want to keep the example. You may choose a different directory name:
 
 ```sh
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
-Durable `v0.1.0` has not been released. This command pins the resolved public development pseudo-version `v0.0.0-20261023040750-1b397e91c878`, not a formal tag. Go writes this version to `go.mod`.
-
-Optional `sqlitestore` and `postgresstore` are independent modules. Their verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`, not a formal Durable v0.1.0 tag. Install either module with:
+Install optional backends only as needed. The root module does not pull in database drivers when you do not use them:
 
 ```sh
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+```
+
+The repository contains three independent modules, requiring three separate release tags:
+
+| Module | Repository tag | go get version |
+| --- | --- | --- |
+| Root | `v0.1.0` | `@v0.1.0` |
+| SQLite | `sqlitestore/v0.1.0` | `@v0.1.0` |
+| PostgreSQL | `postgresstore/v0.1.0` | `@v0.1.0` |
+
+The root tag does not publish submodules automatically. This describes naming only; it does not create or publish tags. See [SQLite](sqlite.md) and [PostgreSQL](postgresql.md) for complete usage.
+
+### Pre-release development pin alternative
+
+If target tags are not yet published, these public development pins were previously verified to resolve. They are older development snapshots, not v0.1.0 release-install acceptance, and may lack fixes in the current source:
+
+```sh
+go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3
 go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3
 ```
 
-The current source can still be validated with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without adding local `replace` directives to release dependencies.
-
-This root revision pins Pulse:
-
-```text
-v0.5.0
-```
-
-You normally do not need to install Pulse separately. Go module version selection can retain a higher Pulse dependency already present in your project. For an existing application, inspect the resolved version and validate that combination.
+Validate the current checkout with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without local `replace` directives in release dependencies.
 
 ## 3. Inspect dependencies
-
-Run:
 
 ```sh
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-In the new module created above, expect Durable `v0.0.0-20261023040750-1b397e91c878` and the Pulse version listed above. Do not run `go mod tidy` immediately after installation: without source imports, it removes unused dependencies.
+A new module using target release installation should resolve Durable `v0.1.0` and Pulse `v0.5.0`; development pins resolve to their pseudo-versions. Existing projects may retain higher dependencies through Go module version selection: inspect and validate the actual combination. Do not immediately run `go mod tidy` without source imports, as it removes unused dependencies.
 
-If your machine uses `go.work` and you want to check this module independently, temporarily disable the workspace. In PowerShell:
+Temporarily disable workspaces for an independent check. PowerShell:
 
 ```powershell
 $env:GOWORK = 'off'
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-In a POSIX shell:
+POSIX shell:
 
 ```sh
 GOWORK=off go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
+Restore previous environment settings afterward.
+
 ## 4. Choose imports
 
-Application code uses:
+This is an import fragment, not a complete program:
 
 ```go
 import (
-	"github.com/Luo-root/pulse"
-	durable "github.com/Luo-root/pulse-durable"
+    "github.com/Luo-root/pulse"
+    durable "github.com/Luo-root/pulse-durable"
 )
 ```
 
-This is an import fragment, not a complete program. For local persistent storage, also import `github.com/Luo-root/pulse-durable/filestore`. Use `durable.NewMemoryStore()` for examples and tests in one process, and `filestore.New(dir)` for recovery after local process exit.
+Use `durable.NewMemoryStore()` for in-process examples, `filestore` or [SQLite](sqlite.md) for local persistence, and [PostgreSQL](postgresql.md) for database storage. Add complete source before running `go mod tidy`.
 
 ## Common problems
 
 | Symptom | Action |
 | --- | --- |
-| Go is too old | Use Go 1.26 or later, then install again |
-| Module download fails | Check connectivity, proxy settings, and the module address in the error, then retry the download |
-| `go list` reports a different Pulse version | Check the existing `go.mod` and workspace; a higher existing version participates in Go module version selection |
-| Dependencies are missing after adding code | Repeat the pinned `go get` in the module directory, then run `go mod tidy` |
-| Local `replace` makes results hard to reproduce | Validate public revisions in an independent module before choosing development workspace references |
+| `unknown revision v0.1.0` | Check Releases and the module-specific tag; before publication use development pins or source validation, not an API-error diagnosis |
+| Go is too old | Use Go 1.26 or later |
+| Module download fails | Check connectivity, proxy, and module address |
+| `go list` reports another version | Check `go.mod`, workspaces, and higher existing dependencies |
+| Local `replace` interferes | Check public versions in an independent module |
 
 ## Next steps
 
-Continue with [Quick start](quickstart.md): add a complete `main.go`, run it, and read a declared outlet. If you already completed the minimal run, continue with [Recovery after process exit](recovery.md). Before upgrading code or codecs, check the compatibility rules in the [Execution contract](../reference/execution.md).
+Continue with [Quick start](quickstart.md) or [Recovery after process exit](recovery.md). Before changing business definitions or codecs, check the [Execution contract](../reference/execution.md).

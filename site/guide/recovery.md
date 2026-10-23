@@ -10,10 +10,10 @@
 mkdir durable-recovery
 cd durable-recovery
 go mod init example.com/durable-recovery
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
-Durable 尚无正式 release，安装命令固定到公开开发修订。使用一个尚未运行过本例的新模块目录；如果已有检查点，先阅读本页的“重复运行”说明。
+本页以目标 v0.1.0 为 API 基线，依赖 Pulse v0.5.0；发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，tag 发布前安装命令尚不可用。使用尚未运行过本例的新模块目录；已有检查点时先阅读“重复运行”。
 
 ## 2. 创建 main.go
 

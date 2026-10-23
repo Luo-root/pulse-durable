@@ -1,5 +1,7 @@
 # Value codecs
 
+This page targets the Durable v0.1.0 API, requiring Go 1.26+ and Pulse v0.5.0. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases): installation commands are unavailable before tag publication; see [Installation](installation.md) for alternatives.
+
 Use this page to persist business structs, named types, or values needing a special encoding. Durable resolves codecs by the actual Go type. Similar-looking types, or types with the same underlying representation, do not necessarily share a registration.
 
 ## 1. Identify types that need registration
@@ -26,7 +28,7 @@ Requires Go 1.26 or later. Create a new module:
 mkdir durable-codecs
 cd durable-codecs
 go mod init example.com/durable-codecs
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
 ```
 
 Save this complete program as `main.go`. It registers `Document`, runs once, then restores from the same in-process Store and reads a struct outlet.

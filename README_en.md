@@ -18,15 +18,18 @@ Outputs are published to downstream nodes after storage confirms the checkpoint 
 
 ## Install
 
-Requires **Go 1.26 or later**. Durable is currently a development version with no formal release. Pin the public development revision for reproducible installation:
+This page uses target **Durable v0.1.0** as its API baseline, requires **Go 1.26 or later**, and depends on Pulse **v0.5.0**.
+
+**Release preparation, not a claim of publication.** Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag publication status. The commands below are not available until their respective tags are published.
 
 ```sh
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
+go get github.com/Luo-root/pulse-durable@v0.1.0
+# Optional backends; install only as needed:
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
 ```
 
-That revision's `go.mod` pins Pulse `v0.5.0`. See [Installation](site/en/guide/installation.md) for complete new-module steps and dependency checks.
-
-This entry pins public development version `v0.0.0-20261023040750-1b397e91c878`, requires Go 1.26, and depends on Pulse v0.5.0; **Durable v0.1.0 has not been released**. Optional `sqlitestore` and `postgresstore` are independent modules. Their verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`, not a formal Durable v0.1.0 tag. See [`sqlitestore/README.md`](sqlitestore/README.md), [`postgresstore/README.md`](postgresstore/README.md), and [Contributing](CONTRIBUTING.md) for source validation and boundaries.
+Both backends are independent modules. See [Installation](site/en/guide/installation.md) for the three tag names, pre-release development pin alternative, and dependency checks; [SQLite](site/en/guide/sqlite.md) and [PostgreSQL](site/en/guide/postgresql.md) for complete usage; and [Contributing](CONTRIBUTING.md) for source validation.
 
 ## Minimal example
 
@@ -120,12 +123,14 @@ Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) ·
 | Task | Documentation |
 | --- | --- |
 | Understand the purpose and reading order | [Guide overview](site/en/guide/index.md) |
-| Install the development version and inspect dependencies | [Installation](site/en/guide/installation.md) |
+| Install v0.1.0 and inspect dependencies and release status | [Installation](site/en/guide/installation.md) |
 | Complete the first run and read an outlet | [Quick start](site/en/guide/quickstart.md) |
 | Keep checkpoints and recover in a new process | [Recovery after process exit](site/en/guide/recovery.md) |
 | Compose child graphs and understand Retry recovery | [Subgraphs and retries](site/en/guide/subgraphs.md) |
 | Persist business structs and custom types | [Value codecs](site/en/guide/codecs.md) |
 | Use file storage or implement a Store | [Storage](site/en/guide/storage.md) |
+| Use SQLite and recover in a new process | [SQLite tutorial](site/en/guide/sqlite.md) |
+| Use PostgreSQL and manage connections and permissions | [PostgreSQL tutorial](site/en/guide/postgresql.md) |
 | Estimate execution, storage and recovery costs at 1–10000 steps | [Scale and performance](site/en/guide/performance.md) · [Benchmark source and method](benchmarks/README_en.md) |
 | Check API, record, and error rules | [Reference overview](site/en/reference/index.md), [Execution contract](site/en/reference/execution.md), [Data model](site/en/reference/data-model.md), [Error handling](site/en/reference/errors.md) |
 

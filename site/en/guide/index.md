@@ -6,7 +6,7 @@ Pulse owns graph definitions, dependency scheduling, Aspects, and observation of
 
 ## Before you start
 
-You need Go 1.26 or later and access to Go module downloads. Durable has no formal release yet; the tutorials pin a public development revision. You do not need to implement storage: the minimal example uses `MemoryStore`, and the recovery tutorial uses the included `filestore`.
+You need Go 1.26 or later and access to module downloads. Current tutorials target Durable v0.1.0 and Pulse v0.5.0, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases); installation commands are unavailable before their tags are published. The minimal example uses `MemoryStore`, and the recovery tutorial uses `filestore`; complete SQLite and PostgreSQL tutorials are also available.
 
 If graphs, typed Keys, and declared outlets are new to you, start with the [Pulse quick start](https://luo-root.github.io/pulse/en/guide/quickstart). The Durable tutorials provide their own complete programs and dependency versions.
 
@@ -25,6 +25,8 @@ In the third step, the upstream body runs once and the downstream body runs once
 | Compose stages into a child graph and retain Retry progress | [Subgraphs and retries](subgraphs.md) |
 | Persist structs, named types, or special encodings | [Value codecs](codecs.md) |
 | Choose a directory, investigate lock contention, or add a backend | [Storage](storage.md) |
+| Use local SQLite and recover in another process | [SQLite tutorial](sqlite.md) |
+| Use PostgreSQL with DSN, permissions, and connections | [PostgreSQL tutorial](postgresql.md) |
 
 If a business function calls an external system before its checkpoint is confirmed, recovery may call that function again. Establish idempotency keys, transaction boundaries, or an outbox when integrating your application.
 
