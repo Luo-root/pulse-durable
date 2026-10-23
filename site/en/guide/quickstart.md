@@ -4,7 +4,7 @@ Start with a new Go module, complete one Durable `Run`, and read a declared outl
 
 ## 1. Prepare a module
 
-You need Go 1.25 or later and access to Go module downloads. Run:
+You need Go 1.26 or later and access to Go module downloads. Run:
 
 ```sh
 mkdir durable-quickstart

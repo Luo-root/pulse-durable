@@ -8,7 +8,7 @@ home:
   lead: Checkpoint encoding, storage, and recovery for Pulse workflows. Rebuild the same definition with the original RunID and inputs, then re-enter unconfirmed functions from the beginning.
   primary: { text: Complete a first run, link: /en/guide/quickstart }
   secondary: { text: Practice exit and recovery, link: /en/guide/recovery }
-  version: Development docs · Go 1.25+ · No released tag yet
+  version: Development docs · Go 1.26+ · No released tag yet
   flowTitle: Recover from a durable checkpoint
   flowLabel: Restore the confirmed first step, execute the unconfirmed second step, and read the final result
   flow:

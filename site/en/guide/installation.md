@@ -4,13 +4,13 @@ Use this page to add Pulse Durable to a Go program for the first time. You will 
 
 ## 1. Check prerequisites
 
-Requires Go 1.25 or later. Run:
+Requires Go 1.26 or later. Run:
 
 ```sh
 go version
 ```
 
-Expect `go1.25.0` or later. You also need access to a Go module proxy or GitHub. If downloads fail, check connectivity and your current `GOPROXY` setting first.
+Expect `go1.26.0` or later. You also need access to a Go module proxy or GitHub. If downloads fail, check connectivity and your current `GOPROXY` setting first.
 
 ## 2. Create a module and install
 
@@ -25,9 +25,9 @@ go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca90
 
 Durable has no formal release yet. This command pins a public development revision. Go resolves it to pseudo-version `v0.0.0-20261021082000-f46adb637745` and writes that version to `go.mod`. It is not a released `v0.1`.
 
-The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. SQLite in Pulse's isolated benchmark module is not an official backend and does not satisfy that prerequisite.
+The maintainer confirmed separate release gates on 2026-10-18: prepare Pulse v0.5.0 first and keep Durable unreleased until the [maintained database Store in #40](https://github.com/Luo-root/pulse-durable/issues/40) is completed and accepted, then reassess its first release. The current `sqlitestore` is a source-development module inside this repository and has no publicly installable version yet; do not invent a `go get` release command. See [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md) for independent validation.
 
-The revision pins Pulse:
+The revision pins Pulse; this public installation entry is only a historical API baseline. It does not include the current repository's `sqlitestore` module, and does not mean the latest dependencies were backported to that old revision:
 
 ```text
 v0.4.2-0.20261021081643-be778722b781
@@ -75,7 +75,7 @@ This is an import fragment, not a complete program. For local persistent storage
 
 | Symptom | Action |
 | --- | --- |
-| Go is too old | Use Go 1.25 or later, then install again |
+| Go is too old | Use Go 1.26 or later, then install again |
 | Module download fails | Check connectivity, proxy settings, and the module address in the error, then retry the download |
 | `go list` reports a different Pulse version | Check the existing `go.mod` and workspace; a higher existing version participates in Go module version selection |
 | Dependencies are missing after adding code | Repeat the pinned `go get` in the module directory, then run `go mod tidy` |

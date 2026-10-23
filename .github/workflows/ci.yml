@@ -47,6 +47,67 @@ jobs:
       - name: Test, including process exit and recovery
         run: go test -race -count=1 -timeout=180s ./...
 
+  sqlite-store:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: sqlitestore
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sqlitestore/go.mod
+          cache-dependency-path: sqlitestore/go.sum
+      - name: Download SQLite module dependencies
+        run: go mod download
+      - name: Build SQLite Store
+        run: go build ./...
+      - name: Vet SQLite Store
+        run: go vet ./...
+      - name: Test SQLite Store contracts and process ownership
+        run: go test -race -count=1 -timeout=180s ./...
+
+  postgres-store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: durable-ci
+          POSTGRES_DB: durable_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d durable_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: postgresstore
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: postgresstore/go.mod
+          cache-dependency-path: postgresstore/go.sum
+      - name: Download PostgreSQL module dependencies
+        run: go mod download
+      - name: Build PostgreSQL Store
+        run: go build ./...
+      - name: Vet PostgreSQL Store
+        run: go vet ./...
+      - name: Test PostgreSQL Store contracts and advisory ownership
+        env:
+          PULSE_POSTGRES_TEST_DSN: postgres://postgres:durable-ci@127.0.0.1:5432/durable_test?sslmode=disable
+        run: go test -race -count=1 -timeout=180s ./...
+
   benchmark-correctness:
     strategy:
       fail-fast: false

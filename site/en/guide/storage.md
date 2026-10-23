@@ -8,9 +8,14 @@ Use this page to choose a checkpoint directory, inspect an existing run, or inte
 | --- | --- | --- |
 | `durable.NewMemoryStore()` | Examples, unit tests, and in-process protocol checks | In-process exclusive sessions and CAS; records do not survive process exit |
 | `filestore.New(dir)` | Local workflow exit and restart recovery | Local cross-process file locking per RunID, file records, and atomic replacement |
+| `sqlitestore.New(path)` | A local SQLite file with complete JSON records and short transactional CAS | Local OS locking per RunID; short SQLite `BEGIN IMMEDIATE` transactions, FULL synchronous mode, and a 5000 ms busy timeout |
 | Custom `durable.Store` | Environments with explicit host storage and coordination requirements | Must implement Store/Session contracts and separately declare persistence and ownership guarantees |
 
 `filestore` requires exclusive file locking and atomic replacement within a directory. It does not provide distributed leases, fencing, dispatch across machines, or a power-loss durability guarantee. Placing the directory on a network share does not by itself make it distributed run management.
+
+`sqlitestore` is an independent Go 1.26 module under source development and has no publicly installable release yet. Its `go.mod` uses a repository-local `replace`, so it must not be documented with a public `go get` command. The driver `modernc.org/sqlite v1.60.1` embeds SQLite 3.53.4; `NewContext(ctx, path)` supports cancellable database initialization. Construction sets and reads back WAL, FULL (2), and busy_timeout=5000ms. Use a dedicated database: v1 DDL is checked strictly and extra schema objects are rejected. Keep the neighboring `.init.lock` construction lock. `New(path)` accepts only a database filename, creates its parent directory, and creates a neighboring `.runlocks/` directory; new directories/files use 0700/0600 where applicable (Windows uses ACLs). A complete `RunRecord` is stored as a JSON BLOB and `revision` as decimal TEXT. Short transactions use `BEGIN IMMEDIATE`, SQLite busy timeout is 5000 ms, and business execution never holds a database transaction. It is for local filesystems with OS file locking only; distributed coordination, migration, and cross-backend import are unsupported.
+
+See the repository [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md) for initialization and a runnable integration fragment. Stop business execution and close Sessions before closing the Store; after a Save error, reload through the Store contract instead of inferring whether it committed. FULL synchronous mode is not a completed power-loss test acceptance; the host owns backup, restore, and directory retention.
 
 ## 2. Configure a directory
 
@@ -46,7 +51,7 @@ go mod init example.com/durable-storage
 go get github.com/Luo-root/pulse-durable@f46adb637745d864649685cf481675d5dc0ca904
 ```
 
-Requires Go 1.25 or later. Save this complete program as `main.go`:
+Requires Go 1.26 or later. Save this complete program as `main.go`:
 
 ```go
 package main

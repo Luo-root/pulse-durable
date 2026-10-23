@@ -6,7 +6,7 @@ Pulse owns graph definitions, dependency scheduling, Aspects, and observation of
 
 ## Before you start
 
-You need Go 1.25 or later and access to Go module downloads. Durable has no formal release yet; the tutorials pin a public development revision. You do not need to implement storage: the minimal example uses `MemoryStore`, and the recovery tutorial uses the included `filestore`.
+You need Go 1.26 or later and access to Go module downloads. Durable has no formal release yet; the tutorials pin a public development revision. You do not need to implement storage: the minimal example uses `MemoryStore`, and the recovery tutorial uses the included `filestore`.
 
 If graphs, typed Keys, and declared outlets are new to you, start with the [Pulse quick start](https://luo-root.github.io/pulse/en/guide/quickstart). The Durable tutorials provide their own complete programs and dependency versions.
 

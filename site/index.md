@@ -8,7 +8,7 @@ home:
   lead: 为 Pulse 工作流提供检查点编码、存储和恢复。重建相同定义，使用原 RunID 与输入，让未确认步骤从头重新执行。
   primary: { text: 完成首次运行, link: /guide/quickstart }
   secondary: { text: 演练退出与恢复, link: /guide/recovery }
-  version: 开发版文档 · Go 1.25+ · 尚未发布正式 tag
+  version: 开发版文档 · Go 1.26+ · 尚未发布正式 tag
   flowTitle: 从持久检查点恢复
   flowLabel: 已确认的第一步恢复成果，未确认的第二步重新执行，产生最终结果
   flow:

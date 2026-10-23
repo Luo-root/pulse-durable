@@ -4,7 +4,7 @@ This tutorial uses two real processes. The first completes an upstream node and 
 
 ## 1. Prepare a separate module
 
-You need Go 1.25 or later and a writable local directory. Run both processes from the same working directory so that `./checkpoints` identifies the same storage.
+You need Go 1.26 or later and a writable local directory. Run both processes from the same working directory so that `./checkpoints` identifies the same storage.
 
 ```sh
 mkdir durable-recovery
