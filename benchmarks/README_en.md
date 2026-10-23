@@ -13,11 +13,17 @@ The first complete matrix uses chains of 1, 10, 100, 1000 and 10000 business ste
 
 Both persistent backends complete the same business task, but differ in transactions, history format, replay and power-loss guarantees. Filestore does not promise power-loss durability. MemoryStore does not demonstrate process-restart recovery. Read memory and file groups separately; do not rank them alongside pure in-memory DAG engines.
 
-Pinned versions:
+## Current dependencies and historical experiment
+
+The reproducible source now pins Go `1.26.0`, Pulse `v0.5.0` and Durable `v0.1.0`. This legacy two-framework module retains go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`. Aligning source dependencies with official releases does not mean the historical data below was rerun with those versions or Go 1.26.
+
+The sampling versions of the 2026-10-17 historical experiment remain unchanged:
 
 - Durable `v0.0.0-20261016143640-e47e51eda579`.
 - Pulse `v0.4.2-0.20261016143631-7d70e1e14771`.
 - go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`.
+
+This module retains only the legacy Durable / go-workflows comparison; it must not be mixed into the latest unified Pulse (with Durable for reliability) / Eino / Temporal comparison. The SQLite three-framework experiment on official releases will be delivered by the [Core production module](https://github.com/Luo-root/pulse/tree/main/benchmarks/production). No results are prefilled here before they are obtained.
 
 There are no replacements. Retain versions, module checksums and binary SHA256 before sampling, without `@latest`. Supplementary `module-origins.json` queries the same-version proxy's actual Origin metadata; missing or failed entries are explicit and hashes are never invented.
 
@@ -39,11 +45,13 @@ Recovery separates process startup, backend/Graph preparation, restore plus rema
 
 ## Build and reproduce
 
-First set `GOWORK=off` and `GOFLAGS=-buildvcs=false`, keep automatic Go 1.25 toolchain selection and retain no replacements. From this repository root, validate the separate module:
+First set `GOWORK=off` and `GOFLAGS=-buildvcs=false`, use the Go 1.26.0 toolchain without replacements, and record `go version`, `go env GOTOOLCHAIN` and the actual toolchain path. From this repository root, validate the separate module (correctness checks only, not a new performance report):
 
 ```sh
 cd benchmarks/workflow
+go version
 go mod download
+go mod verify
 go build -o workflow.exe .
 go vet ./...
 go test -race -count=1 -timeout=180s ./...
@@ -70,7 +78,7 @@ Ordinary `run` does no extra encoding for write metering and is time-bounded onl
 
 ## Read data and retain evidence
 
-The [2026-10-17 historical report](../site/en/guide/performance.md) uses the pinned versions and backend settings above; it is not the later production comparison under a unified framework. The [compact evidence notes](reports/2026-10-17/README.md) retain the environment, raw JSONL hashes and collection continuity. The source repository keeps only these summaries and the six PNGs used by the report:
+The [2026-10-17 historical report](../site/en/guide/performance.md) uses the separately listed historical sampling versions and backend settings above. Historical data is unchanged; it is neither a rerun on the current official dependencies nor the later production comparison under a unified framework. The [compact evidence notes](reports/2026-10-17/README.md) retain the environment, raw JSONL hashes and collection continuity. The source repository keeps only these summaries and the six PNGs used by the report:
 
 - [Ordinary-run summary](reports/2026-10-17/workflow-summary.csv): rounds=1/256, grouped by engine, backend and size.
 - [Growth-time summary](reports/2026-10-17/growth-summary.csv) and [storage-growth summary](reports/2026-10-17/storage-summary.csv): the latter distinguishes complete/partial points, without presenting incomplete prefixes as full runs.

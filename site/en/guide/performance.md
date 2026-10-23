@@ -1,5 +1,7 @@
 # Scale and performance
 
+> New collection: [2026-10-23 formal-release SQLite and recovery report](https://github.com/Luo-root/pulse/blob/main/site/en/reference/sqlite-formal-20261023.md) (Core v0.5.0, Durable/sqlitestore v0.1.0; bounded scope, COMPLETED_WITH_ERRORS). Historical data on this page remain unchanged.
+
 > This page retains historical versions. The [unified production comparison](./production-comparison.md) uses merged latest Pulse/Durable with Eino and Temporal across execution, observation, resources, reliable confirmation and recovery.
 
 This report measures the same chain at 1, 10, 100, 1000 and 10000 business steps: time, cumulative allocations and writes after adding checkpoints, reliable records and recovery. Read it separately from [Pulse's in-memory report](https://github.com/Luo-root/pulse/blob/main/site/en/reference/performance.md), rather than one combined speed ranking.

@@ -1,5 +1,7 @@
 # 统一生产框架对照
 
+> 2026-10-23 新测量：[正式版 SQLite 与恢复报告](https://github.com/Luo-root/pulse/blob/main/site/reference/sqlite-formal-20261023.md)。Go 1.26.0、Core v0.5.0、Durable/官方 sqlitestore v0.1.0；有效 171 条，36 次恢复全 ok，另保留 45 条 Temporal checkpoint 配置错误，不归为其性能失败，整轮 COMPLETED_WITH_ERRORS。仅更新可靠确认、Temporal 原生持久化基线与恢复，未重跑完整执行/观测/资源。本页历史身份、后端与数字不变。
+
 新一轮固定使用 **Pulse／Durable、Eino、Temporal**，执行、观测、资源、可靠确认与恢复始终同三列。[完整报告与四图](https://github.com/Luo-root/pulse/blob/main/site/reference/production-comparison.md)、[234组精简CSV](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-production/summary.csv)、[版本与原始哈希摘要](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-production/identity.json)和[复跑代码](https://github.com/Luo-root/pulse/tree/main/benchmarks/production)统一保存在 Pulse，不复制整套原始产物到两仓。关联 [Pulse #427](https://github.com/Luo-root/pulse/issues/427)、[本仓 #41](https://github.com/Luo-root/pulse-durable/issues/41)。
 
 测量日期2026-10-17。被测公开 Pulse 为 `v0.4.2-0.20261017111210-aa02dd107a43`，Durable 为 `v0.0.0-20261017105818-71c693fc82ef`；Eino v0.9.21，Temporal SDK v1.50.0 / CLI v1.9.1 / Server v1.32.0。共同业务宿主用Go1.26.0，官方Server二进制构建为Go1.26.8。独立评测模块同时固定两仓最新版，无本地replace；Durable生产go.mod仍保留原依赖，不将组合验收冒充正式依赖升级。

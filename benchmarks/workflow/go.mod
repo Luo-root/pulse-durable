@@ -1,10 +1,10 @@
 module github.com/Luo-root/pulse-durable/benchmarks/workflow
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/Luo-root/pulse v0.4.2-0.20261016143631-7d70e1e14771
-	github.com/Luo-root/pulse-durable v0.0.0-20261016143640-e47e51eda579
+	github.com/Luo-root/pulse v0.5.0
+	github.com/Luo-root/pulse-durable v0.1.0
 	github.com/cschleiden/go-workflows v1.4.2
 )
 
