@@ -31,7 +31,7 @@ go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 
 该修订的 `go.mod` 固定依赖 Pulse `v0.5.0`。完整的新模块操作与依赖核对见[安装](site/guide/installation.md)。
 
-该入口固定公开开发版本 `v0.0.0-20261023040750-1b397e91c878`，要求 Go 1.26，依赖 Pulse v0.5.0；**Durable v0.1.0 尚未发布**。可选的 `sqlitestore` 和 `postgresstore` 是独立模块；当前后端修订的公开安装 pin 待推送后核验，不把旧子模块基线当作当前源码的可安装版本。源码验证与边界见 [`sqlitestore/README.md`](sqlitestore/README.md)、[`postgresstore/README.md`](postgresstore/README.md) 和[贡献指南](CONTRIBUTING.md)。
+该入口固定公开开发版本 `v0.0.0-20261023040750-1b397e91c878`，要求 Go 1.26，依赖 Pulse v0.5.0；**Durable v0.1.0 尚未发布**。可选的 `sqlitestore` 和 `postgresstore` 是独立模块；已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，不是 Durable v0.1.0 正式 tag。源码验证与边界见 [`sqlitestore/README.md`](sqlitestore/README.md)、[`postgresstore/README.md`](postgresstore/README.md) 和[贡献指南](CONTRIBUTING.md)。
 
 ## 最小示例
 

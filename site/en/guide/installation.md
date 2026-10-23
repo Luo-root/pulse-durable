@@ -25,7 +25,14 @@ go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 
 Durable `v0.1.0` has not been released. This command pins the resolved public development pseudo-version `v0.0.0-20261023040750-1b397e91c878`, not a formal tag. Go writes this version to `go.mod`.
 
-Optional `sqlitestore` and `postgresstore` are independent modules. Public installation pins for the current backend source revisions must be verified after pushing; the older submodule baseline at this root pin is not an installable version of the current backends. For now, validate source with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without adding local `replace` directives to release dependencies.
+Optional `sqlitestore` and `postgresstore` are independent modules. Their verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`, not a formal Durable v0.1.0 tag. Install either module with:
+
+```sh
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3
+```
+
+The current source can still be validated with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without adding local `replace` directives to release dependencies.
 
 This root revision pins Pulse:
 

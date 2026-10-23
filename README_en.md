@@ -26,7 +26,7 @@ go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 
 That revision's `go.mod` pins Pulse `v0.5.0`. See [Installation](site/en/guide/installation.md) for complete new-module steps and dependency checks.
 
-This entry pins public development version `v0.0.0-20261023040750-1b397e91c878`, requires Go 1.26, and depends on Pulse v0.5.0; **Durable v0.1.0 has not been released**. Optional `sqlitestore` and `postgresstore` are independent modules. Public installation pins for the current backend revisions must be verified after pushing; the older submodule baseline is not an installable version of the current source. See [`sqlitestore/README.md`](sqlitestore/README.md), [`postgresstore/README.md`](postgresstore/README.md), and [Contributing](CONTRIBUTING.md) for source validation and boundaries.
+This entry pins public development version `v0.0.0-20261023040750-1b397e91c878`, requires Go 1.26, and depends on Pulse v0.5.0; **Durable v0.1.0 has not been released**. Optional `sqlitestore` and `postgresstore` are independent modules. Their verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`, not a formal Durable v0.1.0 tag. See [`sqlitestore/README.md`](sqlitestore/README.md), [`postgresstore/README.md`](postgresstore/README.md), and [Contributing](CONTRIBUTING.md) for source validation and boundaries.
 
 ## Minimal example
 

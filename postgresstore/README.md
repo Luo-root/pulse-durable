@@ -2,7 +2,7 @@
 
 ## 中文
 
-`postgresstore` 是 `durable.Store` 的 PostgreSQL 实现，使用 `pgx/v5` 与 `pgxpool`，要求 Go 1.26。**Durable v0.1.0 尚未发布**。当前后端源码修订的公开安装 pin 待推送后核验，不把旧子模块基线当作当前源码的可安装版本。根模块公开开发 pin 为 `v0.0.0-20261023040750-1b397e91c878`（Pulse v0.5.0）。
+`postgresstore` 是 `durable.Store` 的 PostgreSQL 实现，使用 `pgx/v5` 与 `pgxpool`，要求 Go 1.26。**Durable v0.1.0 尚未发布**。已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，可用 `go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3` 安装；这不是正式 tag。根模块公开开发 pin 为 `v0.0.0-20261023040750-1b397e91c878`（Pulse v0.5.0）。
 
 ### 使用与边界
 
@@ -53,7 +53,7 @@ $env:GOWORK = $previousGowork
 
 ## English
 
-`postgresstore` implements `durable.Store` with PostgreSQL, `pgx/v5`, and `pgxpool`, requiring Go 1.26. **Durable v0.1.0 has not been released.** Public installation pins for the current backend source revision must be verified after pushing; the older submodule baseline is not an installable version of the current source. The public root development pin is `v0.0.0-20261023040750-1b397e91c878` (Pulse v0.5.0).
+`postgresstore` implements `durable.Store` with PostgreSQL, `pgx/v5`, and `pgxpool`, requiring Go 1.26. **Durable v0.1.0 has not been released.** The verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`; install with `go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3`. This is not a formal tag. The public root development pin is `v0.0.0-20261023040750-1b397e91c878` (Pulse v0.5.0).
 
 ### Usage and boundaries
 

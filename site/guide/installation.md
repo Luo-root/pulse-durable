@@ -25,7 +25,14 @@ go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
 
 Durable `v0.1.0` 尚未发布。这条命令固定已解析的公开开发伪版本 `v0.0.0-20261023040750-1b397e91c878`，不是正式 tag；Go 会将该版本写入 `go.mod`。
 
-可选的 `sqlitestore` 和 `postgresstore` 是独立模块。当前后端源码修订的公开安装 pin 须在推送后另行核验，不能把该根 pin 下的旧子模块基线当作当前后端的可安装版本。暂使用[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)中的临时 `go.work` 验证源码，不在发布依赖中加入本地 `replace`。
+可选的 `sqlitestore` 和 `postgresstore` 是独立模块。已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，不是 Durable v0.1.0 正式 tag。分别安装：
+
+```sh
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3
+```
+
+当前源码仍可按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)中的临时 `go.work` 验证，不在发布依赖中加入本地 `replace`。
 
 该根修订固定依赖 Pulse：
 

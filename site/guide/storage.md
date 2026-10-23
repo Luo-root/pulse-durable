@@ -14,7 +14,7 @@
 
 `filestore` 依赖文件系统的独占锁与同目录原子替换，不提供分布式租约、fencing 或跨机器派发，也不承诺断电时的持久性。不能仅凭把目录放到网络共享上，就将其当作分布式运行管理。
 
-`sqlitestore` 和 `postgresstore` 是独立 Go 1.26 模块；当前后端修订的公开安装 pin 待推送后核验，暂按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)使用临时 `go.work` 验证源码，不使用发布依赖 `replace`。Durable `v0.1.0` 尚未发布。
+`sqlitestore` 和 `postgresstore` 是独立 Go 1.26 模块。已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，不是 Durable v0.1.0 正式 tag；可分别使用 `go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3` 与 `go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3`。当前源码也可按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)使用临时 `go.work` 验证，不使用发布依赖 `replace`。
 
 `postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。同一 Store 已持有或 pending 的 RunID 立即返回 `ErrBusy`；跨 Store 须取得连接并完成 `pg_try_advisory_lock` 网络检测，检测到占用后返回 `ErrBusy`，不等待锁释放。池容量与网络检测的总等待默认最多 30 秒，caller 更短 deadline 优先；池满而无法判断远端占用时返回 `context.DeadlineExceeded`，不伪报 `ErrBusy`。Store.Close 取消 pending Acquire 并等待资源清理；解锁失败或结果不确定时销毁连接，清理最长 5 秒。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
 

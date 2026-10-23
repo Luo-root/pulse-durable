@@ -4,7 +4,7 @@
 
 可选的本机 SQLite 文件存储，沿用 Pulse Durable 的 `Store` / `Session` 与完整 `RunRecord` 契约。独立模块要求 **Go 1.26**，驱动为纯 Go `modernc.org/sqlite v1.60.1`，内嵌 SQLite **3.53.4**。Durable 根模块统一要求 Go 1.26，依赖 Pulse v0.5.0；使用 MemoryStore 或 filestore 时不必引入 SQLite。
 
-**Durable v0.1.0 尚未发布。** 当前后端源码修订的公开安装 pin 待推送后核验，不把旧子模块基线当作当前源码的可安装版本。根模块公开开发 pin 为 `v0.0.0-20261023040750-1b397e91c878`；源码验证使用临时 `go.work`，不向发布依赖加入本地 `replace`。三个模块的验证步骤见[贡献指南](../CONTRIBUTING.md)。
+**Durable v0.1.0 尚未发布。** 已验证的 PR77 候选首提交开发 pin 为 `v0.0.0-20261023051404-bc57abd1d7c3`，可用 `go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3` 安装；这不是正式 tag。根模块公开开发 pin 为 `v0.0.0-20261023040750-1b397e91c878`。源码验证仍可使用临时 `go.work`，不向发布依赖加入本地 `replace`。三个模块的验证步骤见[贡献指南](../CONTRIBUTING.md)。
 
 ### API 与存储边界
 
@@ -113,7 +113,7 @@ go test -race -count=1 ./sqlitestore/...
 
 This optional local SQLite backend implements the existing Durable `Store` / `Session` and complete `RunRecord` contracts. Its independent module requires **Go 1.26**, uses pure-Go `modernc.org/sqlite v1.60.1`, and embeds **SQLite 3.53.4**. The Durable root module requires Go 1.26 and Pulse v0.5.0; MemoryStore and filestore do not pull in SQLite.
 
-**Durable v0.1.0 has not been released.** Public installation pins for the current backend source revision must be verified after pushing; the older submodule baseline is not an installable version of the current source. The public root development pin is `v0.0.0-20261023040750-1b397e91c878`. Validate source with a temporary `go.work`, without adding local `replace` directives to release dependencies. See [Contributing](../CONTRIBUTING.md) for all three modules.
+**Durable v0.1.0 has not been released.** The verified PR77 candidate first-commit development pin is `v0.0.0-20261023051404-bc57abd1d7c3`; install with `go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3`. This is not a formal tag. The public root development pin is `v0.0.0-20261023040750-1b397e91c878`. Validate current source with a temporary `go.work`, without adding local `replace` directives to release dependencies. See [Contributing](../CONTRIBUTING.md) for all three modules.
 
 ### API and operational boundaries
 
