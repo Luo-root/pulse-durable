@@ -47,6 +47,38 @@ jobs:
       - name: Test, including process exit and recovery
         run: go test -race -count=1 -timeout=180s ./...
 
+  distributed-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: distributed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: distributed/go.mod
+          cache-dependency-path: distributed/go.sum
+      - name: Check independently downloadable dependencies
+        run: |
+          go mod download
+          go build -mod=readonly .
+          go vet -mod=readonly .
+          go test -mod=readonly -race -count=1 -timeout=180s .
+      - name: Use current checkout for source regression
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/durable-distributed.work"
+          GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/distributed"
+          mv go.work "$work"
+          echo "GOWORK=$work" >> "$GITHUB_ENV"
+      - name: Check task contracts against current source
+        run: go test -mod=readonly -race -count=1 -timeout=180s .
+
   sqlite-store:
     strategy:
       fail-fast: false
