@@ -74,7 +74,30 @@ func (r *Runtime) Resume(ctx context.Context, g *pulse.Graph, in pulse.Inputs, o
 }
 
 func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, opts RunOptions, resume bool) (execution *pulse.Execution, err error) {
+	return r.executeSession(ctx, g, in, opts, resume, nil, nil)
+}
+
+func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.Inputs, opts RunOptions, resume bool, claimed ClaimedSession, result *Outcome) (execution *pulse.Execution, err error) {
+	outcome := OutcomeRejected
+	var state *runState
+	started, waited := false, false
+	defer func() {
+		if result == nil {
+			return
+		}
+		if state != nil && waited {
+			outcome = state.executionOutcome(execution, err)
+		} else if started {
+			outcome = OutcomeInfrastructure
+		}
+		if result != nil {
+			*result = outcome
+		}
+	}()
 	if err := checkContext(ctx); err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			outcome = OutcomeInterrupted
+		}
 		return nil, err
 	}
 	if r == nil || opts.RunID == "" || opts.Version == "" {
@@ -86,31 +109,50 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 	if !utf8.ValidString(opts.Version) {
 		return nil, fmt.Errorf("durable: business version must be valid UTF-8")
 	}
+	if result != nil {
+		if nilValue(claimed) {
+			return nil, fmt.Errorf("durable: claimed session is required")
+		}
+		id, err := claimedRunID(claimed)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" || !utf8.ValidString(id) || id != opts.RunID {
+			return nil, fmt.Errorf("%w: claimed session run ID mismatch or invalid", ErrConflict)
+		}
+	}
 	d, err := inspectDefinition(g, r.codecs.snapshot())
 	if err != nil {
 		return nil, err
 	}
-	session, err := acquire(r.store, ctx, opts.RunID)
-	if err != nil {
-		if errors.Is(err, ErrBusy) {
-			return nil, err
+	var session Session = claimed
+	if result == nil {
+		session, err = acquire(r.store, ctx, opts.RunID)
+		if err != nil {
+			if errors.Is(err, ErrBusy) {
+				return nil, err
+			}
+			return nil, checkpointError("acquire run", err)
 		}
-		return nil, checkpointError("acquire run", err)
+		defer func() { err = errors.Join(err, checkpointError("close session", closeSession(session))) }()
 	}
-	defer func() { err = errors.Join(err, checkpointError("close session", closeSession(session))) }()
+	outcome = OutcomeInfrastructure
 	stored, loadErr := load(session, ctx)
 	if resume {
 		if loadErr != nil {
 			if errors.Is(loadErr, ErrNotFound) {
+				outcome = OutcomeRejected
 				return nil, loadErr
 			}
 			return nil, checkpointError("load run", loadErr)
 		}
 		if stored.RunID != opts.RunID || stored.Version != opts.Version || stored.Definition != d.fingerprint {
+			outcome = OutcomeRejected
 			return nil, fmt.Errorf("%w: run, business version or definition mismatch", ErrConflict)
 		}
 	} else {
 		if loadErr == nil {
+			outcome = OutcomeRejected
 			return nil, fmt.Errorf("%w: run already exists", ErrConflict)
 		}
 		if !errors.Is(loadErr, ErrNotFound) {
@@ -123,23 +165,27 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 		stored = RunRecord{Format: RecordFormat, RunID: opts.RunID, Version: opts.Version,
 			Definition: d.fingerprint, RootScope: id, Scopes: make(map[string]ScopeRecord), Attempts: make(map[string]AttemptRecord)}
 	}
-	state := &runState{session: session, def: d, record: cloneRecord(stored), event: opts.OnEvent}
+	state = &runState{session: session, def: d, record: cloneRecord(stored), event: opts.OnEvent}
 	execOptions := append([]pulse.ExecOption(nil), opts.ExecOptions...)
 	execOptions = append(execOptions, pulse.WithExecCheckpoint(stored.RootScope, state.hooks()))
+	outcome = OutcomeRejected
 	execution, err = g.NewExecution(ctx, in, execOptions...)
 	if err != nil {
 		return nil, err
 	}
 	defer execution.Cancel()
+	outcome = OutcomeInfrastructure
 	inputHash, err := d.inputsFingerprint(d.root, execution.CheckpointInputs())
 	if err != nil {
 		return execution, checkpointError("encode inputs", err)
 	}
 	if resume {
 		if stored.Inputs != inputHash {
+			outcome = OutcomeRejected
 			return execution, fmt.Errorf("%w: input fingerprint mismatch", ErrConflict)
 		}
 		if err := state.validateLoaded(); err != nil {
+			outcome = OutcomeRejected
 			return execution, checkpointError("validate restore", err)
 		}
 		if err := state.reconcileFailedStreams(ctx); err != nil {
@@ -149,6 +195,7 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 		// final business failure is already authoritative. This Execution
 		// remains pending; the returned error, not Snapshot, is the verdict.
 		if err := state.scopeFailure(stored.RootScope); err != nil {
+			outcome = OutcomeFailed
 			return execution, err
 		}
 		records, err := state.decodeScope(stored.RootScope)
@@ -169,15 +216,22 @@ func (r *Runtime) execute(ctx context.Context, g *pulse.Graph, in pulse.Inputs, 
 			return execution, checkpointError("initialize run", err)
 		}
 	}
+	outcome = OutcomeInterrupted
 	if opts.BeforeStart != nil {
 		if err := beforeStart(opts.BeforeStart, execution); err != nil {
 			return execution, err
 		}
 	}
 	if err := execution.Start(); err != nil {
+		if result != nil && checkpointOrInspectionFailure(err) {
+			outcome = OutcomeInfrastructure
+		}
 		return execution, err
 	}
-	return execution, execution.Wait()
+	started = true
+	err = execution.Wait()
+	waited = true
+	return execution, err
 }
 
 func beforeStart(callback func(*pulse.Execution) error, execution *pulse.Execution) (err error) {
