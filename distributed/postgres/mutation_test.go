@@ -67,12 +67,14 @@ func TestMutationTargetsFailClosed(t *testing.T) {
 }
 
 // This is deliberately separate from integration(): that helper commits role,
-// grant and fixture setup. Here ALL changes, including CREATE OR REPLACE and the
-// matching catalog signature, remain in one administrator transaction. Calling
+// grant and fixture setup. After normal schema initialization, ALL mutation
+// changes, including CREATE OR REPLACE and the matching catalog signature,
+// remain in one administrator transaction. Calling
 // the real API under a restricted session_user preserves every credential/ACL
 // check; check_schema itself is never replaced or weakened.
-// Run serially, only on an explicitly authorized disposable test database with
-// the normal schema already installed. A superuser is needed solely to switch
+// Run serially, only on an explicitly authorized disposable test database.
+// Migrate installs a missing normal schema and rejects drift, independently of
+// test execution order. A superuser is needed solely to switch
 // session authorization without committing the mutation for another connection.
 func TestPostgresProductionFencingMutations(t *testing.T) {
 	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
@@ -90,8 +92,13 @@ func TestPostgresProductionFencingMutations(t *testing.T) {
 	if e = admin.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname=session_user`).Scan(&super); e != nil || !super {
 		t.Fatal("transaction-local restricted session authorization requires a dedicated test superuser", scrub(e, false))
 	}
+	// Explicit opt-in above authorizes normal schema initialization, not drift
+	// repair. Migrate validates existing DDL before any mutation is attempted.
+	if e = Migrate(ctx, dsn); e != nil {
+		t.Fatal("initialize normal schema before mutation tests", e)
+	}
 	if e = validate(ctx, admin, false); e != nil {
-		t.Fatal("normal schema must be installed and valid before mutation tests", e)
+		t.Fatal("normal schema invalid before mutation tests", e)
 	}
 	api, e := replaceCreate(schemaSQL, "api")
 	if e != nil {
