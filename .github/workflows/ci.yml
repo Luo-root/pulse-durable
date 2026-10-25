@@ -265,7 +265,8 @@ jobs:
       - name: Build and vet fault verification
         run: |
           go mod download
-          go build -mod=readonly ./networktest ./internal/faultproxy
+          go build -mod=readonly ./internal/faultproxy
+          go test -mod=readonly -c -o "$RUNNER_TEMP/distributed-network.test" ./networktest
           go vet -mod=readonly ./networktest ./internal/faultproxy
       - name: Use current checkout for network regression
         shell: bash
