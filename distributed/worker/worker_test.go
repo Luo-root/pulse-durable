@@ -139,6 +139,11 @@ func (f *fake) Release(ctx context.Context, t d.Token, m d.Mutation) error {
 	return nil
 }
 func (f *fake) Block(ctx context.Context, t d.Token, s string, m d.Mutation) error {
+	switch s {
+	case "incompatible", "invalid_payload", "invalid_record", "invalid_task", "unsupported_format":
+	default:
+		return d.ErrInvalid
+	}
 	f.block <- s
 	return nil
 }
@@ -327,7 +332,9 @@ func TestRuntimeRejectedRecordBlocksBeforeBusiness(t *testing.T) {
 	w, f := fixture(t, func(*pulse.RunCtx) error { calls.Add(1); return nil })
 	f.record = &durable.RunRecord{RunID: "wrong", Format: durable.RecordFormat}
 	runWorker(t, w)
-	await(t, f.block)
+	if got := await(t, f.block); got != "invalid_record" {
+		t.Fatalf("block reason=%s", got)
+	}
 	if calls.Load() != 0 {
 		t.Fatal("bypassed record validation")
 	}

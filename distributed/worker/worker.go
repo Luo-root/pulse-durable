@@ -353,7 +353,17 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 	defer func() { stopRenew(); _ = s.Close() }()
 	a, in, err := w.cfg.Registry.Resolve(ctx, c.Snapshot.Task)
 	outcome := durable.OutcomeRejected
+	// Registry exposes ErrInvalid for payload decoding and assembly validation,
+	// and ErrMismatch for exact route/definition/input incompatibility.
+	blockReason := "incompatible"
+	if errors.Is(err, d.ErrInvalid) {
+		blockReason = "invalid_payload"
+	}
+	if _, parseErr := d.ParseTask(c.Snapshot.Task.Bytes()); parseErr != nil {
+		blockReason = "invalid_task"
+	}
 	if err == nil {
+		blockReason = "invalid_record"
 		rt, newErr := durable.New(claimedOnlyStore{}, a.Codecs)
 		if newErr != nil {
 			err = newErr
@@ -411,12 +421,12 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 		m, merr := mutation(struct {
 			Token  d.Token
 			Reason string
-		}{c.Token, "rejected"})
+		}{c.Token, blockReason})
 		if merr != nil {
 			return
 		}
 		op, done := context.WithTimeout(ctx, w.cfg.OperationTimeout)
-		err = w.cfg.Coordinator.Block(op, c.Token, "rejected", m)
+		err = w.cfg.Coordinator.Block(op, c.Token, blockReason, m)
 		done()
 		w.emit(Event{Kind: "block", Token: c.Token, Mutation: m, Reason: reason(err)})
 	default:
