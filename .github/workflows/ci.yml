@@ -236,6 +236,51 @@ jobs:
           PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:55432/durable_distributed_test?sslmode=disable
         run: go test -mod=readonly -race -count=1 -timeout=8m -v ./systemtest/...
 
+  distributed-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: durable_test
+          POSTGRES_PASSWORD: durable-ci
+          POSTGRES_DB: durable_dist_security_20261025
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U durable_test -d durable_dist_security_20261025"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: distributed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: distributed/go.mod
+          cache-dependency-path: distributed/go.sum
+      - name: Build and vet fault verification
+        run: |
+          go mod download
+          go build -mod=readonly ./internal/faultproxy
+          go test -mod=readonly -c -o "$RUNNER_TEMP/distributed-network.test" ./networktest
+          go vet -mod=readonly ./networktest ./internal/faultproxy
+      - name: Use current checkout for network regression
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/durable-distributed-network.work"
+          GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/distributed"
+          mv go.work "$work"
+          echo "GOWORK=$work" >> "$GITHUB_ENV"
+      - name: Test proxy and real PostgreSQL response loss
+        env:
+          PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE: "yes"
+          PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:55432/durable_dist_security_20261025?sslmode=disable
+        run: go test -mod=readonly -race -count=1 -parallel=1 -timeout=240s -v ./internal/faultproxy ./networktest
+
   postgres-store:
     runs-on: ubuntu-latest
     timeout-minutes: 20

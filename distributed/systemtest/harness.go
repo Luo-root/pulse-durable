@@ -31,6 +31,29 @@ type Config struct {
 	Capacity   int           `json:"capacity"`
 	Duration   time.Duration `json:"duration"`
 	HoldFinish bool          `json:"hold_finish"`
+	// Timing values are nanoseconds in JSON; zero selects the local-test default.
+	TTL              time.Duration `json:"ttl,omitempty"`
+	RenewInterval    time.Duration `json:"renew_interval,omitempty"`
+	RenewTimeout     time.Duration `json:"renew_timeout,omitempty"`
+	OperationTimeout time.Duration `json:"operation_timeout,omitempty"`
+	PollMin          time.Duration `json:"poll_min,omitempty"`
+	PollMax          time.Duration `json:"poll_max,omitempty"`
+}
+
+// workerConfig only defaults omitted timings; negative values and invalid
+// combinations are preserved so worker.New rejects them rather than masking them.
+func (c Config) workerConfig(backend d.Coordinator, renew worker.Renewer, reg *d.Registry, observe func(worker.Event)) worker.Config {
+	value := func(v, fallback time.Duration) time.Duration {
+		if v == 0 {
+			return fallback
+		}
+		return v
+	}
+	return worker.Config{Coordinator: backend, Renewer: renew, Registry: reg,
+		Namespace: c.Namespace, WorkerID: c.ID, Capacity: c.Capacity, BatchMax: c.Capacity,
+		TTL: value(c.TTL, 2*time.Second), RenewInterval: value(c.RenewInterval, 300*time.Millisecond),
+		RenewTimeout: value(c.RenewTimeout, 400*time.Millisecond), OperationTimeout: value(c.OperationTimeout, time.Second),
+		PollMin: value(c.PollMin, 20*time.Millisecond), PollMax: value(c.PollMax, 50*time.Millisecond), Observe: observe}
 }
 
 // Event is an allowlisted JSON-line result. Raw backend errors/payloads/DSNs are
@@ -227,9 +250,9 @@ func Run(parent context.Context, c Config, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	w, err := worker.New(worker.Config{Coordinator: o, Renewer: renew, Registry: reg, Namespace: c.Namespace, WorkerID: c.ID, Capacity: c.Capacity, BatchMax: c.Capacity, TTL: 2 * time.Second, RenewInterval: 300 * time.Millisecond, RenewTimeout: 400 * time.Millisecond, OperationTimeout: time.Second, PollMin: 20 * time.Millisecond, PollMax: 50 * time.Millisecond, Observe: func(e worker.Event) {
+	w, err := worker.New(c.workerConfig(o, renew, reg, func(e worker.Event) {
 		emit.emit(Event{Kind: e.Kind, RunID: e.Token.Identity.RunID, Epoch: e.Token.Epoch, Reason: e.Reason})
-	}})
+	}))
 	if err != nil {
 		return err
 	}
