@@ -1,0 +1,288 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/jackc/pgx/v5"
+)
+
+const mutationOwnerPredicate = "r.epoch IS DISTINCT FROM (a->>'epoch')::bigint OR r.lease_id IS DISTINCT FROM a->>'lease_id' OR r.worker_id IS DISTINCT FROM a->>'worker_id' OR r.boot_id IS DISTINCT FROM a->>'boot_id' OR "
+const mutationExpiryPredicate = " OR r.lease_until<=t"
+const mutationClockStatement = " t:=clock_timestamp();\n IF t<r.updated_at THEN"
+const mutationRevisionCAS = "IF r.revision<>rev THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='revision conflict'; END IF;"
+
+// Exact, unique replacements are intentional: schema changes must fail closed,
+// not silently stop testing the intended production guard.
+func mutationReplace(source, old, replacement string) (string, error) {
+	if strings.Count(source, old) != 1 {
+		return "", fmt.Errorf("mutation target must occur exactly once: %q", old)
+	}
+	return strings.Replace(source, old, replacement, 1), nil
+}
+
+func mutationAPI(kind string) (string, error) {
+	api, e := replaceCreate(schemaSQL, "api")
+	if e != nil {
+		return "", e
+	}
+	if strings.Count(api, mutationRevisionCAS) != 1 {
+		return "", errors.New("production revision CAS changed")
+	}
+	switch kind {
+	case "owner":
+		api, e = mutationReplace(api, mutationOwnerPredicate, "")
+	case "expiry":
+		api, e = mutationReplace(api, mutationExpiryPredicate, "")
+	case "frozen-clock":
+		api, e = mutationReplace(api, mutationClockStatement, " t:=now();\n IF t<r.updated_at THEN")
+	default:
+		return "", errors.New("unknown mutation")
+	}
+	if e == nil && strings.Count(api, mutationRevisionCAS) != 1 {
+		return "", errors.New("mutation removed revision CAS")
+	}
+	return api, e
+}
+
+func TestMutationTargetsFailClosed(t *testing.T) {
+	for _, kind := range []string{"owner", "expiry", "frozen-clock"} {
+		if _, e := mutationAPI(kind); e != nil {
+			t.Fatal(e)
+		}
+	}
+	for _, source := range []string{"missing", "target target"} {
+		if _, e := mutationReplace(source, "target", "changed"); e == nil {
+			t.Fatal("missing or ambiguous mutation accepted")
+		}
+	}
+}
+
+// This is deliberately separate from integration(): that helper commits role,
+// grant and fixture setup. Here ALL changes, including CREATE OR REPLACE and the
+// matching catalog signature, remain in one administrator transaction. Calling
+// the real API under a restricted session_user preserves every credential/ACL
+// check; check_schema itself is never replaced or weakened.
+// Run serially, only on an explicitly authorized disposable test database with
+// the normal schema already installed. A superuser is needed solely to switch
+// session authorization without committing the mutation for another connection.
+func TestPostgresProductionFencingMutations(t *testing.T) {
+	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
+	if dsn == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE") != "yes" {
+		t.Skip("dedicated DSN and PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE=yes required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	admin, e := connect(ctx, dsn)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer admin.Close()
+	var super bool
+	if e = admin.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname=session_user`).Scan(&super); e != nil || !super {
+		t.Fatal("transaction-local restricted session authorization requires a dedicated test superuser", scrub(e, false))
+	}
+	if e = validate(ctx, admin, false); e != nil {
+		t.Fatal("normal schema must be installed and valid before mutation tests", e)
+	}
+	api, e := replaceCreate(schemaSQL, "api")
+	if e != nil {
+		t.Fatal(e)
+	}
+	parts := strings.Split(api, "$$")
+	var installedBody string
+	if len(parts) != 3 {
+		t.Fatal("production API delimiter changed")
+	}
+	if e = admin.QueryRow(ctx, `SELECT prosrc FROM pg_proc WHERE oid='pulse_durable_distributed.api(text,jsonb)'::regprocedure`).Scan(&installedBody); e != nil || installedBody != parts[1] {
+		t.Fatal("installed API body differs from mutation source; refusing replacement", scrub(e, false))
+	}
+
+	// Includes exact function definitions, ownership and ACLs as well as the
+	// stored signature. Comparing after every rollback detects persistent drift.
+	state := func() string {
+		t.Helper()
+		var s string
+		e := admin.QueryRow(ctx, `SELECT jsonb_build_array((`+catalogSQL+`),
+ (SELECT signature FROM pulse_durable_distributed.meta),
+ (SELECT jsonb_agg(jsonb_build_array(oid,proowner,proacl) ORDER BY oid) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace),
+ (SELECT jsonb_agg(to_jsonb(a) ORDER BY role_name,namespace,permission) FROM pulse_durable_distributed.access a))::text`).Scan(&s)
+		if e != nil {
+			t.Fatal(scrub(e, false))
+		}
+		return s
+	}
+	before := state()
+	for _, kind := range []string{"owner", "expiry", "frozen-clock"} {
+		t.Run(kind, func(t *testing.T) {
+			for _, phase := range []string{"normal-before", "mutated", "normal-after-rollback"} {
+				t.Run(phase, func(t *testing.T) {
+					mutationTrial(t, ctx, admin, kind, phase == "mutated")
+					if state() != before {
+						t.Fatal("rollback did not restore exact catalog, signature and function ACLs/access")
+					}
+					if e := validate(ctx, admin, false); e != nil {
+						t.Fatal("normal schema invalid after rollback", e)
+					}
+				})
+			}
+		})
+		if t.Failed() {
+			break
+		}
+	}
+}
+
+func mutationTrial(t *testing.T, ctx context.Context, admin interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, kind string, changed bool) {
+	t.Helper()
+	tx, e := admin.Begin(ctx)
+	if e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if e := tx.Rollback(cleanup); e != nil && !errors.Is(e, pgx.ErrTxClosed) {
+			t.Errorf("mutation transaction rollback failed: %v", scrub(e, false))
+		}
+	}()
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, e := tx.Exec(ctx, sql, args...); e != nil {
+			t.Fatal(scrub(e, false))
+		}
+	}
+	exec(`SELECT pg_advisory_xact_lock(5788618723189269577)`)
+	// nextval alone is not rolled back. Transactional RESTART isolates the
+	// event sequence too, restoring its original state on rollback (and locking
+	// it against concurrent use). Do not replace this with setval.
+	var restart string
+	if e := tx.QueryRow(ctx, `SELECT format('ALTER SEQUENCE %s RESTART WITH 1',pg_get_serial_sequence('pulse_durable_distributed.events','event_seq'))`).Scan(&restart); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	exec(restart)
+	role := "pulse_mutation_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	roleSQL := pgx.Identifier{role}.Sanitize()
+	ns := role
+	exec("CREATE ROLE " + roleSQL + " NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS")
+	exec("GRANT USAGE ON SCHEMA pulse_durable_distributed TO " + roleSQL)
+	exec("GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.check_schema() TO " + roleSQL)
+	exec(`INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'worker')`, role, ns)
+
+	task := taskFixture(t, ns, "mutation")
+	rec, e := json.Marshal(record(task, 1))
+	if e != nil {
+		t.Fatal(e)
+	}
+	oldLease, newLease := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	currentEpoch, currentLease := int64(1), oldLease
+	worker, boot := "old-worker", "old-boot"
+	if kind == "owner" {
+		currentEpoch, currentLease, worker, boot = 2, newLease, "new-worker", "new-boot"
+	}
+	// Fixture writes are administrator-only. Both owners have revision 1; the
+	// mutation can therefore succeed without bypassing the independent CAS.
+	exec(`INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route,status,epoch,revision,record,lease_id,worker_id,boot_id,lease_until,created_at,updated_at)
+ VALUES($1,$2,$3,$4,$5,'running',$6,1,$7,$8,$9,$10,clock_timestamp()+interval '1 hour',transaction_timestamp()-interval '2 seconds',transaction_timestamp()-interval '1 second')`,
+		ns, task.Identity().RunID, task.Bytes(), task.SubmissionDigest(), task.Route(), currentEpoch, rec, currentLease, worker, boot)
+	if kind == "expiry" {
+		exec(`UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1`, ns)
+	}
+	if kind == "frozen-clock" {
+		exec(`UPDATE pulse_durable_distributed.runs SET lease_until=transaction_timestamp()+interval '10 milliseconds' WHERE namespace=$1`, ns)
+		exec(`SELECT pg_sleep(0.02)`)
+		var frozen, live bool
+		if e := tx.QueryRow(ctx, `SELECT lease_until>now(),lease_until>clock_timestamp() FROM pulse_durable_distributed.runs WHERE namespace=$1`, ns).Scan(&frozen, &live); e != nil || !frozen || live {
+			t.Fatal("database-time expiry barrier not established", scrub(e, false))
+		}
+	}
+	if changed {
+		api, e := mutationAPI(kind)
+		if e != nil {
+			t.Fatal(e)
+		}
+		exec(api)
+		// Re-sign ONLY inside this rollback transaction so the actual API runs
+		// its unchanged structural/permissions validator against the mutant.
+		sig, e := signature(ctx, tx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		exec(`UPDATE pulse_durable_distributed.meta SET signature=$1`, sig)
+	}
+	exec("SET LOCAL SESSION AUTHORIZATION " + roleSQL)
+	if e := validateWorker(ctx, tx); e != nil {
+		t.Fatal("restricted session failed unchanged schema/permission checks", e)
+	}
+	args := owned(d.Token{Identity: task.Identity(), Epoch: 1, LeaseID: oldLease, Worker: d.Worker{ID: "old-worker", BootID: "old-boot"}})
+	mutate(args, mut("mutation-save"))
+	args["expected"] = "1"
+	args["record"], e = json.Marshal(record(task, 2))
+	if e != nil {
+		t.Fatal(e)
+	}
+	call := func() ([]byte, error) {
+		t.Helper()
+		b, e := json.Marshal(args)
+		if e != nil {
+			t.Fatal(e)
+		}
+		exec("SAVEPOINT mutation_call")
+		var out []byte
+		e = tx.QueryRow(ctx, `SELECT pulse_durable_distributed.api('save',$1::jsonb)`, b).Scan(&out)
+		if e != nil {
+			exec("ROLLBACK TO SAVEPOINT mutation_call")
+		}
+		exec("RELEASE SAVEPOINT mutation_call")
+		return out, scrub(e, false)
+	}
+	if changed {
+		args["expected"] = "0"
+		if _, e := call(); !errors.Is(e, d.ErrRevisionConflict) {
+			t.Fatalf("mutant must retain revision CAS: %v", e)
+		}
+		args["expected"] = "1"
+	}
+	out, saveErr := call()
+	// This is precisely the normal stale/expired-owner rejection oracle. Log
+	// its RED result explicitly rather than disguising mutant acceptance as an
+	// ordinary protocol PASS. Unexpected SQL errors do not count as detection.
+	rejected := errors.Is(saveErr, d.ErrLeaseLost)
+	if !changed {
+		if !rejected {
+			t.Fatalf("normal stale/expired-owner rejection oracle failed: %v", saveErr)
+		}
+		exec("SET LOCAL SESSION AUTHORIZATION DEFAULT")
+		var revision string
+		var events int
+		if e := tx.QueryRow(ctx, `SELECT revision::text,(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1) FROM pulse_durable_distributed.runs WHERE namespace=$1`, ns).Scan(&revision, &events); e != nil || revision != "1" || events != 0 {
+			t.Fatalf("rejected Save changed authority: revision=%s events=%d err=%v", revision, events, scrub(e, false))
+		}
+		t.Logf("normal %s rejection oracle: GREEN (ErrLeaseLost; revision=1, events=0)", kind)
+		return
+	}
+	if saveErr != nil || rejected {
+		t.Fatalf("mutation not detected: rejection=%v save error=%v", rejected, saveErr)
+	}
+	var snapshot wireSnapshot
+	if e := json.Unmarshal(out, &snapshot); e != nil || snapshot.Revision != "2" || snapshot.Epoch != currentEpoch {
+		t.Fatal("mutated Save did not return authoritative same-revision write", e)
+	}
+	exec("SET LOCAL SESSION AUTHORIZATION DEFAULT")
+	var revision string
+	var events int
+	if e := tx.QueryRow(ctx, `SELECT revision::text,(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND operation='save' AND mutation_id='mutation-save') FROM pulse_durable_distributed.runs WHERE namespace=$1`, ns).Scan(&revision, &events); e != nil || revision != "2" || events != 1 {
+		t.Fatalf("mutant did not persist actual SQL Save/event within rollback transaction: revision=%s events=%d err=%v", revision, events, scrub(e, false))
+	}
+	t.Logf("MUTATION DETECTED %s: stale/expired-owner rejection oracle RED (want ErrLeaseLost, got successful SQL Save; revision 1 -> 2, save events=1); revision CAS control GREEN", kind)
+}
