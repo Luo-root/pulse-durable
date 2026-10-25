@@ -130,6 +130,8 @@ func reason(err error) string {
 		return "lease_lost"
 	case errors.Is(err, d.ErrTerminal):
 		return "terminal"
+	case errors.Is(err, d.ErrClockRegression):
+		return "clock_regression"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):

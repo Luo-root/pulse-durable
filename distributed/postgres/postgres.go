@@ -107,6 +107,8 @@ func scrub(err error, write bool) error {
 			return d.ErrRevisionConflict
 		case "PD006":
 			return d.ErrTerminal
+		case "PD007":
+			return d.ErrClockRegression
 		}
 		return fmt.Errorf("distributed postgres: SQLSTATE %s", pe.Code)
 	}

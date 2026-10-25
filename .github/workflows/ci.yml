@@ -281,6 +281,30 @@ jobs:
           PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:55432/durable_dist_security_20261025?sslmode=disable
         run: go test -mod=readonly -race -count=1 -parallel=1 -timeout=240s -v ./internal/faultproxy ./networktest
 
+  distributed-acceptance-tools:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: distributed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: distributed/go.mod
+          cache-dependency-path: distributed/go.sum
+      - name: Build and vet acceptance controllers
+        run: |
+          go mod download
+          go build -mod=readonly ./crossmachine/... ./soaktest/...
+          go vet -mod=readonly ./crossmachine/... ./soaktest/...
+      - name: Test local controller lifecycles without remote access
+        run: go test -mod=readonly -race -count=1 -timeout=180s ./crossmachine/... ./soaktest/...
+
   postgres-store:
     runs-on: ubuntu-latest
     timeout-minutes: 20
