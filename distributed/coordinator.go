@@ -62,6 +62,19 @@ type Claim struct {
 	Snapshot Snapshot
 	Token    Token
 }
+
+// ClaimResolution contains exactly one of Claim or Closed on success. Closed is
+// a durable tombstone: no delayed Claim can ever commit with this namespace/ID.
+// ResolveClaim serializes with in-flight Claim, is idempotent for the same worker
+// boot, and returns only a currently valid claim. An error (including unknown or
+// timeout) is NOT Closed; retain the capacity reservation and resolve the same ID.
+// Renew must still confirm ownership before starting any execution. FindClaim is
+// observational only and cannot prove an absent claim will never commit later.
+type ClaimResolution struct {
+	Claim  *Claim
+	Closed bool
+}
+
 type Mutation struct {
 	ID     string
 	Digest string
@@ -120,6 +133,7 @@ type Coordinator interface {
 	List(context.Context, ListRequest) ([]Snapshot, error)
 	Claim(context.Context, ClaimRequest) ([]Claim, error)
 	FindClaim(context.Context, string, Worker, string) ([]Claim, error)
+	ResolveClaim(context.Context, string, Worker, string) (ClaimResolution, error)
 	Renew(context.Context, Token, time.Duration) (time.Time, error)
 	LoadOwned(context.Context, Token) (durable.RunRecord, error)
 	SaveOwned(context.Context, SaveRequest) error
