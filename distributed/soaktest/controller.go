@@ -77,27 +77,30 @@ type WorkerStats struct {
 	Finishes int64  `json:"finish_events"`
 }
 type Report struct {
-	Result           string                  `json:"result"`
-	Reason           string                  `json:"reason,omitempty"`
-	Config           Config                  `json:"config"`
-	Started          time.Time               `json:"started"`
-	Duration         time.Duration           `json:"actual_total_ns"`
-	Accepted         int64                   `json:"accepted"`
-	Terminal         int64                   `json:"terminal"`
-	Pending          int64                   `json:"pending"`
-	Failed           int64                   `json:"failed"`
-	Blocked          int64                   `json:"blocked"`
-	Invalid          int64                   `json:"invalid_terminal_or_checksum"`
-	UnexpectedEvents int64                   `json:"unexpected_worker_events"`
-	Events           map[string]int64        `json:"event_counts"`
-	Workers          map[string]*WorkerStats `json:"workers"`
-	Phases           []Phase                 `json:"phases"`
-	Resources        string                  `json:"cpu_rss"`
-	LatencyMethod    string                  `json:"latency_method"`
-	TotalLatency     Histogram               `json:"all_phases_latency"`
-	P50NS            int64                   `json:"all_phases_p50_upper_ns"`
-	P95NS            int64                   `json:"all_phases_p95_upper_ns"`
-	P99NS            int64                   `json:"all_phases_p99_upper_ns"`
+	Result                 string                  `json:"result"`
+	Reason                 string                  `json:"reason,omitempty"`
+	Config                 Config                  `json:"config"`
+	Started                time.Time               `json:"started"`
+	Duration               time.Duration           `json:"actual_total_ns"`
+	Accepted               int64                   `json:"accepted"`
+	Terminal               int64                   `json:"terminal"`
+	AuditComplete          bool                    `json:"audit_complete"`
+	Pending                int64                   `json:"pending"`
+	Failed                 int64                   `json:"failed"`
+	Blocked                int64                   `json:"blocked"`
+	Invalid                int64                   `json:"invalid_terminal_or_checksum"`
+	UnexpectedEvents       int64                   `json:"unexpected_worker_events"`
+	RuntimeInfrastructure  int64                   `json:"runtime_infrastructure_events"`
+	ShutdownInfrastructure int64                   `json:"shutdown_infrastructure_events"`
+	Events                 map[string]int64        `json:"event_counts"`
+	Workers                map[string]*WorkerStats `json:"workers"`
+	Phases                 []Phase                 `json:"phases"`
+	Resources              string                  `json:"cpu_rss"`
+	LatencyMethod          string                  `json:"latency_method"`
+	TotalLatency           Histogram               `json:"all_phases_latency"`
+	P50NS                  int64                   `json:"all_phases_p50_upper_ns"`
+	P95NS                  int64                   `json:"all_phases_p95_upper_ns"`
+	P99NS                  int64                   `json:"all_phases_p99_upper_ns"`
 }
 
 // Prepare is the only DDL/permission-changing entrypoint. Existing roles are never modified.
@@ -171,35 +174,45 @@ func Run(ctx context.Context, c Config, prefix string) (report Report, err error
 	var mu sync.Mutex
 	var outputErr bool
 	var children []*child
-	defer func() {
+	childrenStopped := false
+	stopChildren := func() error {
+		if childrenStopped {
+			return nil
+		}
+		childrenStopped = true
+		var failed bool
 		for _, p := range children {
 			if p.stop() != nil {
-				err = errors.New("worker shutdown failed")
+				failed = true
+			}
+		}
+		if failed {
+			return errors.New("worker shutdown failed")
+		}
+		return nil
+	}
+	defer func() {
+		if !childrenStopped {
+			if e := stopChildren(); e != nil {
+				err = errors.Join(err, e)
 			}
 		}
 		report.Duration = time.Since(report.Started)
-		if report.UnexpectedEvents != 0 {
-			err = errors.New("unexpected worker events, including shutdown")
-		}
-		var finishes int64
-		for _, s := range report.Workers {
-			finishes += s.Finishes
-		}
-		if report.Accepted == 0 || finishes != report.Terminal {
-			err = errors.New("finish event count does not match nonzero accepted terminal count")
-		}
 		if outputErr {
-			err = errors.New("raw evidence write failed")
+			err = errors.Join(err, errors.New("raw evidence write failed"))
+		}
+		if raw.Sync() != nil {
+			err = errors.Join(err, errors.New("raw evidence sync failed"))
+		}
+		err = finalizeReport(&report, err)
+		if json.NewEncoder(summary).Encode(report) != nil {
+			err = errors.Join(err, errors.New("summary write failed"))
+		}
+		if summary.Sync() != nil {
+			err = errors.Join(err, errors.New("summary evidence sync failed"))
 		}
 		if err != nil {
-			report.Result = "FAIL"
-			report.Reason = err.Error()
-		}
-		if json.NewEncoder(summary).Encode(report) != nil {
-			err = errors.New("summary write failed")
-		}
-		if raw.Sync() != nil || summary.Sync() != nil {
-			err = errors.New("evidence sync failed")
+			report.Result, report.Reason = "FAIL", err.Error()
 		}
 	}()
 	admin, e := pgxpool.New(ctx, os.Getenv(c.AdminEnv))
@@ -225,6 +238,13 @@ func Run(ctx context.Context, c Config, prefix string) (report Report, err error
 		report.Events[v.Kind+":"+v.Reason]++
 		if badEvent(v) {
 			report.UnexpectedEvents++
+			if v.Reason == "infrastructure" {
+				if v.Stage == "shutdown" {
+					report.ShutdownInfrastructure++
+				} else {
+					report.RuntimeInfrastructure++
+				}
+			}
 		}
 		s := report.Workers[v.Worker.ID]
 		if s == nil {
@@ -300,59 +320,147 @@ func Run(ctx context.Context, c Config, prefix string) (report Report, err error
 			break
 		}
 	}
-	// Independent full DB reconciliation is streamed, not retained in memory.
-	auditCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Admission is already exhausted by drive; now stop workers. child.stop waits
+	// for the process and its event scanner, and Child's lifecycle waits for Drain
+	// (including all in-flight Finish/Save calls) before exiting.
+	if e := stopChildren(); e != nil {
+		err = errors.Join(err, e)
+	}
+	// A single query can race a committed Finish becoming visible to the admin
+	// snapshot. Require a bounded stable reconciliation after all workers/events
+	// have stopped, rather than treating sleep as synchronization.
+	auditCtx, cancel := context.WithTimeout(ctx, c.auditTimeout())
 	defer cancel()
-	rows, e := admin.Query(auditCtx, `SELECT run_id,status,record FROM pulse_durable_distributed.runs WHERE namespace=$1`, c.Namespace)
+	snap, e := stableAudit(auditCtx, report.Accepted, func(queryCtx context.Context) (auditSnapshot, error) {
+		return queryAudit(queryCtx, admin, c)
+	})
 	if e != nil {
-		return report, errors.New("final reconciliation query failed")
+		return report, errors.Join(err, e)
 	}
-	var total int64
-	for rows.Next() {
-		var id, status string
-		var record []byte
-		if rows.Scan(&id, &status, &record) != nil {
-			rows.Close()
-			return report, errors.New("final reconciliation scan failed")
-		}
-		total++
-		switch d.Status(status) {
-		case d.Succeeded:
-			report.Terminal++
-			if !validRecord(record, id, c.CPURounds) {
-				report.Invalid++
-			}
-		case d.Failed:
-			report.Terminal++
-			report.Failed++
-		case d.Canceled:
-			report.Terminal++
-			report.Invalid++
-		case d.Blocked:
-			report.Pending++
-			report.Blocked++
-		case d.Queued, d.Running:
-			report.Pending++
-		default:
-			report.Pending++
-			report.Invalid++
-		}
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return report, errors.New("final reconciliation rows failed")
-	}
+	report.AuditComplete = true
+	report.Terminal = snap.Terminal
+	report.Pending = snap.Pending
+	report.Failed = snap.Failed
+	report.Blocked = snap.Blocked
+	report.Invalid = snap.Invalid
 	mu.Lock()
 	bad := report.UnexpectedEvents
 	mu.Unlock()
-	if total != report.Accepted || report.Accepted != report.Terminal+report.Pending || report.Pending != 0 || report.Failed != 0 || report.Blocked != 0 || report.Invalid != 0 || bad != 0 {
-		err = errors.New("reconciliation or unexpected worker event assertion failed")
+	if snap.Total != report.Accepted || report.Accepted != report.Terminal+report.Pending || report.Pending != 0 || report.Failed != 0 || report.Blocked != 0 || report.Invalid != 0 || bad != 0 {
+		err = errors.Join(err, errors.New("reconciliation or unexpected worker event assertion failed"))
 	}
 	if err == nil {
 		report.Result = "PASS"
 	}
 	return report, err
+}
+
+// finalizeReport compares finish events only against a fully verified audit.
+func finalizeReport(report *Report, err error) error {
+	if !report.AuditComplete {
+		err = errors.Join(err, errors.New("final audit incomplete"))
+	} else {
+		var finishes int64
+		for _, s := range report.Workers {
+			finishes += s.Finishes
+		}
+		if report.Accepted == 0 || finishes != report.Terminal {
+			err = errors.Join(err, errors.New("finish event count does not match nonzero accepted terminal count"))
+		}
+	}
+	if report.UnexpectedEvents != 0 {
+		err = errors.Join(err, errors.New("unexpected worker events, including shutdown"))
+	}
+	if err != nil {
+		report.Result, report.Reason = "FAIL", err.Error()
+	}
+	return err
+}
+
+type auditSnapshot struct {
+	Total, Terminal, Pending, Failed, Blocked, Invalid int64
+}
+
+func stableAudit(ctx context.Context, accepted int64, query func(context.Context) (auditSnapshot, error)) (auditSnapshot, error) {
+	var snap auditSnapshot
+	var previous *auditSnapshot
+	stable := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return snap, fmt.Errorf("final reconciliation interrupted: %w", err)
+		}
+		current, err := query(ctx)
+		if err != nil {
+			return snap, err
+		}
+		if err := ctx.Err(); err != nil {
+			return snap, fmt.Errorf("final reconciliation interrupted: %w", err)
+		}
+		if previous != nil && *previous == current {
+			stable++
+		} else {
+			stable = 1
+		}
+		previous = &current
+		snap = current
+		if stable >= 2 || (current.Terminal == accepted && current.Pending == 0) {
+			return snap, nil
+		}
+		select {
+		case <-ctx.Done():
+			return snap, fmt.Errorf("final reconciliation interrupted: %w", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func queryAudit(ctx context.Context, admin *pgxpool.Pool, c Config) (auditSnapshot, error) {
+	var snap auditSnapshot
+	rows, err := admin.Query(ctx, `SELECT run_id,status,record FROM pulse_durable_distributed.runs WHERE namespace=$1`, c.Namespace)
+	if err != nil {
+		return snap, errors.Join(errors.New("final reconciliation query failed"), ctx.Err())
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return snap, err
+		}
+		var id, status string
+		var record []byte
+		if rows.Scan(&id, &status, &record) != nil {
+			return snap, errors.New("final reconciliation scan failed")
+		}
+		snap.Total++
+		switch d.Status(status) {
+		case d.Succeeded:
+			snap.Terminal++
+			valid, err := validRecordContext(ctx, record, id, c.CPURounds)
+			if err != nil {
+				return snap, err
+			}
+			if !valid {
+				snap.Invalid++
+			}
+		case d.Failed:
+			snap.Terminal++
+			snap.Failed++
+		case d.Canceled:
+			snap.Terminal++
+			snap.Invalid++
+		case d.Blocked:
+			snap.Pending++
+			snap.Blocked++
+		case d.Queued, d.Running:
+			snap.Pending++
+		default:
+			snap.Pending++
+			snap.Invalid++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return snap, errors.Join(errors.New("final reconciliation rows failed"), ctx.Err())
+	}
+	return snap, ctx.Err()
 }
 func drive(ctx context.Context, c Config, backend *postgres.Coordinator, admin *pgxpool.Pool, name string, duration time.Duration, seq *int64) (p Phase, err error) {
 	p.Name = name

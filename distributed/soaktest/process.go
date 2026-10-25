@@ -18,13 +18,15 @@ import (
 )
 
 type Event struct {
-	At     time.Time `json:"at"`
-	PID    int       `json:"pid"`
-	Worker d.Worker  `json:"worker"`
-	Kind   string    `json:"kind"`
-	Reason string    `json:"reason,omitempty"`
-	RunID  string    `json:"run_id,omitempty"`
-	Epoch  int64     `json:"epoch,omitempty"`
+	At        time.Time `json:"at"`
+	PID       int       `json:"pid"`
+	Worker    d.Worker  `json:"worker"`
+	Kind      string    `json:"kind"`
+	Operation string    `json:"operation,omitempty"`
+	Stage     string    `json:"stage,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	RunID     string    `json:"run_id,omitempty"`
+	Epoch     int64     `json:"epoch,omitempty"`
 }
 
 // Child reads only the worker DSN; EOF seals admission and drains before cancellation.
@@ -50,6 +52,13 @@ func Child(ctx context.Context, c Config, id string, in io.Reader, out io.Writer
 		return errors.New("worker graph registration failed")
 	}
 	var mu sync.Mutex
+	var stageMu sync.RWMutex
+	stage := "runtime"
+	currentStage := func() string {
+		stageMu.RLock()
+		defer stageMu.RUnlock()
+		return stage
+	}
 	emit := func(v Event) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -58,14 +67,19 @@ func Child(ctx context.Context, c Config, id string, in io.Reader, out io.Writer
 		_ = json.NewEncoder(out).Encode(v)
 	}
 	w, e := worker.New(worker.Config{Coordinator: backend, Renewer: renew, Registry: reg, Namespace: c.Namespace, WorkerID: id, Capacity: c.Capacity, BatchMax: c.Capacity, TTL: 10 * time.Second, RenewInterval: 2 * time.Second, RenewTimeout: time.Second, OperationTimeout: 3 * time.Second, PollMin: 10 * time.Millisecond, PollMax: 30 * time.Millisecond, Observe: func(v worker.Event) {
-		emit(Event{Worker: v.Worker, Kind: v.Kind, Reason: v.Reason, RunID: v.Token.Identity.RunID, Epoch: v.Token.Epoch})
+		emit(Event{Worker: v.Worker, Kind: v.Kind, Operation: v.Kind, Stage: currentStage(), Reason: v.Reason, RunID: v.Token.Identity.RunID, Epoch: v.Token.Epoch})
 	}})
 	if e != nil {
 		return errors.New("worker configuration failed")
 	}
-	emit(Event{Kind: "ready", Worker: w.Identity()})
+	emit(Event{Kind: "ready", Operation: "ready", Stage: "runtime", Worker: w.Identity()})
 	return runLifecycle(ctx, shutdown, w, func(kind string) {
-		emit(Event{Kind: kind, Worker: w.Identity()})
+		if kind == "drain_started" {
+			stageMu.Lock()
+			stage = "shutdown"
+			stageMu.Unlock()
+		}
+		emit(Event{Kind: kind, Operation: kind, Stage: currentStage(), Worker: w.Identity()})
 	})
 }
 

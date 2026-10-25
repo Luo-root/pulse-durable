@@ -34,6 +34,7 @@ var (
 	ErrRevisionConflict = errors.New("distributed: revision conflict")
 	ErrTerminal         = errors.New("distributed: terminal task")
 	ErrUnknown          = errors.New("distributed: operation commit unknown")
+	ErrClockRegression  = errors.New("distributed: database clock regression")
 )
 
 type Identity struct {

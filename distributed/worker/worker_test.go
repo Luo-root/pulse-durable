@@ -14,6 +14,15 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
+func TestReasonClassifiesClockRegression(t *testing.T) {
+	if got := reason(d.ErrClockRegression); got != "clock_regression" {
+		t.Fatalf("reason=%q", got)
+	}
+	if got := reason(errors.New("clock regression with private SQL")); got != "infrastructure" {
+		t.Fatalf("raw errors must remain generic, reason=%q", got)
+	}
+}
+
 // fake exercises local loop interleavings only, not database fencing/atomicity.
 type fake struct {
 	d.Coordinator

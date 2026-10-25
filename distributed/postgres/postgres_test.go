@@ -16,6 +16,7 @@ import (
 	"github.com/Luo-root/pulse"
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -61,6 +62,13 @@ func TestValidationAndLosslessRevision(t *testing.T) {
 	}
 	if strings.Contains(scrub(errors.New("secret password"), false).Error(), "secret") {
 		t.Fatal("leaked details")
+	}
+}
+
+func TestClockRegressionIsSanitizedAndStable(t *testing.T) {
+	e := scrub(&pgconn.PgError{Code: "PD007", Message: "clock regression with private details"}, false)
+	if !errors.Is(e, d.ErrClockRegression) || strings.Contains(e.Error(), "private") {
+		t.Fatalf("clock regression classification leaked or was lost: %v", e)
 	}
 }
 

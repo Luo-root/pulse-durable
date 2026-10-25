@@ -15,11 +15,27 @@ import (
 )
 
 func checksum(id string, rounds int) string {
+	value, _ := checksumContext(context.Background(), id, rounds)
+	return value
+}
+
+func checksumContext(ctx context.Context, id string, rounds int) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	h := sha256.Sum256([]byte(id))
 	for i := 0; i < rounds; i++ {
+		if i%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
 		h = sha256.Sum256(h[:])
 	}
-	return hex.EncodeToString(h[:])
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h[:]), nil
 }
 func assembly(rounds int, delay time.Duration) (d.Assembly, error) {
 	g, e := pulse.New("soak-v1", "fixed SHA256 CPU work and bounded wait; checkpoints provide database IO")
@@ -36,15 +52,9 @@ func assembly(rounds int, delay time.Duration) (d.Assembly, error) {
 		if e != nil {
 			return e
 		}
-		// Bounded chunks keep cancellation cooperative even with large configured work.
-		h := sha256.Sum256([]byte(v))
-		for i := 0; i < rounds; i++ {
-			if i%1024 == 0 {
-				if e := rc.Context().Err(); e != nil {
-					return e
-				}
-			}
-			h = sha256.Sum256(h[:])
+		sum, e := checksumContext(rc.Context(), v, rounds)
+		if e != nil {
+			return e
 		}
 		if delay > 0 {
 			t := time.NewTimer(delay)
@@ -55,7 +65,7 @@ func assembly(rounds int, delay time.Duration) (d.Assembly, error) {
 				return rc.Context().Err()
 			}
 		}
-		return pulse.Set(rc, result, hex.EncodeToString(h[:]))
+		return pulse.Set(rc, result, sum)
 	}))
 	if e != nil {
 		return d.Assembly{}, e
@@ -81,24 +91,36 @@ func task(ctx context.Context, c Config, id string) (d.Task, error) {
 	return d.NewTask(ctx, d.Identity{Namespace: c.Namespace, RunID: id}, "soak", c.version(), a.Graph, in, a.Codecs)
 }
 func validRecord(raw []byte, id string, rounds int) bool {
+	valid, _ := validRecordContext(context.Background(), raw, id, rounds)
+	return valid
+}
+
+func validRecordContext(ctx context.Context, raw []byte, id string, rounds int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	var r durable.RunRecord
 	if json.Unmarshal(raw, &r) != nil || r.RunID != id {
-		return false
+		return false, nil
 	}
 	scope, ok := r.Scopes[r.RootScope]
 	if !ok {
-		return false
+		return false, nil
 	}
 	node, ok := scope.Nodes["work"]
 	if !ok || node.Reason != "completed" {
-		return false
+		return false, nil
 	}
 	for _, v := range node.Outputs {
 		if v.Name == "checksum" && v.State == "ready" {
 			var got string
-			return json.Unmarshal(v.Data, &got) == nil && got == checksum(id, rounds)
+			if json.Unmarshal(v.Data, &got) != nil {
+				return false, nil
+			}
+			want, err := checksumContext(ctx, id, rounds)
+			return got == want, err
 		}
 	}
-	return false
+	return false, nil
 }
 func (c Config) version() string { return fmt.Sprintf("v1-cpu%d-wait%d", c.CPURounds, c.Wait) }

@@ -54,6 +54,7 @@ func run() error {
 	f.IntVar(&c.Repeat, "repeat", c.Repeat, "warm/steady repeats")
 	f.IntVar(&c.MaxOutstanding, "max-outstanding", c.MaxOutstanding, "bounded outstanding tasks")
 	f.IntVar(&c.CPURounds, "cpu-rounds", c.CPURounds, "fixed SHA256 rounds per task")
+	f.DurationVar(&c.AuditTimeout, "audit-timeout", c.AuditTimeout, "total final audit budget including queries and checksum verification; zero uses default")
 	f.DurationVar(&c.Wait, "wait", c.Wait, "bounded cooperative wait per task; database checkpoints provide IO")
 	f.StringVar(&c.AdminEnv, "admin-env", c.AdminEnv, "explicit admin DSN environment variable name")
 	f.StringVar(&c.WorkerEnv, "worker-env", c.WorkerEnv, "explicit worker DSN environment variable name")
