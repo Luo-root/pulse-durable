@@ -6,6 +6,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -40,6 +41,10 @@ type Config struct {
 	TTL, RenewInterval, OperationTimeout, RenewTimeout time.Duration
 	PollMin, PollMax                                   time.Duration
 	Observe                                            func(Event)
+	// RequireDelta explicitly opts this worker into typed delta checkpoints.
+	// New rejects a coordinator without DeltaCoordinator before any claim or
+	// business execution. The zero value preserves legacy full-save behavior.
+	RequireDelta bool
 }
 
 // Worker is single-use. New creates an independent random 128-bit boot identity.
@@ -56,9 +61,30 @@ type Worker struct {
 }
 
 func validText(s string) bool { return len(s) > 0 && len(s) <= d.MaxTextBytes && utf8.ValidString(s) }
+
+func deltaCapability(c d.Coordinator) (d.DeltaCoordinator, bool) {
+	capability, ok := c.(d.DeltaCoordinator)
+	if !ok || capability == nil {
+		return nil, false
+	}
+	v := reflect.ValueOf(capability)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		if v.IsNil() {
+			return nil, false
+		}
+	}
+	return capability, true
+}
+
 func New(c Config) (*Worker, error) {
 	if c.Coordinator == nil || c.Renewer == nil || c.Registry == nil || !validText(c.Namespace) || !validText(c.WorkerID) {
 		return nil, d.ErrInvalid
+	}
+	if c.RequireDelta {
+		if _, ok := deltaCapability(c.Coordinator); !ok {
+			return nil, durable.ErrUnsupportedCapability
+		}
 	}
 	if _, err := (d.PullPolicy{Capacity: c.Capacity, BatchMax: c.BatchMax}).Limit(0); err != nil {
 		return nil, err
@@ -318,6 +344,15 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	s := &session{c: w.cfg.Coordinator, token: c.Token, timeout: w.cfg.OperationTimeout, ctx: ctx, cancel: cancel, observe: w.emit}
+	var claimed durable.ClaimedSession = s
+	if w.cfg.RequireDelta {
+		capability, ok := deltaCapability(w.cfg.Coordinator)
+		if !ok {
+			s.seal(true)
+			return
+		}
+		claimed = &deltaSession{session: s, coordinator: capability}
+	}
 	// Authoritative renewal is required even after a successful Claim/ResolveClaim.
 	renewSession := func() bool {
 		start := time.Now()
@@ -374,9 +409,11 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 			opts := durable.RunOptions{RunID: c.Token.Identity.RunID, Version: c.Snapshot.Task.Route().BusinessVersion}
 			switch {
 			case errors.Is(loadErr, durable.ErrNotFound):
-				_, outcome, err = rt.RunClaimed(ctx, s, a.Graph, in, opts)
+				opts.RequireDelta = w.cfg.RequireDelta
+				_, outcome, err = rt.RunClaimed(ctx, claimed, a.Graph, in, opts)
 			case loadErr == nil:
-				_, outcome, err = rt.ResumeClaimed(ctx, s, a.Graph, in, opts)
+				opts.RequireDelta = w.cfg.RequireDelta
+				_, outcome, err = rt.ResumeClaimed(ctx, claimed, a.Graph, in, opts)
 			default:
 				outcome = durable.OutcomeInfrastructure
 				err = loadErr
