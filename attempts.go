@@ -14,6 +14,7 @@ import (
 type runState struct {
 	mu      sync.Mutex
 	session Session
+	delta   DeltaSession // selected explicitly before business starts
 	def     *definition
 	record  RunRecord
 	stopped error

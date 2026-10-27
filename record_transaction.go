@@ -8,7 +8,8 @@ import (
 
 // recordTransaction stages only the objects changed by its callers. Construction,
 // staging and commit require runState.mu; this is not a concurrent Store protocol.
-// The legacy Session path still materializes and saves a complete format2 record.
+// The legacy Session path materializes a complete format2 record; the explicitly
+// selected DeltaSession path submits only these staged typed operations.
 type recordTransaction struct {
 	baseRevision   uint64
 	attempts       map[string]putAttempt
@@ -146,25 +147,32 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
+	if err := tx.check(s.record); err != nil {
+		return err
+	}
+	return s.commitCheckedTransaction(ctx, tx, prepare)
+}
+
+func (tx *recordTransaction) check(record RunRecord) error {
 	if tx.err != nil {
 		return tx.err
 	}
-	if tx.baseRevision != s.record.Revision {
+	if tx.baseRevision != record.Revision {
 		return fmt.Errorf("%w: stale record transaction revision", ErrConflict)
 	}
 	for id, op := range tx.attempts {
-		current, exists := s.record.Attempts[id]
+		current, exists := record.Attempts[id]
 		if exists == op.absent || (exists && current != op.expected) {
 			return fmt.Errorf("%w: attempt precondition for %q", ErrConflict, id)
 		}
 	}
 	for id := range tx.scopes {
-		if _, exists := s.record.Scopes[id]; exists {
+		if _, exists := record.Scopes[id]; exists {
 			return fmt.Errorf("%w: scope creation precondition for %q", ErrConflict, id)
 		}
 	}
 	for key, op := range tx.nodes {
-		scope, exists := s.record.Scopes[key.scope]
+		scope, exists := record.Scopes[key.scope]
 		_, created := tx.scopes[key.scope]
 		if !exists && !created {
 			return fmt.Errorf("%w: missing node scope %q", ErrConflict, key.scope)
@@ -174,16 +182,44 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 			return fmt.Errorf("%w: node precondition for %q/%q", ErrConflict, key.scope, key.node)
 		}
 	}
-	if err := tx.checkStreams(s.record); err != nil {
+	if err := tx.checkStreams(record); err != nil {
 		return err
 	}
-	if err := tx.checkMessages(s.record); err != nil {
+	if err := tx.checkMessages(record); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (s *runState) commitCheckedTransaction(ctx context.Context, tx *recordTransaction, prepare func(*RunRecord) error) error {
 	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes)+len(tx.streams)+len(tx.pending)+len(tx.messages)+len(tx.managed)+len(tx.managedEntries) == 0 {
 		return nil
 	}
+	if s.delta != nil {
+		if prepare != nil {
+			// Node-finalization retains its complete proposal validation. Ordinary
+			// stream/message checkpoints never materialize the full history.
+			proposal := cloneRecord(s.record)
+			tx.apply(&proposal)
+			if err := prepare(&proposal); err != nil {
+				return err
+			}
+		}
+		return s.applyDelta(ctx, tx)
+	}
 	proposed := cloneRecord(s.record)
+	tx.apply(&proposed)
+	if prepare != nil {
+		if err := prepare(&proposed); err != nil {
+			return err
+		}
+	}
+	return s.save(ctx, proposed)
+}
+
+// apply is shared by legacy materialization, confirmed runtime publication and
+// ChangeBatch.ApplyTo. The caller must have checked all preconditions first.
+func (tx *recordTransaction) apply(proposed *RunRecord) {
 	if len(tx.scopes) > 0 && proposed.Scopes == nil {
 		proposed.Scopes = make(map[string]ScopeRecord)
 	}
@@ -205,12 +241,6 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 	for id, op := range tx.attempts {
 		proposed.Attempts[id] = op.value
 	}
-	tx.applyStreams(&proposed)
-	tx.applyMessages(&proposed)
-	if prepare != nil {
-		if err := prepare(&proposed); err != nil {
-			return err
-		}
-	}
-	return s.save(ctx, proposed)
+	tx.applyStreams(proposed)
+	tx.applyMessages(proposed)
 }
