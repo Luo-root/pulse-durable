@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"fmt"
+	"reflect"
 )
 
 // recordTransaction stages only the objects changed by its callers. Construction,
@@ -11,6 +12,8 @@ import (
 type recordTransaction struct {
 	baseRevision uint64
 	attempts     map[string]putAttempt
+	scopes       map[string]ScopeRecord // creation only; Nodes are always empty
+	nodes        map[nodeRecordKey]putNode
 	err          error
 }
 
@@ -46,10 +49,92 @@ func (tx *recordTransaction) putAttempt(id string, expected *AttemptRecord, valu
 	return nil
 }
 
+type nodeRecordKey struct{ scope, node string }
+
+type putNode struct {
+	expected NodeRecord
+	absent   bool
+	value    NodeRecord
+}
+
+// createScope has an Absent precondition. It stages only a scope header, never
+// a caller's Nodes map. Even empty nil/non-nil maps are not retained. Nodes for
+// the new scope must be staged separately with putNode.
+func (tx *recordTransaction) createScope(id string, value ScopeRecord) error {
+	if tx.err != nil {
+		return tx.err
+	}
+	if len(value.Nodes) != 0 {
+		tx.err = fmt.Errorf("%w: new scope %q contains nodes", ErrConflict, id)
+		return tx.err
+	}
+	value.Nodes = nil
+	if previous, ok := tx.scopes[id]; ok && !reflect.DeepEqual(previous, value) {
+		tx.err = fmt.Errorf("%w: conflicting scope creation for %q", ErrConflict, id)
+		return tx.err
+	}
+	if tx.scopes == nil {
+		tx.scopes = make(map[string]ScopeRecord)
+	}
+	tx.scopes[id] = value
+	return nil
+}
+
+// copyTransactionNode preserves nil versus empty slices for exact old-value
+// preconditions. cloneValues intentionally normalizes empty slices on the
+// existing full-record Save path; that must not weaken transaction comparison.
+func copyTransactionNode(node NodeRecord) NodeRecord {
+	if node.Outputs != nil {
+		outputs := make([]ValueRecord, len(node.Outputs))
+		copy(outputs, node.Outputs)
+		for i := range outputs {
+			if data := outputs[i].Data; data != nil {
+				outputs[i].Data = make([]byte, len(data))
+				copy(outputs[i].Data, data)
+			}
+			if stream := outputs[i].Stream; stream != nil {
+				value := *stream
+				outputs[i].Stream = &value
+			}
+		}
+		node.Outputs = outputs
+	}
+	return node
+}
+
+// putNode captures an exact old value, or Absent when expected is nil. Repeated
+// writes coalesce only when their original preconditions agree. Scope and node
+// form the key, so equal node IDs in different scopes remain independent.
+func (tx *recordTransaction) putNode(scope, id string, expected *NodeRecord, value NodeRecord) error {
+	if tx.err != nil {
+		return tx.err
+	}
+	key := nodeRecordKey{scope, id}
+	op := putNode{absent: expected == nil, value: copyTransactionNode(value)}
+	if expected != nil {
+		op.expected = copyTransactionNode(*expected)
+	}
+	if previous, ok := tx.nodes[key]; ok && (previous.absent != op.absent || !reflect.DeepEqual(previous.expected, op.expected)) {
+		tx.err = fmt.Errorf("%w: conflicting node precondition for %q/%q", ErrConflict, scope, id)
+		return tx.err
+	}
+	if tx.nodes == nil {
+		tx.nodes = make(map[nodeRecordKey]putNode)
+	}
+	tx.nodes[key] = op
+	return nil
+}
+
 // commitRecordTransaction shares save's confirmed-before-publish and failure
 // sealing semantics. Preconditions are checked before allocating the full legacy
 // proposal; no staged change can modify the live record on failure.
 func (s *runState) commitRecordTransaction(ctx context.Context, tx *recordTransaction) error {
+	return s.commitRecordTransactionPrepared(ctx, tx, nil)
+}
+
+// prepare retains commit's existing stream validation/finish rules on the
+// isolated legacy proposal. It runs only after every overlay precondition passes.
+func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *recordTransaction, prepare func(*RunRecord) error) error {
 	if s.stopped != nil {
 		return s.stopped
 	}
@@ -68,15 +153,51 @@ func (s *runState) commitRecordTransaction(ctx context.Context, tx *recordTransa
 			return fmt.Errorf("%w: attempt precondition for %q", ErrConflict, id)
 		}
 	}
-	if len(tx.attempts) == 0 {
+	for id := range tx.scopes {
+		if _, exists := s.record.Scopes[id]; exists {
+			return fmt.Errorf("%w: scope creation precondition for %q", ErrConflict, id)
+		}
+	}
+	for key, op := range tx.nodes {
+		scope, exists := s.record.Scopes[key.scope]
+		_, created := tx.scopes[key.scope]
+		if !exists && !created {
+			return fmt.Errorf("%w: missing node scope %q", ErrConflict, key.scope)
+		}
+		current, exists := scope.Nodes[key.node]
+		if exists == op.absent || (exists && !reflect.DeepEqual(current, op.expected)) {
+			return fmt.Errorf("%w: node precondition for %q/%q", ErrConflict, key.scope, key.node)
+		}
+	}
+	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes) == 0 {
 		return nil
 	}
 	proposed := cloneRecord(s.record)
-	if proposed.Attempts == nil {
+	if len(tx.scopes) > 0 && proposed.Scopes == nil {
+		proposed.Scopes = make(map[string]ScopeRecord)
+	}
+	for id, scope := range tx.scopes {
+		scope.Nodes = make(map[string]NodeRecord)
+		proposed.Scopes[id] = scope
+	}
+	for key, op := range tx.nodes {
+		scope := proposed.Scopes[key.scope]
+		if scope.Nodes == nil {
+			scope.Nodes = make(map[string]NodeRecord)
+		}
+		scope.Nodes[key.node] = copyTransactionNode(op.value)
+		proposed.Scopes[key.scope] = scope
+	}
+	if len(tx.attempts) > 0 && proposed.Attempts == nil {
 		proposed.Attempts = make(map[string]AttemptRecord, len(tx.attempts))
 	}
 	for id, op := range tx.attempts {
 		proposed.Attempts[id] = op.value
+	}
+	if prepare != nil {
+		if err := prepare(&proposed); err != nil {
+			return err
+		}
 	}
 	return s.save(ctx, proposed)
 }
