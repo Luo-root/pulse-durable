@@ -192,17 +192,84 @@ func TestNormalBidirectional(t *testing.T) {
 	}
 }
 
+// delayedWriteReturn exposes the interval between delivery and pump accounting.
+// The wrapped Write delivers real bytes before waiting for the test to release it.
+type delayedWriteReturn struct {
+	net.Conn
+	release <-chan struct{}
+}
+
+func (c delayedWriteReturn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	<-c.release
+	return n, err
+}
+
+func TestPauseDoesNotJoinDeliveredWriteAccounting(t *testing.T) {
+	p := proxy(t, echo(t))
+	src, sender := net.Pipe()
+	dst, receiver := net.Pipe()
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		unblock()
+		src.Close()
+		sender.Close()
+		dst.Close()
+		receiver.Close()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("pump shutdown blocked")
+		}
+	})
+	go func() {
+		defer close(done)
+		p.pump(ctx, src, delayedWriteReturn{Conn: dst, release: release}, ServerToClient)
+	}()
+	go func() { _, _ = io.WriteString(sender, "warm") }()
+	receiver.SetReadDeadline(time.Now().Add(3 * time.Second))
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(receiver, b); err != nil || string(b) != "warm" {
+		t.Fatalf("warm delivery: %q, %v", b, err)
+	}
+	if _, err := p.Pause(ServerToClient); err != nil {
+		t.Fatal(err)
+	}
+	before := p.Snapshot().Directions[ServerToClient]
+	if before.ForwardedBytes != 0 {
+		t.Fatalf("Write has not returned, got %+v", before)
+	}
+	unblock()
+	eventually(t, func() bool {
+		return p.Snapshot().Directions[ServerToClient].ForwardedBytes == 4
+	})
+	if s := p.Snapshot().Directions[ServerToClient]; s.Interceptions != 0 {
+		t.Fatalf("only the pre-Pause warm bytes were sent, got %+v", s)
+	}
+}
+
 func TestPauseResumeBothDirectionsExistingAndNew(t *testing.T) {
 	for _, d := range []Direction{ClientToServer, ServerToClient} {
 		t.Run(map[Direction]string{ClientToServer: "request", ServerToClient: "response"}[d], func(t *testing.T) {
 			p := proxy(t, echo(t))
 			old := dial(t, p)
 			roundtrip(t, old, "warm")
+			// Receiving warm does not join the pumps' post-Write accounting.
+			eventually(t, func() bool {
+				s := p.Snapshot()
+				return s.Directions[0].ForwardedBytes == 4 && s.Directions[1].ForwardedBytes == 4
+			})
 			base, err := p.Pause(d)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, c := range []net.Conn{old, dial(t, p)} {
+			conns := []net.Conn{old, dial(t, p)}
+			for _, c := range conns {
 				before := p.Snapshot().Directions[d].ForwardedBytes
 				if _, err := io.WriteString(c, "held"); err != nil {
 					t.Fatal(err)
@@ -216,9 +283,14 @@ func TestPauseResumeBothDirectionsExistingAndNew(t *testing.T) {
 			if err := p.Resume(d); err != nil {
 				t.Fatal(err)
 			}
-			b := make([]byte, 4)
-			if _, err := io.ReadFull(old, b); err != nil {
-				t.Fatal(err)
+			for i, c := range conns {
+				b := make([]byte, 4)
+				if _, err := io.ReadFull(c, b); err != nil {
+					t.Fatalf("connection %d resume: %v", i, err)
+				}
+				if string(b) != "held" {
+					t.Fatalf("connection %d resumed payload: %q", i, b)
+				}
 			}
 		})
 	}
