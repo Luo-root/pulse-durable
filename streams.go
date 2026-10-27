@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 
 	"github.com/Luo-root/pulse"
 )
@@ -177,16 +176,23 @@ func (s *runState) decodeStreamRecord(record StreamRecord, resumed bool) (pulse.
 func (s *runState) currentStream(record RunRecord, id pulse.CheckpointStreamID, active bool) (string, StreamRecord, error) {
 	key := streamKey(streamID(id))
 	stream, ok := record.Streams[key]
-	if !ok || stream.Stream.ID != streamID(id) {
-		return "", StreamRecord{}, fmt.Errorf("durable: unknown stream or stale generation")
-	}
-	if err := s.ancestry(stream.Stream.Attempt, active); err != nil {
+	if err := s.checkCurrentStream(stream.Stream, ok, id, active); err != nil {
 		return "", StreamRecord{}, err
 	}
-	if stream.Stream.Terminal == string(pulse.StreamFailed) || stream.Stream.Terminal == string(pulse.StreamCanceled) {
-		return "", StreamRecord{}, fmt.Errorf("durable: failed stream cannot advance")
-	}
 	return key, stream, nil
+}
+
+func (s *runState) checkCurrentStream(stream StreamDescriptorRecord, exists bool, id pulse.CheckpointStreamID, active bool) error {
+	if !exists || stream.ID != streamID(id) {
+		return fmt.Errorf("durable: unknown stream or stale generation")
+	}
+	if err := s.ancestry(stream.Attempt, active); err != nil {
+		return err
+	}
+	if stream.Terminal == string(pulse.StreamFailed) || stream.Terminal == string(pulse.StreamCanceled) {
+		return fmt.Errorf("durable: failed stream cannot advance")
+	}
+	return nil
 }
 
 func (s *runState) appendTo(record *RunRecord, req pulse.CheckpointStreamAppend) error {
@@ -199,14 +205,14 @@ func (s *runState) appendTo(record *RunRecord, req pulse.CheckpointStreamAppend)
 }
 
 func (s *runState) stageAppend(tx *recordTransaction, record RunRecord, req pulse.CheckpointStreamAppend) error {
-	key, stream, err := s.currentStream(record, req.Stream, true)
+	view, stream, err := s.currentStreamView(tx, record, req.Stream, true)
 	if err != nil {
 		return err
 	}
-	old := headerOf(stream)
+	old := stream
 	if req.Attempt != stream.Stream.Attempt || req.Site.Graph != stream.Stream.Graph || req.Site.Path != stream.Stream.Path ||
 		stream.Stream.Terminal != "" || stream.Stream.Stopped || stream.LastSequence == ^uint64(0) || req.Message.Sequence != stream.LastSequence+1 ||
-		len(stream.Pending) >= stream.Stream.Capacity {
+		view.count() >= stream.Stream.Capacity {
 		return fmt.Errorf("durable: invalid stream append owner, position or capacity")
 	}
 	declaration, err := s.streamDeclaration(stream.Stream.ID)
@@ -227,11 +233,11 @@ func (s *runState) stageAppend(tx *recordTransaction, record RunRecord, req puls
 	}
 	next := old
 	next.LastSequence, next.Cursor = req.Message.Sequence, cursor
-	if err := tx.putStream(key, &old, next); err != nil {
+	if err := view.putHeader(next); err != nil {
 		return err
 	}
 	message := StreamMessageRecord{Sequence: req.Message.Sequence, Value: value}
-	return tx.putPending(key, message.Sequence, nil, &message)
+	return view.putPending(message.Sequence, &message)
 }
 
 func (s *runState) appendStream(ctx context.Context, req pulse.CheckpointStreamAppend) error {
@@ -248,32 +254,54 @@ func (s *runState) appendStream(ctx context.Context, req pulse.CheckpointStreamA
 }
 
 func (s *runState) acknowledge(record *RunRecord, input pulse.CheckpointStreamAcknowledgement) error {
-	key, stream, err := s.currentStream(*record, input.Stream, false)
-	if err != nil {
-		return err
-	}
-	index := sort.Search(len(stream.Pending), func(i int) bool { return stream.Pending[i].Sequence >= input.Sequence })
-	if index == len(stream.Pending) || stream.Pending[index].Sequence != input.Sequence || stream.Stream.Stopped {
-		return fmt.Errorf("durable: message is not pending in this reading group")
-	}
 	tx := newRecordTransaction(record.Revision)
-	old := headerOf(stream)
-	next := old
-	if len(stream.Pending) == 1 {
-		next.AckedThrough = stream.LastSequence
-	} else if index == 0 {
-		next.AckedThrough = stream.Pending[1].Sequence - 1
-	} else {
-		next.AckedThrough = stream.Pending[0].Sequence - 1
-	}
-	if err := tx.putStream(key, &old, next); err != nil {
-		return err
-	}
-	if err := tx.putPending(key, input.Sequence, &stream.Pending[index], nil); err != nil {
+	if err := s.stageAcknowledgement(tx, *record, input); err != nil {
 		return err
 	}
 	tx.applyStreams(record)
 	return nil
+}
+
+func (s *runState) stageAcknowledgement(tx *recordTransaction, record RunRecord, input pulse.CheckpointStreamAcknowledgement) error {
+	view, stream, err := s.currentStreamView(tx, record, input.Stream, false)
+	if err != nil {
+		return err
+	}
+	if view.pending(input.Sequence) == nil || stream.Stream.Stopped {
+		return fmt.Errorf("durable: message is not pending in this reading group")
+	}
+	if err := view.putPending(input.Sequence, nil); err != nil {
+		return err
+	}
+	stream.AckedThrough = stream.LastSequence
+	if first := view.firstPending(); first != nil {
+		stream.AckedThrough = first.Sequence - 1
+	}
+	return view.putHeader(stream)
+}
+
+func (s *runState) stageStop(tx *recordTransaction, record RunRecord, id pulse.CheckpointStreamID) error {
+	view, stream, err := s.currentStreamView(tx, record, id, false)
+	if err != nil {
+		return err
+	}
+	// Stop drops outstanding obligations without advancing the ACK frontier.
+	for _, message := range record.Streams[view.key].Pending {
+		if view.pending(message.Sequence) != nil {
+			if err := view.putPending(message.Sequence, nil); err != nil {
+				return err
+			}
+		}
+	}
+	for key, op := range tx.pending {
+		if key.stream == view.key && !op.remove {
+			if err := view.putPending(key.sequence, nil); err != nil {
+				return err
+			}
+		}
+	}
+	stream.Stream.Stopped = true
+	return view.putHeader(stream)
 }
 
 func (s *runState) stageFinish(tx *recordTransaction, record RunRecord, req pulse.CheckpointStreamFinish, success bool) error {

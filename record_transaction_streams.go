@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+
+	"github.com/Luo-root/pulse"
 )
 
 // streamHeader deliberately excludes Pending: messages have independent keys.
@@ -146,6 +148,99 @@ func (tx *recordTransaction) applyStreams(record *RunRecord) {
 		}
 		record.Streams[key.stream] = stream
 	}
+}
+
+// streamView exposes headers and individual pending messages without cloning a
+// RunRecord or Pending slice. All writes keep their original base precondition.
+type streamView struct {
+	tx   *recordTransaction
+	base RunRecord
+	key  string
+}
+
+func (v streamView) header() (streamHeader, bool) {
+	if op, ok := v.tx.streams[v.key]; ok {
+		return copyStreamHeader(op.value), true
+	}
+	stream, ok := v.base.Streams[v.key]
+	return headerOf(stream), ok
+}
+func (v streamView) putHeader(value streamHeader) error {
+	stream, ok := v.base.Streams[v.key]
+	var expected *streamHeader
+	if ok {
+		h := headerOf(stream)
+		expected = &h
+	}
+	return v.tx.putStream(v.key, expected, value)
+}
+func (v streamView) pending(sequence uint64) *StreamMessageRecord {
+	if op, ok := v.tx.pending[pendingKey{v.key, sequence}]; ok {
+		if op.remove {
+			return nil
+		}
+		value := op.value
+		return &value
+	}
+	pending := v.base.Streams[v.key].Pending
+	i := pendingIndex(pending, sequence)
+	if i < len(pending) && pending[i].Sequence == sequence {
+		return &pending[i]
+	}
+	return nil
+}
+func (v streamView) putPending(sequence uint64, value *StreamMessageRecord) error {
+	pending := v.base.Streams[v.key].Pending
+	i := pendingIndex(pending, sequence)
+	var expected *StreamMessageRecord
+	if i < len(pending) && pending[i].Sequence == sequence {
+		expected = &pending[i]
+	}
+	// An append followed by removal cancels the new object entirely.
+	if expected == nil && value == nil {
+		delete(v.tx.pending, pendingKey{v.key, sequence})
+		return nil
+	}
+	return v.tx.putPending(v.key, sequence, expected, value)
+}
+func (v streamView) count() int {
+	count := len(v.base.Streams[v.key].Pending)
+	for key, op := range v.tx.pending {
+		if key.stream != v.key {
+			continue
+		}
+		if op.absent && !op.remove {
+			count++
+		}
+		if !op.absent && op.remove {
+			count--
+		}
+	}
+	return count
+}
+func (v streamView) firstPending() *StreamMessageRecord {
+	var first *StreamMessageRecord
+	for _, message := range v.base.Streams[v.key].Pending {
+		if current := v.pending(message.Sequence); current != nil {
+			first = current
+			break
+		}
+	}
+	for key, op := range v.tx.pending {
+		if key.stream == v.key && !op.remove && (first == nil || key.sequence < first.Sequence) {
+			value := op.value
+			first = &value
+		}
+	}
+	return first
+}
+func (s *runState) currentStreamView(tx *recordTransaction, record RunRecord, id pulse.CheckpointStreamID, active bool) (streamView, streamHeader, error) {
+	v := streamView{tx: tx, base: record, key: streamKey(streamID(id))}
+	h, exists := v.header()
+	if err := s.checkCurrentStream(h.Stream, exists, id, active); err != nil {
+		return v, h, err
+	}
+	return v, h, nil
 }
 
 func (tx *recordTransaction) failStreamOwner(record RunRecord, id string) error {

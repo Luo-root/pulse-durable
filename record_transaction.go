@@ -10,13 +10,16 @@ import (
 // staging and commit require runState.mu; this is not a concurrent Store protocol.
 // The legacy Session path still materializes and saves a complete format2 record.
 type recordTransaction struct {
-	baseRevision uint64
-	attempts     map[string]putAttempt
-	scopes       map[string]ScopeRecord // creation only; Nodes are always empty
-	nodes        map[nodeRecordKey]putNode
-	streams      map[string]putStreamHeader
-	pending      map[pendingKey]pendingOperation
-	err          error
+	baseRevision   uint64
+	attempts       map[string]putAttempt
+	scopes         map[string]ScopeRecord // creation only; Nodes are always empty
+	nodes          map[nodeRecordKey]putNode
+	streams        map[string]putStreamHeader
+	pending        map[pendingKey]pendingOperation
+	messages       map[string]putMessage
+	managed        map[string]putManagedHeader
+	managedEntries map[managedEntryKey]managedEntryOperation
+	err            error
 }
 
 type putAttempt struct {
@@ -174,7 +177,10 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 	if err := tx.checkStreams(s.record); err != nil {
 		return err
 	}
-	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes)+len(tx.streams)+len(tx.pending) == 0 {
+	if err := tx.checkMessages(s.record); err != nil {
+		return err
+	}
+	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes)+len(tx.streams)+len(tx.pending)+len(tx.messages)+len(tx.managed)+len(tx.managedEntries) == 0 {
 		return nil
 	}
 	proposed := cloneRecord(s.record)
@@ -200,6 +206,7 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 		proposed.Attempts[id] = op.value
 	}
 	tx.applyStreams(&proposed)
+	tx.applyMessages(&proposed)
 	if prepare != nil {
 		if err := prepare(&proposed); err != nil {
 			return err
