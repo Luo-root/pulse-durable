@@ -149,6 +149,72 @@ func (s *session) saveOwned(ctx context.Context, req d.SaveRequest) (err error) 
 	returned = true
 	return err
 }
+
+// deltaSession is the explicit capability wrapper passed to Runtime. It keeps
+// the base session's lease, sealing and in-flight accounting; it never exposes
+// delta support through the legacy session value.
+type deltaSession struct {
+	*session
+	coordinator d.DeltaCoordinator
+}
+
+var _ durable.DeltaSession = (*deltaSession)(nil)
+
+func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ack durable.CommitAck, err error) {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	op, done, err := s.begin(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	defer done()
+	wire, err := durable.MarshalChangeBatch(batch)
+	if err != nil {
+		s.seal(true)
+		return durable.CommitAck{}, err
+	}
+	id, err := randomID()
+	if err != nil {
+		s.seal(true)
+		return durable.CommitAck{}, err
+	}
+	// Digest binds the canonical batch wire to the operation and immutable
+	// ownership token. The random ID is only an idempotency identity.
+	semantics, err := json.Marshal(struct {
+		Operation string
+		Token     d.Token
+		Batch     []byte
+	}{"apply_owned", s.token, wire})
+	if err != nil {
+		s.seal(true)
+		return durable.CommitAck{}, err
+	}
+	h := sha256.Sum256(semantics)
+	m := d.Mutation{ID: id, Digest: hex.EncodeToString(h[:])}
+	start := time.Now()
+	returned := false
+	defer func() {
+		if !returned {
+			_ = recover()
+			s.seal(true)
+			ack, err = durable.CommitAck{}, d.ErrUnknown
+			return
+		}
+		if err != nil {
+			s.seal(true)
+		}
+		if s.observe != nil {
+			s.observe(Event{Kind: "apply", Token: s.token, Mutation: m, Reason: reason(err), Duration: time.Since(start)})
+		}
+	}()
+	ack, err = s.coordinator.ApplyOwned(op, s.token, m, batch)
+	returned = true
+	if err == nil && ack.Header != batch.Header() {
+		err = durable.ErrConflict
+	}
+	return ack, err
+}
+
 func (s *session) Save(ctx context.Context, r durable.RunRecord, expected uint64) error {
 	s.mu.Lock()
 	closed := s.closed

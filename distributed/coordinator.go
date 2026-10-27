@@ -143,6 +143,17 @@ type Coordinator interface {
 	Cancel(context.Context, Identity, Mutation) (Snapshot, error)
 }
 
+// DeltaCoordinator is the optional owned-delta capability. It is deliberately
+// separate from Coordinator so legacy backends remain valid and full-save
+// execution remains the default. Implementations must fence token ownership,
+// bind the batch header to the authoritative task/record, and atomically apply
+// the batch under the same ownership lock. Mutation covers the canonical batch
+// wire plus operation and token semantics; an error may mean the write committed.
+type DeltaCoordinator interface {
+	Coordinator
+	ApplyOwned(context.Context, Token, Mutation, durable.ChangeBatch) (durable.CommitAck, error)
+}
+
 // PullPolicy bounds admission, not DB ownership. Active includes pending claims,
 // unconfirmed commits, running executions and draining work until all saves exit.
 // Serialize reservation + Claim locally: recomputing the same free slots in two
