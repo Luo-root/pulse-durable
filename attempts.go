@@ -163,11 +163,13 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	if err != nil {
 		return pulse.CheckpointAttempt{}, err
 	}
-	proposed := cloneRecord(s.record)
+	tx := newRecordTransaction(s.record.Revision)
 	a := AttemptRecord{Parent: req.Parent, NodeID: req.NodeID, Boundary: req.Boundary,
 		Index: latest.Index + 1, Limit: req.Limit, State: AttemptActive}
-	proposed.Attempts[id] = a
-	if err := s.save(ctx, proposed); err != nil {
+	if err := tx.putAttempt(id, nil, a); err != nil {
+		return pulse.CheckpointAttempt{}, err
+	}
+	if err := s.commitRecordTransaction(ctx, tx); err != nil {
 		return pulse.CheckpointAttempt{}, err
 	}
 	resumed := false
@@ -193,10 +195,13 @@ func (s *runState) failAttempt(ctx context.Context, id string) error {
 	if err := s.activeAttempt(id); err != nil {
 		return err
 	}
-	proposed := cloneRecord(s.record)
+	tx := newRecordTransaction(s.record.Revision)
+	expected := a
 	a.State = AttemptFailed
-	proposed.Attempts[id] = a
-	return s.save(ctx, proposed)
+	if err := tx.putAttempt(id, &expected, a); err != nil {
+		return err
+	}
+	return s.commitRecordTransaction(ctx, tx)
 }
 
 func (s *runState) rootAttempt(id string) (AttemptRecord, string, error) {
