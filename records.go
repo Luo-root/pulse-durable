@@ -122,18 +122,18 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 	if err := tx.putAttempt(req.Attempt, &expected, a); err != nil {
 		return err
 	}
-	return s.commitRecordTransactionPrepared(ctx, tx, func(proposed *RunRecord) error {
-		finished := make(map[string]bool)
-		for _, finish := range req.Streams {
-			key := streamKey(streamID(finish.Stream))
-			if finish.Attempt != req.Attempt || finish.Stream.Scope != req.Scope || finish.Stream.NodeID != req.Node.NodeID || finished[key] {
-				return fmt.Errorf("durable: node commit cannot finish another source")
-			}
-			finished[key] = true
-			if err := s.applyFinish(proposed, finish, true); err != nil {
-				return err
-			}
+	finished := make(map[string]bool)
+	for _, finish := range req.Streams {
+		key := streamKey(streamID(finish.Stream))
+		if finish.Attempt != req.Attempt || finish.Stream.Scope != req.Scope || finish.Stream.NodeID != req.Node.NodeID || finished[key] {
+			return fmt.Errorf("durable: node commit cannot finish another source")
 		}
+		finished[key] = true
+		if err := s.stageFinish(tx, s.record, finish, true); err != nil {
+			return err
+		}
+	}
+	return s.commitRecordTransactionPrepared(ctx, tx, func(proposed *RunRecord) error {
 		for key, stream := range proposed.Streams {
 			if stream.Stream.Attempt == req.Attempt && stream.Stream.Terminal == "" && !finished[key] {
 				return fmt.Errorf("durable: node commit omits an owned source finish")

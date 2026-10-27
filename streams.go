@@ -112,23 +112,27 @@ func (s *runState) openStream(ctx context.Context, req pulse.CheckpointStreamOpe
 		s.opened = make(map[string]bool)
 	}
 	if !openedThisRun {
-		proposed := cloneRecord(s.record)
+		tx := newRecordTransaction(s.record.Revision)
+		old := headerOf(record)
 		if exists {
 			if record.Stream.ID.Generation == ^uint64(0) {
 				return pulse.CheckpointStreamRecord{}, fmt.Errorf("durable: stream generation exhausted")
 			}
 			record.Stream.ID.Generation++
 		}
-		if proposed.Streams == nil {
-			proposed.Streams = make(map[string]StreamRecord)
+		var expected *streamHeader
+		if exists {
+			expected = &old
 		}
-		proposed.Streams[storageKey] = record
+		if err := tx.putStream(storageKey, expected, headerOf(record)); err != nil {
+			return pulse.CheckpointStreamRecord{}, err
+		}
 		// 所有解码也须在 Save 之前完成，编解码失败不能留下半个 Open。
 		result, err := s.decodeStreamRecord(record, exists)
 		if err != nil {
 			return result, err
 		}
-		if err := s.save(ctx, proposed); err != nil {
+		if err := s.commitRecordTransaction(ctx, tx); err != nil {
 			return pulse.CheckpointStreamRecord{}, err
 		}
 		s.opened[storageKey] = exists
@@ -186,10 +190,20 @@ func (s *runState) currentStream(record RunRecord, id pulse.CheckpointStreamID, 
 }
 
 func (s *runState) appendTo(record *RunRecord, req pulse.CheckpointStreamAppend) error {
-	key, stream, err := s.currentStream(*record, req.Stream, true)
+	tx := newRecordTransaction(record.Revision)
+	if err := s.stageAppend(tx, *record, req); err != nil {
+		return err
+	}
+	tx.applyStreams(record)
+	return nil
+}
+
+func (s *runState) stageAppend(tx *recordTransaction, record RunRecord, req pulse.CheckpointStreamAppend) error {
+	key, stream, err := s.currentStream(record, req.Stream, true)
 	if err != nil {
 		return err
 	}
+	old := headerOf(stream)
 	if req.Attempt != stream.Stream.Attempt || req.Site.Graph != stream.Stream.Graph || req.Site.Path != stream.Stream.Path ||
 		stream.Stream.Terminal != "" || stream.Stream.Stopped || stream.LastSequence == ^uint64(0) || req.Message.Sequence != stream.LastSequence+1 ||
 		len(stream.Pending) >= stream.Stream.Capacity {
@@ -211,11 +225,13 @@ func (s *runState) appendTo(record *RunRecord, req pulse.CheckpointStreamAppend)
 		}
 		cursor = &encoded
 	}
-	stream.LastSequence = req.Message.Sequence
-	stream.Pending = append(stream.Pending, StreamMessageRecord{Sequence: req.Message.Sequence, Value: value})
-	stream.Cursor = cursor
-	record.Streams[key] = stream
-	return nil
+	next := old
+	next.LastSequence, next.Cursor = req.Message.Sequence, cursor
+	if err := tx.putStream(key, &old, next); err != nil {
+		return err
+	}
+	message := StreamMessageRecord{Sequence: req.Message.Sequence, Value: value}
+	return tx.putPending(key, message.Sequence, nil, &message)
 }
 
 func (s *runState) appendStream(ctx context.Context, req pulse.CheckpointStreamAppend) error {
@@ -224,11 +240,11 @@ func (s *runState) appendStream(ctx context.Context, req pulse.CheckpointStreamA
 	if err := s.streamReady(ctx); err != nil {
 		return err
 	}
-	proposed := cloneRecord(s.record)
-	if err := s.appendTo(&proposed, req); err != nil {
+	tx := newRecordTransaction(s.record.Revision)
+	if err := s.stageAppend(tx, s.record, req); err != nil {
 		return err
 	}
-	return s.save(ctx, proposed)
+	return s.commitRecordTransaction(ctx, tx)
 }
 
 func (s *runState) acknowledge(record *RunRecord, input pulse.CheckpointStreamAcknowledgement) error {
@@ -240,18 +256,28 @@ func (s *runState) acknowledge(record *RunRecord, input pulse.CheckpointStreamAc
 	if index == len(stream.Pending) || stream.Pending[index].Sequence != input.Sequence || stream.Stream.Stopped {
 		return fmt.Errorf("durable: message is not pending in this reading group")
 	}
-	stream.Pending = append(stream.Pending[:index:index], stream.Pending[index+1:]...)
-	if len(stream.Pending) == 0 {
-		stream.AckedThrough = stream.LastSequence
+	tx := newRecordTransaction(record.Revision)
+	old := headerOf(stream)
+	next := old
+	if len(stream.Pending) == 1 {
+		next.AckedThrough = stream.LastSequence
+	} else if index == 0 {
+		next.AckedThrough = stream.Pending[1].Sequence - 1
 	} else {
-		stream.AckedThrough = stream.Pending[0].Sequence - 1
+		next.AckedThrough = stream.Pending[0].Sequence - 1
 	}
-	record.Streams[key] = stream
+	if err := tx.putStream(key, &old, next); err != nil {
+		return err
+	}
+	if err := tx.putPending(key, input.Sequence, &stream.Pending[index], nil); err != nil {
+		return err
+	}
+	tx.applyStreams(record)
 	return nil
 }
 
-func (s *runState) applyFinish(record *RunRecord, req pulse.CheckpointStreamFinish, success bool) error {
-	key, stream, err := s.currentStream(*record, req.Stream, true)
+func (s *runState) stageFinish(tx *recordTransaction, record RunRecord, req pulse.CheckpointStreamFinish, success bool) error {
+	key, stream, err := s.currentStream(record, req.Stream, true)
 	if err != nil {
 		return err
 	}
@@ -274,9 +300,10 @@ func (s *runState) applyFinish(record *RunRecord, req pulse.CheckpointStreamFini
 	if !reflect.DeepEqual(cursor, stream.Cursor) {
 		return fmt.Errorf("durable: source finish changed the last accepted cursor")
 	}
-	stream.Stream.Terminal = string(req.Terminal)
-	record.Streams[key] = stream
-	return nil
+	old := headerOf(stream)
+	next := old
+	next.Stream.Terminal = string(req.Terminal)
+	return tx.putStream(key, &old, next)
 }
 
 func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamFinish) error {
@@ -312,17 +339,16 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 		}
 		return nil
 	}
-	proposed := cloneRecord(s.record)
-	if err := s.applyFinish(&proposed, req, false); err != nil {
+	tx := newRecordTransaction(s.record.Revision)
+	if err := s.stageFinish(tx, s.record, req, false); err != nil {
 		return err
 	}
 	if req.Terminal == pulse.StreamFailed {
-		if err := checkFailedStreamOwner(proposed, req.Attempt); err != nil {
+		if err := tx.failStreamOwner(s.record, req.Attempt); err != nil {
 			return err
 		}
-		failStreamOwner(&proposed, req.Attempt)
 	}
-	return s.save(ctx, proposed)
+	return s.commitRecordTransaction(ctx, tx)
 }
 
 // A failed terminal is a full-chain business verdict, not a reliable operation
@@ -338,46 +364,21 @@ func checkFailedStreamOwner(record RunRecord, id string) error {
 	return nil
 }
 
-func failStreamOwner(record *RunRecord, id string) {
-	root := record.Attempts[id]
-	root.State = AttemptFailed
-	record.Attempts[id] = root
-	for key, stream := range record.Streams {
-		if stream.Stream.Attempt == id && stream.Stream.Terminal == "" {
-			stream.Stream.Terminal = string(pulse.StreamFailed)
-			record.Streams[key] = stream
-		}
-	}
-}
-
 // Only after complete history validation: legacy format-2 saves could persist
 // one failed output before the owner failure. Reconcile live scopes in one CAS;
 // confirmed/failed ancestor history stays untouched. Canceled is not evidence.
 func (s *runState) reconcileFailedStreams(ctx context.Context) error {
-	proposed := cloneRecord(s.record)
-	changed := false
+	tx := newRecordTransaction(s.record.Revision)
 	for _, stream := range s.record.Streams {
 		root := s.record.Attempts[stream.Stream.Attempt]
 		if stream.Stream.Terminal != string(pulse.StreamFailed) || s.activeScope(root.Parent) != nil {
 			continue
 		}
-		if err := checkFailedStreamOwner(s.record, stream.Stream.Attempt); err != nil {
+		if err := tx.failStreamOwner(s.record, stream.Stream.Attempt); err != nil {
 			return err
 		}
-		if root.State == AttemptActive {
-			changed = true
-		}
-		for _, sibling := range s.record.Streams {
-			if sibling.Stream.Attempt == stream.Stream.Attempt && sibling.Stream.Terminal == "" {
-				changed = true
-			}
-		}
-		failStreamOwner(&proposed, stream.Stream.Attempt)
 	}
-	if !changed {
-		return nil
-	}
-	return s.save(ctx, proposed)
+	return s.commitRecordTransaction(ctx, tx)
 }
 
 // The caller has validated the complete record and the requested live scope.
