@@ -64,9 +64,11 @@ func (s *runState) openChildLocked(ctx context.Context, req pulse.CheckpointChil
 			return nil, fmt.Errorf("%w: child scope identity or input mismatch", ErrConflict)
 		}
 	} else {
-		proposed := cloneRecord(s.record)
-		proposed.Scopes[req.Attempt] = ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash, Nodes: make(map[string]NodeRecord), Bindings: len(req.Bindings) > 0}
-		if err := s.save(ctx, proposed); err != nil {
+		tx := newRecordTransaction(s.record.Revision)
+		if err := tx.createScope(req.Attempt, ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash, Bindings: len(req.Bindings) > 0}); err != nil {
+			return nil, err
+		}
+		if err := s.commitRecordTransaction(ctx, tx); err != nil {
 			return nil, err
 		}
 	}
@@ -111,48 +113,53 @@ func (s *runState) commit(ctx context.Context, req pulse.CheckpointCommit) error
 	if err := s.checkDependencies(req.Scope, scope.Nodes, req.Node.NodeID, false); err != nil {
 		return err
 	}
-	proposed := cloneRecord(s.record)
-	finished := make(map[string]bool)
-	for _, finish := range req.Streams {
-		key := streamKey(streamID(finish.Stream))
-		if finish.Attempt != req.Attempt || finish.Stream.Scope != req.Scope || finish.Stream.NodeID != req.Node.NodeID || finished[key] {
-			return fmt.Errorf("durable: node commit cannot finish another source")
-		}
-		finished[key] = true
-		if err := s.applyFinish(&proposed, finish, true); err != nil {
-			return err
-		}
+	tx := newRecordTransaction(s.record.Revision)
+	if err := tx.putNode(req.Scope, node.NodeID, nil, node); err != nil {
+		return err
 	}
-	for key, stream := range proposed.Streams {
-		if stream.Stream.Attempt == req.Attempt && stream.Stream.Terminal == "" && !finished[key] {
-			return fmt.Errorf("durable: node commit omits an owned source finish")
-		}
-	}
-	for _, managed := range proposed.Managed {
-		if err := s.checkManagedValues(req.Scope, node, managed); err != nil {
-			return err
-		}
-	}
-	ps := proposed.Scopes[req.Scope]
-	ps.Nodes[node.NodeID] = node
-	proposed.Scopes[req.Scope] = ps
+	expected := a
 	a.State = AttemptConfirmed
-	proposed.Attempts[req.Attempt] = a
-	for _, value := range values {
-		if value.Stream != nil {
-			if !s.streamComesFrom(req.Scope, value.Name, value.Stream.ID, make(map[string]bool)) {
-				return fmt.Errorf("durable: node output references an unrelated source")
+	if err := tx.putAttempt(req.Attempt, &expected, a); err != nil {
+		return err
+	}
+	return s.commitRecordTransactionPrepared(ctx, tx, func(proposed *RunRecord) error {
+		finished := make(map[string]bool)
+		for _, finish := range req.Streams {
+			key := streamKey(streamID(finish.Stream))
+			if finish.Attempt != req.Attempt || finish.Stream.Scope != req.Scope || finish.Stream.NodeID != req.Node.NodeID || finished[key] {
+				return fmt.Errorf("durable: node commit cannot finish another source")
 			}
-			if err := s.checkStreamReference(proposed, *value.Stream); err != nil {
-				return err
-			}
-			// 保存新别名不能借用失败祖先下的旧来源；历史解码仍按结构保留旧成果。
-			if err := s.ancestry(value.Stream.Attempt, false); err != nil {
+			finished[key] = true
+			if err := s.applyFinish(proposed, finish, true); err != nil {
 				return err
 			}
 		}
-	}
-	return s.save(ctx, proposed)
+		for key, stream := range proposed.Streams {
+			if stream.Stream.Attempt == req.Attempt && stream.Stream.Terminal == "" && !finished[key] {
+				return fmt.Errorf("durable: node commit omits an owned source finish")
+			}
+		}
+		for _, managed := range proposed.Managed {
+			if err := s.checkManagedValues(req.Scope, node, managed); err != nil {
+				return err
+			}
+		}
+		for _, value := range values {
+			if value.Stream != nil {
+				if !s.streamComesFrom(req.Scope, value.Name, value.Stream.ID, make(map[string]bool)) {
+					return fmt.Errorf("durable: node output references an unrelated source")
+				}
+				if err := s.checkStreamReference(*proposed, *value.Stream); err != nil {
+					return err
+				}
+				// 保存新别名不能借用失败祖先下的旧来源；历史解码仍按结构保留旧成果。
+				if err := s.ancestry(value.Stream.Attempt, false); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }
 
 func (s *runState) decodeScope(scopeID string) ([]pulse.NodeCheckpoint, error) {
