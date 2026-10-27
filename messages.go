@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 
 	"github.com/Luo-root/pulse"
 )
@@ -40,9 +39,9 @@ func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageA
 	if req.Limit < 1 {
 		return pulse.CheckpointMessageAttempt{}, fmt.Errorf("durable: message retry limit must be positive")
 	}
-	// 在副本上验证当前输入；Open 不确认它。
-	probe := cloneRecord(s.record)
-	if err := s.acknowledge(&probe, req.Input); err != nil {
+	// Validate through the shared staging rules; Open does not commit the ACK.
+	probe := newRecordTransaction(s.record.Revision)
+	if err := s.stageAcknowledgement(probe, s.record, req.Input); err != nil {
 		return pulse.CheckpointMessageAttempt{}, err
 	}
 	candidate := MessageAttemptRecord{Scope: req.Scope, Parent: req.Attempt, NodeID: req.NodeID, Input: streamID(req.Input.Stream), Sequence: req.Input.Sequence, Limit: req.Limit, State: AttemptActive}
@@ -71,10 +70,13 @@ func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageA
 		}
 		if latest.State == AttemptActive {
 			if latest.Input != candidate.Input {
-				proposed := cloneRecord(s.record)
+				tx := newRecordTransaction(s.record.Revision)
+				old := latest
 				latest.Input = candidate.Input
-				proposed.Messages[latestID] = latest
-				if err := s.save(ctx, proposed); err != nil {
+				if err := tx.putMessage(latestID, &old, latest); err != nil {
+					return pulse.CheckpointMessageAttempt{}, err
+				}
+				if err := s.commitRecordTransaction(ctx, tx); err != nil {
 					return pulse.CheckpointMessageAttempt{}, err
 				}
 			}
@@ -86,12 +88,11 @@ func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageA
 		return pulse.CheckpointMessageAttempt{}, err
 	}
 	candidate.Index = latest.Index + 1
-	proposed := cloneRecord(s.record)
-	if proposed.Messages == nil {
-		proposed.Messages = make(map[string]MessageAttemptRecord)
+	tx := newRecordTransaction(s.record.Revision)
+	if err := tx.putMessage(id, nil, candidate); err != nil {
+		return pulse.CheckpointMessageAttempt{}, err
 	}
-	proposed.Messages[id] = candidate
-	if err := s.save(ctx, proposed); err != nil {
+	if err := s.commitRecordTransaction(ctx, tx); err != nil {
 		return pulse.CheckpointMessageAttempt{}, err
 	}
 	return pulse.CheckpointMessageAttempt{Attempt: pulse.CheckpointAttempt{Scope: id, Index: candidate.Index}, State: state}, nil
@@ -136,10 +137,13 @@ func (s *runState) failMessage(ctx context.Context, id string) error {
 	if message.State != AttemptActive {
 		return fmt.Errorf("durable: confirmed message cannot fail")
 	}
-	proposed := cloneRecord(s.record)
+	tx := newRecordTransaction(s.record.Revision)
+	old := message
 	message.State = AttemptFailed
-	proposed.Messages[id] = message
-	return s.save(ctx, proposed)
+	if err := tx.putMessage(id, &old, message); err != nil {
+		return err
+	}
+	return s.commitRecordTransaction(ctx, tx)
 }
 
 func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessageCommit) error {
@@ -148,7 +152,7 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 	if err := s.streamReady(ctx); err != nil {
 		return err
 	}
-	proposed := cloneRecord(s.record)
+	tx := newRecordTransaction(s.record.Revision)
 	if req.Attempt == "" {
 		for _, input := range req.Inputs {
 			if input.Stream.Scope != req.Scope {
@@ -175,8 +179,15 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 			return fmt.Errorf("durable: message commit does not confirm its input")
 		}
 		key := managedKey(req.Scope, message.Parent, message.NodeID)
-		managed := proposed.Managed[key]
-		managed.Scope, managed.Parent, managed.NodeID = req.Scope, message.Parent, message.NodeID
+		managed, exists := s.record.Managed[key]
+		var expected *managedHeader
+		if exists {
+			h := managedHeaderOf(managed)
+			expected = &h
+		}
+		if err := tx.putManaged(key, expected, managedHeader{req.Scope, message.Parent, message.NodeID}); err != nil {
+			return err
+		}
 		oldTypes := make(map[string]reflect.Type)
 		previous, err := s.decodeManagedState(managed.State)
 		if err != nil {
@@ -185,7 +196,6 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 		for _, state := range previous {
 			oldTypes[state.Name] = state.Type
 		}
-		managed.State = nil
 		seen := make(map[string]bool)
 		for _, state := range req.State {
 			if state.Name == "" || seen[state.Name] || oldTypes[state.Name] != nil && oldTypes[state.Name] != state.Type {
@@ -196,9 +206,21 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 			if err != nil {
 				return err
 			}
-			managed.State = append(managed.State, value)
+			old := managedEntry(managed.State, state.Name)
+			if old == nil || !reflect.DeepEqual(*old, value) {
+				if err := tx.putManagedEntry(managedEntryKey{key, state.Name, true}, old, &value); err != nil {
+					return err
+				}
+			}
 		}
-		sort.Slice(managed.State, func(i, j int) bool { return managed.State[i].Name < managed.State[j].Name })
+		for i := range managed.State {
+			old := &managed.State[i]
+			if !seen[old.Name] {
+				if err := tx.putManagedEntry(managedEntryKey{key, old.Name, true}, old, nil); err != nil {
+					return err
+				}
+			}
+		}
 		node := s.def.graphs[location{req.Site.Graph, req.Site.Path}].nodes[message.NodeID]
 		declared := make(map[string]pulse.CheckpointKey)
 		for _, key := range node.Provides {
@@ -217,8 +239,11 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 		if err != nil {
 			return err
 		}
-		managed.Values = append(managed.Values, values...)
-		sort.Slice(managed.Values, func(i, j int) bool { return managed.Values[i].Name < managed.Values[j].Name })
+		for i := range values {
+			if err := tx.putManagedEntry(managedEntryKey{key, values[i].Name, false}, nil, &values[i]); err != nil {
+				return err
+			}
+		}
 		for _, output := range req.Outputs {
 			root, _, err := s.rootAttempt(output.Attempt)
 			owner, _, ownerErr := s.rootAttempt(message.Parent)
@@ -226,30 +251,26 @@ func (s *runState) commitMessage(ctx context.Context, req pulse.CheckpointMessag
 				return fmt.Errorf("durable: message output has a different processing owner")
 			}
 		}
-		if proposed.Managed == nil {
-			proposed.Managed = make(map[string]ManagedRecord)
-		}
-		proposed.Managed[key] = managed
+		old := message
 		message.State = AttemptConfirmed
-		proposed.Messages[req.Attempt] = message
+		if err := tx.putMessage(req.Attempt, &old, message); err != nil {
+			return err
+		}
 	}
 	for _, input := range req.Inputs {
-		if err := s.acknowledge(&proposed, input); err != nil {
+		if err := s.stageAcknowledgement(tx, s.record, input); err != nil {
 			return err
 		}
 	}
 	for _, output := range req.Outputs {
-		if err := s.appendTo(&proposed, output); err != nil {
+		if err := s.stageAppend(tx, s.record, output); err != nil {
 			return err
 		}
 	}
 	for _, stop := range req.Stops {
-		key, stream, err := s.currentStream(proposed, stop, false)
-		if err != nil {
+		if err := s.stageStop(tx, s.record, stop); err != nil {
 			return err
 		}
-		stream.Stream.Stopped, stream.Pending = true, nil
-		proposed.Streams[key] = stream
 	}
-	return s.save(ctx, proposed)
+	return s.commitRecordTransaction(ctx, tx)
 }
