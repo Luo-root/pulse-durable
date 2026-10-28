@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/Luo-root/pulse"
@@ -53,6 +54,55 @@ func TestRegistryRejectionUsesAllowedReason(t *testing.T) {
 		})
 	}
 }
+
+type rejectedLoadCoordinator struct {
+	d.Coordinator
+	err error
+}
+
+func (c rejectedLoadCoordinator) LoadOwned(context.Context, d.Token) (durable.RunRecord, error) {
+	return durable.RunRecord{}, c.err
+}
+
+func TestLoadRejectionClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		block bool
+	}{
+		{"corrupt", d.ErrInvalidRecord, true},
+		{"wrapped_corrupt", fmt.Errorf("load: %w", d.ErrInvalidRecord), true},
+		{"invalid", d.ErrInvalid, false},
+		{"unknown", d.ErrUnknown, false},
+		{"clock", d.ErrClockRegression, false},
+		{"lease", d.ErrLeaseLost, false},
+		{"canceled", context.Canceled, false},
+		{"deadline", context.DeadlineExceeded, false},
+		{"transport", errors.New("load unavailable"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, f := fixture(t, func(*pulse.RunCtx) error { t.Error("rejected load executed business"); return nil })
+			w.cfg.Coordinator = rejectedLoadCoordinator{Coordinator: f, err: tc.err}
+			token := d.Token{Identity: f.task.Identity(), Worker: w.identity, LeaseID: "0123456789abcdef0123456789abcdef", Epoch: 1}
+			w.reserve()
+			w.execute(context.Background(), d.Claim{Token: token, Snapshot: d.Snapshot{Task: f.task, Status: d.Running}})
+			select {
+			case got := <-f.block:
+				if !tc.block || got != "invalid_record" {
+					t.Fatalf("unexpected Block: %s", got)
+				}
+			default:
+				if tc.block {
+					t.Fatal("corrupt owned record was not blocked")
+				}
+			}
+			if len(f.finish) != 0 || f.releases != 0 || f.record != nil {
+				t.Fatalf("load rejection mutated execution: finish=%d releases=%d record=%v", len(f.finish), f.releases, f.record != nil)
+			}
+		})
+	}
+}
+
 func TestFakeBlockRejectsUnknownReason(t *testing.T) {
 	_, f := fixture(t, func(*pulse.RunCtx) error { return nil })
 	if err := f.Block(context.Background(), d.Token{}, "rejected", d.Mutation{}); !errors.Is(err, d.ErrInvalid) {

@@ -54,7 +54,7 @@ func TestRetryObservationAcrossProcessExit(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRetryObservationProcess$", "-test.timeout=10s")
 		cmd.Env = append(os.Environ(), "PULSE_OBSERVATION_ROLE="+role, "PULSE_OBSERVATION_DIR="+dir, "GORACE=atexit_sleep_ms=0")
-		output, err := cmd.CombinedOutput()
+		output, err := boundedProcessOutput(cmd)
 		if ctx.Err() != nil {
 			t.Fatalf("%s process exceeded its deadline: %v\n%s", role, ctx.Err(), output)
 		}

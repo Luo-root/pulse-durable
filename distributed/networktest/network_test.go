@@ -175,7 +175,7 @@ func claim(t *testing.T, f *fixture, req d.ClaimRequest) d.Claim {
 	return cs[0]
 }
 func record(task d.Task, rev uint64) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: task.Identity().RunID, Revision: rev, Version: task.Route().BusinessVersion, Definition: task.Route().Definition, Inputs: task.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{}, Attempts: map[string]durable.AttemptRecord{}}
+	return durable.RunRecord{Format: durable.RecordFormat, RunID: task.Identity().RunID, Revision: rev, Version: task.Route().BusinessVersion, Definition: task.Route().Definition, Inputs: task.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: task.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
 }
 func mutation(t *testing.T) d.Mutation {
 	id := opaqueID(t)
@@ -285,8 +285,8 @@ func TestSaveLostResponse(t *testing.T) {
 	ctx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	save := d.SaveRequest{Token: owned.Token, ExpectedRevision: 0, Record: record(task, 1), Mutation: mutation(t)}
-	go func() { done <- f.remote.SaveOwned(ctx, save) }()
+	save := d.InitializeRequest{Token: owned.Token, Record: record(task, 1), Mutation: mutation(t)}
+	go func() { done <- f.remote.InitializeOwned(ctx, save) }()
 	barrier(t, f, after)
 	f.await(t, task, "status='running' AND revision=1 AND record IS NOT NULL AND last_mutation_id=$3", save.Mutation.ID)
 	waitUnknown(t, f, done)
@@ -332,7 +332,7 @@ func TestRenewFaultFencesOldOwner(t *testing.T) {
 			if newOwner.Token.Epoch <= old.Token.Epoch || newOwner.Token.LeaseID == old.Token.LeaseID || newOwner.Token.Worker == old.Token.Worker {
 				t.Fatal("reclaim did not fence ownership")
 			}
-			err = f.direct.SaveOwned(f.ctx, d.SaveRequest{Token: old.Token, ExpectedRevision: 0, Record: record(task, 1), Mutation: mutation(t)})
+			err = f.direct.InitializeOwned(f.ctx, d.InitializeRequest{Token: old.Token, Record: record(task, 1), Mutation: mutation(t)})
 			if !errors.Is(err, d.ErrLeaseLost) {
 				t.Fatalf("stale owner save was not fenced: %v", err)
 			}

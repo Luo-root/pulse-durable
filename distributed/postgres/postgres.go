@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,7 +26,14 @@ import (
 const MaxRecordBytes = 16 << 20
 const OperationTimeout = 5 * time.Second
 
-type Coordinator struct{ pool *pgxpool.Pool }
+type Coordinator struct {
+	pool         *pgxpool.Pool
+	projectionMu sync.Mutex
+	closed       bool
+	projections  map[d.Token]*projection
+	// Test-only observer, installed before use; receives no raw database errors.
+	clockDiagnostic func(clockDiagnostic)
+}
 
 var _ d.Coordinator = (*Coordinator)(nil)
 
@@ -79,12 +86,19 @@ func New(ctx context.Context, dsn string) (*Coordinator, error) {
 		p.Close()
 		return nil, err
 	}
-	return &Coordinator{p}, nil
+	return &Coordinator{pool: p, projections: make(map[d.Token]*projection)}, nil
 }
 
 // Close only closes local connections; it never releases a lease.
 func (c *Coordinator) Close() {
 	if c != nil && c.pool != nil {
+		c.projectionMu.Lock()
+		c.closed = true
+		for _, p := range c.projections {
+			p.revoked.Store(true)
+		}
+		clear(c.projections)
+		c.projectionMu.Unlock()
 		c.pool.Close()
 	}
 }
@@ -170,6 +184,7 @@ func (c *Coordinator) call(ctx context.Context, op string, a map[string]any, wri
 	// A single function invocation is one implicit transaction, including its events.
 	err = c.pool.QueryRow(ctx, "SELECT pulse_durable_distributed.api($1,$2::jsonb)", op, b).Scan(&result)
 	if err != nil {
+		c.observeClockDiagnostic(err)
 		return nil, scrub(err, write)
 	}
 	return result, nil
@@ -243,11 +258,10 @@ func decodeSnapshot(b []byte) (d.Snapshot, d.Token, []byte, error) {
 		if w.Record != nil {
 			return d.Snapshot{}, d.Token{}, nil, d.ErrInvalid
 		}
-	} else {
-		if _, err = decodeRecord(t, n, w.Record); err != nil {
-			return d.Snapshot{}, d.Token{}, nil, err
-		}
 	}
+	// Scheduling observations (including Cancel/Block) do not validate checkpoint
+	// payloads: a corrupt checkpoint must not prevent an operator from stopping
+	// a run. Only LoadOwned grants a verified projection to the runtime.
 	return s, tok, w.Record, nil
 }
 func decodeRecord(t d.Task, n uint64, b []byte) (durable.RunRecord, error) {
@@ -436,37 +450,16 @@ func (c *Coordinator) Renew(ctx context.Context, t d.Token, extension time.Durat
 	a := owned(t)
 	a["ttl_us"] = extension.Microseconds()
 	s, _, e := c.ownerCall(ctx, "renew", t, a, true)
-	return s.LeaseUntil, e
-}
-func (c *Coordinator) LoadOwned(ctx context.Context, t d.Token) (durable.RunRecord, error) {
-	s, b, e := c.ownerCall(ctx, "load", t, owned(t), false)
 	if e != nil {
-		return durable.RunRecord{}, e
+		c.discardProjection(t)
 	}
-	if s.Revision == 0 {
-		return durable.RunRecord{}, d.ErrNotFound
-	}
-	return decodeRecord(s.Task, s.Revision, b)
-}
-func (c *Coordinator) SaveOwned(ctx context.Context, q d.SaveRequest) error {
-	if !token(q.Token) || !mutation(q.Mutation) || q.ExpectedRevision == math.MaxUint64 || q.Record.Revision != q.ExpectedRevision+1 || q.Record.RunID != q.Token.Identity.RunID {
-		return d.ErrInvalid
-	}
-	b, e := recordio.Encode(q.Record)
-	if e != nil || len(b) > MaxRecordBytes {
-		return d.ErrInvalid
-	}
-	a := owned(q.Token)
-	mutate(a, q.Mutation)
-	a["expected"] = strconv.FormatUint(q.ExpectedRevision, 10)
-	a["record"] = b
-	_, _, e = c.ownerCall(ctx, "save", q.Token, a, true)
-	return e
+	return s.LeaseUntil, e
 }
 
 // Finish trusts the runtime's Outcome witness. This enum is not an unforgeable
 // capability: only the trusted Runtime may request a business terminal status.
 func (c *Coordinator) Finish(ctx context.Context, q d.FinishRequest) (d.Snapshot, error) {
+	defer c.discardProjection(q.Token)
 	if !token(q.Token) || !mutation(q.Mutation) || (q.Outcome != durable.OutcomeCompleted && q.Outcome != durable.OutcomeFailed) {
 		return d.Snapshot{}, d.ErrInvalid
 	}
@@ -478,6 +471,7 @@ func (c *Coordinator) Finish(ctx context.Context, q d.FinishRequest) (d.Snapshot
 	return s, e
 }
 func (c *Coordinator) Release(ctx context.Context, t d.Token, m d.Mutation) error {
+	defer c.discardProjection(t)
 	if !mutation(m) {
 		return d.ErrInvalid
 	}
@@ -487,6 +481,7 @@ func (c *Coordinator) Release(ctx context.Context, t d.Token, m d.Mutation) erro
 	return e
 }
 func (c *Coordinator) Block(ctx context.Context, t d.Token, reason string, m d.Mutation) error {
+	defer c.discardProjection(t)
 	if !mutation(m) {
 		return d.ErrInvalid
 	}
@@ -497,6 +492,7 @@ func (c *Coordinator) Block(ctx context.Context, t d.Token, reason string, m d.M
 	return e
 }
 func (c *Coordinator) Cancel(ctx context.Context, i d.Identity, m d.Mutation) (d.Snapshot, error) {
+	defer c.discardIdentity(i)
 	if !identity(i) || !mutation(m) {
 		return d.Snapshot{}, d.ErrInvalid
 	}

@@ -151,7 +151,7 @@ func dependencyRecoveryProcess(t *testing.T, dir, kind, phase string) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestDependencyRecoveryProcessHelper$", "-test.count=1", "-test.timeout=12s")
 	cmd.Env = append(os.Environ(), "PULSE_DEPENDENCY_DIR="+dir, "PULSE_DEPENDENCY_CASE="+kind, "PULSE_DEPENDENCY_PHASE="+phase, "GORACE=atexit_sleep_ms=0")
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	if ctx.Err() != nil {
 		t.Fatalf("dependency helper deadline: %v\n%s", ctx.Err(), output)
 	}
@@ -255,7 +255,7 @@ func recoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRecoveryProcessHelper$", "-test.count=1")
 	cmd.Env = append(os.Environ(), "PULSE_RECOVERY_DIR="+dir, "PULSE_RECOVERY_CASE="+scenario, "PULSE_RECOVERY_PHASE="+phase)
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	if len(output) > 0 {
 		t.Logf("%s/%s: %s", scenario, phase, output)
 	}
@@ -468,8 +468,11 @@ type injectedSession struct {
 	first    bool
 }
 
-func (s *injectedSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+func (s *injectedSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, s.observe)
+}
+func (s *injectedSession) observe(record durable.RunRecord, commit func() error) error {
+	if err := commit(); err != nil {
 		return err
 	}
 	if !s.first {

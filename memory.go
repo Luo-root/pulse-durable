@@ -2,17 +2,19 @@ package durable
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
-	"math"
 	"sync"
 )
 
 // MemoryStore 以进程内互斥和 CAS 验证 Store 协议，不保证进程退出后的恢复。
-// 零值可用；Load 与 Save 均复制记录，调用方修改副本不会污染存储。
+// 零值可用；Initialize 复制一次，Apply 只更新变更对象，Load 返回隔离副本。
 type MemoryStore struct {
 	mu      sync.Mutex
 	records map[string]RunRecord
 	active  map[string]*memorySession
+	chains  map[string][32]byte
 }
 
 // NewMemoryStore 创建进程内存储。
@@ -43,9 +45,12 @@ func (s *MemoryStore) Acquire(ctx context.Context, runID string) (Session, error
 }
 
 type memorySession struct {
-	store  *MemoryStore
-	runID  string
-	closed bool // 受 store.mu 保护
+	store    *MemoryStore
+	runID    string
+	closed   bool // 受 store.mu 保护
+	revision uint64
+	chain    [32]byte
+	loaded   bool
 }
 
 func (s *memorySession) Load(ctx context.Context) (RunRecord, error) {
@@ -64,10 +69,15 @@ func (s *memorySession) Load(ctx context.Context) (RunRecord, error) {
 	if !ok {
 		return RunRecord{}, ErrNotFound
 	}
+	chain, anchored := s.store.chains[s.runID]
+	if !anchored || r.RunID != s.runID || r.Revision == 0 {
+		return RunRecord{}, fmt.Errorf("%w: invalid memory checkpoint", ErrConflict)
+	}
+	s.revision, s.chain, s.loaded = r.Revision, chain, true
 	return cloneRecord(r), nil
 }
 
-func (s *memorySession) Save(ctx context.Context, r RunRecord, expected uint64) error {
+func (s *memorySession) Initialize(ctx context.Context, r RunRecord) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -79,16 +89,61 @@ func (s *memorySession) Save(ctx context.Context, r RunRecord, expected uint64) 
 	if s.closed {
 		return fmt.Errorf("durable: session closed")
 	}
-	old, exists := s.store.records[s.runID]
-	if r.RunID != s.runID || expected == math.MaxUint64 || r.Revision != expected+1 ||
-		(!exists && expected != 0) || (exists && old.Revision != expected) {
+	if _, exists := s.store.records[s.runID]; exists {
 		return ErrConflict
 	}
+	if err := ValidateInitialRecord(r, s.runID); err != nil {
+		return err
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	chain := SeedChain(sha256.Sum256(data))
 	if s.store.records == nil {
 		s.store.records = make(map[string]RunRecord)
 	}
+	if s.store.chains == nil {
+		s.store.chains = make(map[string][32]byte)
+	}
 	s.store.records[s.runID] = cloneRecord(r)
+	s.store.chains[s.runID] = chain
+	s.revision, s.chain, s.loaded = 1, chain, true
 	return nil
+}
+
+func (s *memorySession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck, error) {
+	if err := checkContext(ctx); err != nil {
+		return CommitAck{}, err
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return CommitAck{}, err
+	}
+	if s.closed {
+		return CommitAck{}, fmt.Errorf("durable: session closed")
+	}
+	r, exists := s.store.records[s.runID]
+	if !exists || !s.loaded || s.revision != r.Revision || s.chain != s.store.chains[s.runID] || batch.Header().RunID != s.runID {
+		return CommitAck{}, ErrConflict
+	}
+	digest, err := ChangeBatchDigest(batch)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	next, err := NextChain(s.chain, digest, batch.Header().Revision)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	// ApplyTo validates every precondition before mutating only changed objects.
+	ack, err := batch.ApplyTo(&r)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	s.store.records[s.runID], s.store.chains[s.runID] = r, next
+	s.revision, s.chain = r.Revision, next
+	return ack, nil
 }
 
 func (s *memorySession) Close() error {

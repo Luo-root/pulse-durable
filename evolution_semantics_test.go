@@ -48,10 +48,24 @@ func (s *evolutionSession) Load(ctx context.Context) (RunRecord, error) {
 	return s.Session.Load(ctx)
 }
 
-func (s *evolutionSession) Save(ctx context.Context, r RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, r, expected); err != nil {
+func (s *evolutionSession) Initialize(ctx context.Context, r RunRecord) error {
+	if err := s.Session.Initialize(ctx, r); err != nil {
 		return err
 	}
+	return s.observe(r)
+}
+func (s *evolutionSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, b)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	r, err := s.Session.Load(ctx)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	return ack, s.observe(r)
+}
+func (s *evolutionSession) observe(r RunRecord) error {
 	data, err := json.Marshal(r)
 	if err != nil {
 		return err

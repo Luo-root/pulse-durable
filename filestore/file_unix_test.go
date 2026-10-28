@@ -16,10 +16,10 @@ import (
 func TestUnixDeniedReadIsNotMissing(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")
-	if err := session.Save(context.Background(), testRecord("run"), 0); err != nil {
+	if err := session.Initialize(context.Background(), incrementalSeed("run")); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(store.dir, fileBase("run")+".json")
+	path := filepath.Join(store.dir, fileBase("run")+".head")
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -71,11 +71,11 @@ func TestUnixTemporaryCleanupFailureReleasesLock(t *testing.T) {
 func TestUnixWriteFailurePreservesRecord(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")
-	record := testRecord("run")
-	if err := session.Save(context.Background(), record, 0); err != nil {
+	record := incrementalSeed("run")
+	if err := session.Initialize(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(store.dir, fileBase("run")+".json")
+	path := filepath.Join(store.dir, fileBase("run")+".head")
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +91,7 @@ func TestUnixWriteFailurePreservesRecord(t *testing.T) {
 		_ = os.Remove(probe.Name())
 		t.Skip("current user can bypass directory permissions")
 	}
-	record.Revision = 2
-	if err := session.Save(context.Background(), record, 1); err == nil {
+	if _, err := session.Apply(context.Background(), revisionBatch(t, record)); err == nil {
 		t.Fatal("Save succeeded in non-writable directory")
 	}
 	after, err := os.ReadFile(path)

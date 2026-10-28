@@ -44,8 +44,16 @@ jobs:
             echo "$out"
             exit 1
           fi
-      - name: Test, including process exit and recovery
-        run: go test -race -count=1 -timeout=180s ./...
+      - name: Test runtime and file storage
+        shell: bash
+        run: |
+          packages=$(go list ./...)
+          packages=$(printf '%s\n' "$packages" | grep -v '/integration$')
+          go test -race -count=1 -timeout=180s $packages
+      # Serial process-recovery cases need a package budget, not longer fault deadlines.
+      # Helpers retain 12-20s parent deadlines; the entire job remains capped at 15 minutes.
+      - name: Test process exit and recovery
+        run: go test -race -count=1 -timeout=300s -v ./integration
 
   distributed-contracts:
     strategy:
@@ -371,6 +379,20 @@ jobs:
         with:
           go-version-file: benchmarks/workflow/go.mod
           cache-dependency-path: benchmarks/workflow/go.sum
+      - name: Use current checkout for benchmark API regression
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/durable-benchmark.work"
+          GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/distributed" "${GITHUB_WORKSPACE}/sqlitestore" "${GITHUB_WORKSPACE}/postgresstore" "${GITHUB_WORKSPACE}/benchmarks/workflow"
+          mv go.work "$work"
+          echo "GOWORK=$work" >> "$GITHUB_ENV"
+      - name: Reject legacy full-snapshot Save adapters
+        shell: bash
+        run: |
+          if grep -R -n --include='*.go' -E '\.Save\(|Save\(' durable.go; then
+            echo 'legacy Save persistence API found in benchmark adapter'
+            exit 1
+          fi
       - name: Build isolated benchmark adapters
         run: go build ./...
       - name: Vet benchmark adapters

@@ -14,13 +14,12 @@ import (
 	"unicode/utf8"
 
 	durable "github.com/Luo-root/pulse-durable"
-	"github.com/Luo-root/pulse-durable/recordio"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 const schemaName = "pulse_durable"
 const tableName = "runs"
 
@@ -85,24 +84,31 @@ func (s *Store) initialize(ctx context.Context) (resultErr error) {
 		return scrubPGError(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `CREATE SCHEMA IF NOT EXISTS pulse_durable`); err != nil {
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='pulse_durable')`).Scan(&exists); err != nil {
+		return scrubPGError(err)
+	}
+	if exists {
+		if err = validateSchemaV2(ctx, tx); err != nil {
+			return err
+		}
+		return scrubPGError(tx.Commit(ctx))
+	}
+	if _, err = tx.Exec(ctx, `CREATE SCHEMA pulse_durable`); err != nil {
 		return scrubPGError(err)
 	}
 	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS pulse_durable.schema_meta (version integer NOT NULL)`); err != nil {
 		return scrubPGError(err)
 	}
-	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS pulse_durable.runs (run_id text PRIMARY KEY NOT NULL, revision text NOT NULL, record bytea NOT NULL)`); err != nil {
+	if _, err = tx.Exec(ctx, schemaDDL); err != nil {
 		return scrubPGError(err)
-	}
-	if err = validateSchema(ctx, tx); err != nil {
-		return err
 	}
 	var count int
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM pulse_durable.schema_meta`).Scan(&count); err != nil {
 		return scrubPGError(err)
 	}
 	if count == 0 {
-		if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.schema_meta(version) VALUES (1)`); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.schema_meta(version) VALUES (2)`); err != nil {
 			return scrubPGError(err)
 		}
 	} else if count != 1 {
@@ -313,48 +319,21 @@ func (s *Store) Close() error {
 }
 
 type session struct {
-	mu       sync.Mutex
-	store    *Store
-	conn     *pgxpool.Conn
-	runID    string
-	key      int64
-	closed   bool
-	closeErr error
+	mu         sync.Mutex
+	store      *Store
+	conn       *pgxpool.Conn
+	runID      string
+	key        int64
+	closed     bool
+	closeErr   error
+	cache      *durable.RunRecord
+	chain      [32]byte
+	poisoned   bool
+	batchCount int
+	batchBytes int
 }
 
 var _ durable.Session = (*session)(nil)
-
-func (x *session) Load(ctx context.Context) (durable.RunRecord, error) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if x.closed {
-		return durable.RunRecord{}, os.ErrClosed
-	}
-	if ctx == nil {
-		return durable.RunRecord{}, errors.New("postgresstore: nil context")
-	}
-	var revision string
-	var data []byte
-	err := x.conn.QueryRow(ctx, `SELECT revision, record FROM pulse_durable.runs WHERE run_id=$1`, x.runID).Scan(&revision, &data)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return durable.RunRecord{}, durable.ErrNotFound
-	}
-	if err != nil {
-		return durable.RunRecord{}, scrubPGError(err)
-	}
-	n, err := parseRevision(revision)
-	if err != nil {
-		return durable.RunRecord{}, err
-	}
-	r, err := recordio.Decode(data)
-	if err != nil {
-		return durable.RunRecord{}, err
-	}
-	if r.RunID != x.runID || r.Revision != n {
-		return durable.RunRecord{}, errors.New("postgresstore: stored record identity or revision mismatch")
-	}
-	return r, nil
-}
 
 func parseRevision(v string) (uint64, error) {
 	var n uint64
@@ -375,56 +354,6 @@ func parseRevision(v string) (uint64, error) {
 		return 0, errors.New("postgresstore: invalid stored revision")
 	}
 	return n, nil
-}
-
-func (x *session) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if x.closed {
-		return os.ErrClosed
-	}
-	if ctx == nil {
-		return errors.New("postgresstore: nil context")
-	}
-	if record.RunID != x.runID || expected == math.MaxUint64 || record.Revision != expected+1 {
-		return durable.ErrConflict
-	}
-	data, err := recordio.Encode(record)
-	if err != nil {
-		return err
-	}
-	tx, err := x.conn.Begin(ctx)
-	if err != nil {
-		return scrubPGError(err)
-	}
-	defer tx.Rollback(ctx)
-	var current string
-	err = tx.QueryRow(ctx, `SELECT revision FROM pulse_durable.runs WHERE run_id=$1`, x.runID).Scan(&current)
-	if errors.Is(err, pgx.ErrNoRows) {
-		if expected != 0 {
-			return durable.ErrConflict
-		}
-	} else if err != nil {
-		return scrubPGError(err)
-	} else if n, e := parseRevision(current); e != nil || n != expected {
-		return durable.ErrConflict
-	}
-	var tag pgconn.CommandTag
-	if expected == 0 {
-		tag, err = tx.Exec(ctx, `INSERT INTO pulse_durable.runs(run_id,revision,record) VALUES($1,$2,$3) ON CONFLICT (run_id) DO NOTHING`, x.runID, fmt.Sprint(record.Revision), data)
-	} else {
-		tag, err = tx.Exec(ctx, `UPDATE pulse_durable.runs SET revision=$1,record=$2 WHERE run_id=$3 AND revision=$4`, fmt.Sprint(record.Revision), data, x.runID, fmt.Sprint(expected))
-	}
-	if err != nil {
-		return scrubPGError(err)
-	}
-	if tag.RowsAffected() != 1 {
-		return durable.ErrConflict
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return scrubPGError(err)
-	}
-	return nil
 }
 
 func (x *session) closeLocked() error {

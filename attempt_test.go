@@ -143,7 +143,7 @@ func TestProtocolRejectsFailedAncestorsAndCommitsNodeRootAtomically(t *testing.T
 	proposed := cloneRecord(state.record)
 	proposed.Inputs = hash
 	proposed.Scopes[rootScope] = ScopeRecord{Graph: "parent", Inputs: hash, Nodes: make(map[string]NodeRecord)}
-	if err := state.save(ctx, proposed); err != nil {
+	if err := state.initialize(ctx, proposed); err != nil {
 		t.Fatal(err)
 	}
 	root, err := state.openAttempt(ctx, pulse.CheckpointAttemptRequest{Site: pulse.Site{Graph: "parent"}, Parent: rootScope, NodeID: "mount", Limit: 1})
@@ -216,8 +216,8 @@ func TestSaveFailureLeavesRuntimeRecordUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := RunRecord{RunID: "run", Revision: 1, Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Nodes: map[string]NodeRecord{}}}}
-	if err := initial.Save(ctx, record, 0); err != nil {
+	record := contractSeed("run")
+	if err := initial.Initialize(ctx, record); err != nil {
 		t.Fatal(err)
 	}
 	if err := initial.Close(); err != nil {
@@ -230,9 +230,12 @@ func TestSaveFailureLeavesRuntimeRecordUnchanged(t *testing.T) {
 	}
 	defer session.Close()
 	state := &runState{session: session, record: cloneRecord(record)}
-	proposed := cloneRecord(record)
-	proposed.Scopes["root"].Nodes["new"] = NodeRecord{NodeID: "new"}
-	if err := state.save(ctx, proposed); err == nil {
+	if _, err := session.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx := newRecordTransaction(record.Revision)
+	_ = tx.putNode("root", "new", nil, NodeRecord{NodeID: "new"})
+	if err := state.commitRecordTransaction(ctx, tx); err == nil {
 		t.Fatal("save failure ignored")
 	}
 	if state.record.Revision != 1 || len(state.record.Scopes["root"].Nodes) != 0 {
@@ -242,7 +245,7 @@ func TestSaveFailureLeavesRuntimeRecordUnchanged(t *testing.T) {
 	if err != nil || loaded.Revision != 1 || len(loaded.Scopes["root"].Nodes) != 0 {
 		t.Fatal("failed CAS modified stored record")
 	}
-	if err := state.save(ctx, proposed); err == nil || store.saves.Load() != 1 {
+	if err := state.commitRecordTransaction(ctx, tx); err == nil || store.saves.Load() != 1 {
 		t.Fatal("uncertain Save was retried")
 	}
 }
@@ -265,7 +268,11 @@ func TestAttemptObservationReportsAllocationAndActiveReclamation(t *testing.T) {
 		RunID: "run", Version: "1", Definition: definition.fingerprint, RootScope: "root",
 		Scopes: map[string]ScopeRecord{"root": {Graph: "observed", Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{},
 	}}
-	if err := state.save(ctx, cloneRecord(state.record)); err != nil {
+	state.record.Inputs = digest(nil)
+	rootSeed := state.record.Scopes["root"]
+	rootSeed.Inputs = state.record.Inputs
+	state.record.Scopes["root"] = rootSeed
+	if err := state.initialize(ctx, cloneRecord(state.record)); err != nil {
 		t.Fatal(err)
 	}
 	open := func(req pulse.CheckpointAttemptRequest, resumed bool) pulse.CheckpointAttempt {

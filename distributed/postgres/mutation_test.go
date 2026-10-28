@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"crypto/sha256"
+	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
 	"github.com/jackc/pgx/v5"
 )
@@ -42,8 +44,14 @@ func mutationAPI(kind string) (string, error) {
 		api, e = mutationReplace(api, mutationOwnerPredicate, "")
 	case "expiry":
 		api, e = mutationReplace(api, mutationExpiryPredicate, "")
+		if e == nil {
+			api, e = mutationReplace(api, " IF op<>'cancel' AND r.lease_until<=t THEN RAISE EXCEPTION USING ERRCODE='PD004',MESSAGE='lease lost'; END IF;", "")
+		}
 	case "frozen-clock":
 		api, e = mutationReplace(api, mutationClockStatement, " t:=now();\n IF t<r.updated_at THEN")
+		if e == nil {
+			api, e = mutationReplace(api, " t := clock_timestamp();", " t := now();")
+		}
 	default:
 		return "", errors.New("unknown mutation")
 	}
@@ -202,6 +210,8 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	exec(`INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route,status,epoch,revision,record,lease_id,worker_id,boot_id,lease_until,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,'running',$6,1,$7,$8,$9,$10,clock_timestamp()+interval '1 hour',transaction_timestamp()-interval '2 seconds',transaction_timestamp()-interval '1 second')`,
 		ns, task.Identity().RunID, task.Bytes(), task.SubmissionDigest(), task.Route(), currentEpoch, rec, currentLease, worker, boot)
+	seed := durable.SeedChain(sha256.Sum256(rec))
+	exec(`UPDATE pulse_durable_distributed.runs SET snapshot_digest=$1,head_chain=$2,root_scope='root' WHERE namespace=$3`, digest(rec), chainText(seed), ns)
 	if kind == "expiry" {
 		exec(`UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1`, ns)
 	}
@@ -234,10 +244,19 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	args := owned(d.Token{Identity: task.Identity(), Epoch: 1, LeaseID: oldLease, Worker: d.Worker{ID: "old-worker", BootID: "old-boot"}})
 	mutate(args, mut("mutation-save"))
 	args["expected"] = "1"
-	args["record"], e = json.Marshal(record(task, 2))
+	batch := nextBatch(t, record(task, 1))
+	wire, e := durable.MarshalChangeBatch(batch)
 	if e != nil {
 		t.Fatal(e)
 	}
+	next, e := durable.NextChain(seed, sha256.Sum256(wire), 2)
+	if e != nil {
+		t.Fatal(e)
+	}
+	args["wire"] = wire
+	args["batch_digest"] = digest(wire)
+	args["parent_chain"] = chainText(seed)
+	args["next_chain"] = chainText(next)
 	call := func() ([]byte, error) {
 		t.Helper()
 		b, e := json.Marshal(args)
@@ -246,7 +265,7 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 		}
 		exec("SAVEPOINT mutation_call")
 		var out []byte
-		e = tx.QueryRow(ctx, `SELECT pulse_durable_distributed.api('save',$1::jsonb)`, b).Scan(&out)
+		e = tx.QueryRow(ctx, `SELECT pulse_durable_distributed.api('apply',$1::jsonb)`, b).Scan(&out)
 		if e != nil {
 			exec("ROLLBACK TO SAVEPOINT mutation_call")
 		}
@@ -281,14 +300,13 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	if saveErr != nil || rejected {
 		t.Fatalf("mutation not detected: rejection=%v save error=%v", rejected, saveErr)
 	}
-	var snapshot wireSnapshot
-	if e := json.Unmarshal(out, &snapshot); e != nil || snapshot.Revision != "2" || snapshot.Epoch != currentEpoch {
-		t.Fatal("mutated Save did not return authoritative same-revision write", e)
+	if string(out) != "{}" {
+		t.Fatalf("unexpected Apply response: %s", out)
 	}
 	exec("SET LOCAL SESSION AUTHORIZATION DEFAULT")
 	var revision string
 	var events int
-	if e := tx.QueryRow(ctx, `SELECT revision::text,(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND operation='save' AND mutation_id='mutation-save') FROM pulse_durable_distributed.runs WHERE namespace=$1`, ns).Scan(&revision, &events); e != nil || revision != "2" || events != 1 {
+	if e := tx.QueryRow(ctx, `SELECT revision::text,(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND operation='apply' AND mutation_id='mutation-save') FROM pulse_durable_distributed.runs WHERE namespace=$1`, ns).Scan(&revision, &events); e != nil || revision != "2" || events != 1 {
 		t.Fatalf("mutant did not persist actual SQL Save/event within rollback transaction: revision=%s events=%d err=%v", revision, events, scrub(e, false))
 	}
 	t.Logf("MUTATION DETECTED %s: stale/expired-owner rejection oracle RED (want ErrLeaseLost, got successful SQL Save; revision 1 -> 2, save events=1); revision CAS control GREEN", kind)

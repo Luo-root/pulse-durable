@@ -8,8 +8,7 @@ import (
 
 // recordTransaction stages only the objects changed by its callers. Construction,
 // staging and commit require runState.mu; this is not a concurrent Store protocol.
-// The legacy Session path materializes a complete format2 record; the explicitly
-// selected DeltaSession path submits only these staged typed operations.
+// Every ordinary checkpoint submits only these staged typed operations.
 type recordTransaction struct {
 	baseRevision   uint64
 	attempts       map[string]putAttempt
@@ -195,26 +194,16 @@ func (s *runState) commitCheckedTransaction(ctx context.Context, tx *recordTrans
 	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes)+len(tx.streams)+len(tx.pending)+len(tx.messages)+len(tx.managed)+len(tx.managedEntries) == 0 {
 		return nil
 	}
-	if s.delta != nil {
-		if prepare != nil {
-			// Node-finalization retains its complete proposal validation. Ordinary
-			// stream/message checkpoints never materialize the full history.
-			proposal := cloneRecord(s.record)
-			tx.apply(&proposal)
-			if err := prepare(&proposal); err != nil {
-				return err
-			}
-		}
-		return s.applyDelta(ctx, tx)
-	}
-	proposed := cloneRecord(s.record)
-	tx.apply(&proposed)
 	if prepare != nil {
-		if err := prepare(&proposed); err != nil {
+		// Final node validation may materialize a read-only proposal. It is never
+		// submitted as a full checkpoint; ordinary hooks remain incremental.
+		proposal := cloneRecord(s.record)
+		tx.apply(&proposal)
+		if err := prepare(&proposal); err != nil {
 			return err
 		}
 	}
-	return s.save(ctx, proposed)
+	return s.applyDelta(ctx, tx)
 }
 
 // apply is shared by legacy materialization, confirmed runtime publication and

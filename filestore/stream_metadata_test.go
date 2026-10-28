@@ -1,7 +1,6 @@
 package filestore
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
@@ -36,28 +35,8 @@ func TestIncrementalMetadataRejectsEveryStringAndMapKey(t *testing.T) {
 			}
 		})
 	}
-	// 真实后端也必须在 CAS 前拒绝，保留上次完整记录。
-	store := newTestStore(t)
-	session := acquireTestSession(t, store, "run")
-	if err := session.Save(context.Background(), base, 0); err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{"Streams", "Messages", "Managed"} {
-		for _, mutation := range mutations {
-			if mutation.name != root+"/key" {
-				continue
-			}
-			r := mutation.change(reflect.ValueOf(incrementalMetadataRecord()), bad).Interface().(durable.RunRecord)
-			r.Revision = 2
-			if err := session.Save(context.Background(), r, 1); err == nil {
-				t.Fatal("filestore accepted invalid new map key")
-			}
-			got, err := session.Load(context.Background())
-			if err != nil || !reflect.DeepEqual(got, base) {
-				t.Fatal("invalid metadata changed old record")
-			}
-		}
-	}
+	// Runtime backend publication is covered by TestRuntimeRejectsInvalidFileMetadata;
+	// completed records cannot be imported through Initialize.
 }
 
 type metadataMutation struct {

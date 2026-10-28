@@ -112,10 +112,15 @@ func (s *durableRunner) close() error { return nil }
 func (s *durableRunner) inspect(ctx context.Context) (int, map[string]any) {
 	m := map[string]any{"persistence": "MemoryStore isolated Go records", "node_records": 0}
 	if s.meter != nil {
-		m["save_calls"], m["successful_saves"], m["logical_json_bytes"] = s.meter.calls, s.meter.successes, s.meter.bytes
+		m["initialize_calls"] = s.meter.initializeCalls
+		m["successful_initializations"] = s.meter.successfulInitializations
+		m["apply_calls"] = s.meter.applyCalls
+		m["successful_applies"] = s.meter.successfulApplies
+		m["initial_snapshot_json_bytes"] = s.meter.initialSnapshotBytes
+		m["canonical_batch_bytes"] = s.meter.canonicalBatchBytes
 	}
 	if _, ok := s.store.(*filestore.Store); ok {
-		m["persistence"] = "filestore full JSON snapshots; file Sync + atomic replacement; no promised power-loss durability"
+		m["persistence"] = "initial snapshot + immutable typed batches + atomic head; file Sync; powerloss unverified"
 	}
 	session, err := s.store.Acquire(ctx, runID)
 	if err != nil {
@@ -137,7 +142,7 @@ func (s *durableRunner) inspect(ctx context.Context) (int, map[string]any) {
 		} else {
 			m["final_record_json_bytes"] = len(data)
 		}
-		m["metric_scope"] = "sum of JSON encodings passed to successful Save calls; excludes filesystem rereads, temp/rename and physical I/O"
+		m["metric_scope"] = "successful Initialize full-snapshot JSON bytes plus successful Apply canonical batch wire bytes; excludes Load projections, marker JSON, filesystem rereads, temp/rename and physical I/O"
 	}
 	return nodes, m
 }
@@ -151,10 +156,13 @@ func recordNodes(r durable.RunRecord) int {
 
 type meterStore struct {
 	durable.Store
-	mu                              sync.Mutex
-	calls, successes, bytes, budget uint64
-	crash                           int
-	marker                          string
+	mu                                         sync.Mutex
+	initializeCalls, successfulInitializations uint64
+	applyCalls, successfulApplies              uint64
+	initialSnapshotBytes, canonicalBatchBytes  uint64
+	budget                                     uint64
+	crash                                      int
+	marker                                     string
 }
 
 func (m *meterStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
@@ -170,31 +178,57 @@ type meterSession struct {
 	m *meterStore
 }
 
-func (s *meterSession) Save(ctx context.Context, r durable.RunRecord, revision uint64) error {
+func (s *meterSession) Initialize(ctx context.Context, r durable.RunRecord) error {
 	m := s.m
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls++
+	m.initializeCalls++
 	data, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	if m.budget > 0 && uint64(len(data)) > m.budget-m.bytes {
+	if m.budget > 0 && uint64(len(data)) > m.budget-m.initialSnapshotBytes-m.canonicalBatchBytes {
 		return errBudget
 	}
-	if err = s.Session.Save(ctx, r, revision); err != nil {
+	if err = s.Session.Initialize(ctx, r); err != nil {
 		return err
 	}
-	m.successes++
-	m.bytes += uint64(len(data))
-	if m.crash > 0 && recordNodes(r) == m.crash {
-		// Save has returned successfully; publish to downstream has not happened yet.
-		if err := writeJSON(m.marker, map[string]any{"confirmed_steps": m.crash, "boundary": "successful Save before downstream publication"}); err != nil {
-			return err
-		}
-		os.Exit(crashExit)
-	}
+	m.successfulInitializations++
+	m.initialSnapshotBytes += uint64(len(data))
 	return nil
+}
+
+func (s *meterSession) Apply(ctx context.Context, b durable.ChangeBatch) (durable.CommitAck, error) {
+	m := s.m
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyCalls++
+	data, err := durable.MarshalChangeBatch(b)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	if m.budget > 0 && uint64(len(data)) > m.budget-m.initialSnapshotBytes-m.canonicalBatchBytes {
+		return durable.CommitAck{}, errBudget
+	}
+	ack, err := s.Session.Apply(ctx, b)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	m.successfulApplies++
+	m.canonicalBatchBytes += uint64(len(data))
+	if m.crash > 0 {
+		r, err := s.Session.Load(ctx)
+		if err != nil {
+			return durable.CommitAck{}, err
+		}
+		if recordNodes(r) == m.crash {
+			if err := writeJSON(m.marker, map[string]any{"confirmed_steps": m.crash, "boundary": "successful Apply and confirmed Load before downstream publication"}); err != nil {
+				return durable.CommitAck{}, err
+			}
+			os.Exit(crashExit)
+		}
+	}
+	return ack, nil
 }
 
 func writeJSON(path string, v any) error {

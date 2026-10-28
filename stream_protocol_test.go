@@ -40,7 +40,7 @@ func newStreamProtocol(t *testing.T) streamProtocol {
 	hash, _ := def.inputsFingerprint(def.root, nil)
 	s := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "1", Definition: def.fingerprint,
 		Inputs: hash, RootScope: root, Scopes: map[string]ScopeRecord{root: {Graph: "streams", Inputs: hash, Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{}}}
-	if err := s.save(ctx, cloneRecord(s.record)); err != nil {
+	if err := s.initialize(ctx, cloneRecord(s.record)); err != nil {
 		t.Fatal(err)
 	}
 	p := streamProtocol{s: s, site: pulse.Site{Graph: "streams"}, inKey: pulse.CheckpointKey{Name: "input", Type: reflect.TypeFor[pulse.Stream[int]](), Element: reflect.TypeFor[int]()},

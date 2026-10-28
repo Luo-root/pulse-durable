@@ -14,12 +14,10 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 		{Sequence: 3, Value: ValueRecord{Data: []byte("three")}},
 	}, LastSequence: 3}}
 	// Capture a real older Save parameter, then select the next execution path.
-	if err := s.save(t.Context(), cloneRecord(s.record)); err != nil {
-		t.Fatal(err)
-	}
+	legacy.saved = cloneRecord(s.record)
 	saved := cloneRecord(legacy.saved)
 	authority := &deltaTestStore{record: cloneRecord(s.record)}
-	s.delta = &deltaTestSession{authority}
+	s.session = &deltaTestSession{authority}
 	before := cloneRecord(s.record)
 	tx := newRecordTransaction(s.record.Revision)
 	h := headerOf(s.record.Streams["stream"])
@@ -79,8 +77,8 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 	}
 }
 
-func TestDeltaCapabilityIsExplicit(t *testing.T) {
-	// A session method set alone must not change the legacy path.
+func TestDeltaIsMandatoryWithoutOptions(t *testing.T) {
+	// Every Session uses one seed followed by genuine typed Apply calls.
 	o := &deltaTestStore{}
 	total := 0
 	g := deltaManagedGraph(t, 10, &total)
@@ -91,7 +89,7 @@ func TestDeltaCapabilityIsExplicit(t *testing.T) {
 	if _, err = r.Run(t.Context(), g, pulse.Inputs{}, testOptions("legacy-explicit")); err != nil {
 		t.Fatal(err)
 	}
-	if o.calls != 0 || len(o.seeds) < 10 {
-		t.Fatal("method set silently enabled delta")
+	if o.calls < 10 || len(o.seeds) != 1 || total != 55 {
+		t.Fatal("runtime did not use mandatory delta")
 	}
 }

@@ -64,9 +64,16 @@ type ManagedRecord struct {
 }
 
 func cloneValues(values []ValueRecord) []ValueRecord {
-	out := append([]ValueRecord(nil), values...)
+	if values == nil {
+		return nil
+	}
+	out := make([]ValueRecord, len(values))
+	copy(out, values)
 	for i := range out {
-		out[i].Data = append([]byte(nil), values[i].Data...)
+		if values[i].Data != nil {
+			out[i].Data = make([]byte, len(values[i].Data))
+			copy(out[i].Data, values[i].Data)
+		}
 		if out[i].Stream != nil {
 			copy := *out[i].Stream
 			out[i].Stream = &copy
@@ -81,7 +88,11 @@ func cloneStreams(streams map[string]StreamRecord) map[string]StreamRecord {
 	}
 	out := make(map[string]StreamRecord, len(streams))
 	for key, record := range streams {
-		record.Pending = append([]StreamMessageRecord(nil), record.Pending...)
+		if record.Pending != nil {
+			pending := make([]StreamMessageRecord, len(record.Pending))
+			copy(pending, record.Pending)
+			record.Pending = pending
+		}
 		for i := range record.Pending {
 			record.Pending[i].Value = cloneValues([]ValueRecord{record.Pending[i].Value})[0]
 		}

@@ -30,7 +30,7 @@ func TestApprovalAspectResumeAcrossProcesses(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestApprovalAspectResumeAcrossProcesses$", "-test.timeout=10s")
 		cmd.Env = append(os.Environ(), "PULSE_APPROVAL_ROLE="+role, "PULSE_APPROVAL_DIR="+dir, "GORACE=atexit_sleep_ms=0")
-		if output, err := cmd.CombinedOutput(); err != nil {
+		if output, err := boundedProcessOutput(cmd); err != nil {
 			t.Fatalf("%s process: %v\n%s", role, err, output)
 		}
 	}

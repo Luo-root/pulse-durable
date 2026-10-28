@@ -141,11 +141,7 @@ func TestManagedHistoryRecoveryAcrossProcessExit(t *testing.T) {
 						before.Managed[key] = managed
 					}
 				}
-				expected := before.Revision
-				before.Revision++
-				if err := session.Save(context.Background(), before, expected); err != nil {
-					t.Fatal(err)
-				}
+				installHistoryFixture(t, dir, before)
 				if err := session.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -240,11 +236,7 @@ func TestConfirmedManagedValuesAcrossProcessExit(t *testing.T) {
 					}
 				}
 				record.Scopes[record.RootScope] = scope
-				expected := record.Revision
-				record.Revision++
-				if err := session.Save(t.Context(), record, expected); err != nil {
-					t.Fatal(err)
-				}
+				installHistoryFixture(t, dir, record)
 				if err := session.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -1052,7 +1044,10 @@ func (s *sharedRestoreStore) Acquire(ctx context.Context, id string) (durable.Se
 	return &sharedRestoreSession{session, s}, nil
 }
 
-func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecord, revision uint64) error {
+func (s *sharedRestoreSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, func(record durable.RunRecord, commit func() error) error { return s.observe(ctx, record, commit) })
+}
+func (s *sharedRestoreSession) observe(ctx context.Context, record durable.RunRecord, commit func() error) error {
 	o := s.owner
 	generation := o.generation
 	if generation == 0 {
@@ -1070,7 +1065,7 @@ func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecor
 		o.inflight.Store(true)
 		defer func() { o.inflight.Store(false); close(o.settled) }()
 		if o.committed {
-			if err := s.Session.Save(ctx, record, revision); err != nil {
+			if err := commit(); err != nil {
 				return err
 			}
 		}
@@ -1083,7 +1078,7 @@ func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecor
 		if o.success {
 			var err error
 			if !o.committed {
-				err = s.Session.Save(ctx, record, revision)
+				err = commit()
 			}
 			o.succeeded.Store(err == nil)
 			return err
@@ -1093,7 +1088,7 @@ func (s *sharedRestoreSession) Save(ctx context.Context, record durable.RunRecor
 		}
 		return errors.New("accepted restore Save failed")
 	}
-	return s.Session.Save(ctx, record, revision)
+	return commit()
 }
 
 func (s *sharedRestoreSession) Close() error {
@@ -1239,7 +1234,7 @@ func streamRecoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamRecoveryProcessHelper$", "-test.count=1", "-test.timeout=12s")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PULSE_STREAM_DIR="+dir, "PULSE_STREAM_CASE="+scenario, "PULSE_STREAM_PHASE="+phase, "GORACE=atexit_sleep_ms=0")
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	if len(output) > 0 {
 		t.Logf("%s/%s: %s", scenario, phase, output)
 	}
@@ -1691,7 +1686,7 @@ func failedStreamProcess(t *testing.T, dir string, tc failedStreamCase, phase st
 	}
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStreamProcessHelper$", "-test.count=1", "-test.timeout=10s")
 	cmd.Env = append(os.Environ(), "PULSE_FAILED_DIR="+dir, "PULSE_FAILED_CASE="+string(data), "PULSE_FAILED_PHASE="+phase)
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	t.Logf("%s/%s: %s", tc.Name, phase, output)
 	if ctx.Err() != nil {
 		t.Fatal(ctx.Err())
@@ -1714,7 +1709,7 @@ func TestFailedStreamProcessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	aliasSaved := make(chan struct{})
-	rt, err := durable.New(&failedStreamStore{Store: store, test: tc, first: phase == "run", aliasSaved: aliasSaved}, durable.NewCodecs())
+	rt, err := durable.New(&failedStreamStore{Store: store, test: tc, first: phase == "run", aliasSaved: aliasSaved, t: t, dir: dir}, durable.NewCodecs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1871,6 +1866,8 @@ var failedStreamSaveError = errors.New("lost failed-terminal acknowledgement")
 
 type failedStreamStore struct {
 	durable.Store
+	t          *testing.T
+	dir        string
 	test       failedStreamCase
 	first      bool
 	aliasSaved chan struct{}
@@ -1890,7 +1887,10 @@ func (s *failedStreamStore) Acquire(ctx context.Context, id string) (durable.Ses
 	return &failedStreamSession{Session: session, owner: s}, nil
 }
 
-func (s *failedStreamSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+func (s *failedStreamSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, s.observe)
+}
+func (s *failedStreamSession) observe(record durable.RunRecord, commit func() error) error {
 	tc := s.owner.test
 	keys := make([]string, 0)
 	for key, stream := range record.Streams {
@@ -1908,8 +1908,8 @@ func (s *failedStreamSession) Save(ctx context.Context, record durable.RunRecord
 			return failedStreamSaveError
 		}
 		if tc.Fault == "legacy" {
-			// Explicit compatibility fixture: emulate the prior legal kth Finish
-			// Save. This is not claimed to be a healthy filestore losing fields.
+			// Synthetic new-format typed history: a partial terminal set with
+			// active roots must reconcile without reviving exhausted budgets.
 			for i, key := range sortedStreamKeys(record.Streams) {
 				stream := record.Streams[key]
 				if i >= tc.At {
@@ -1920,9 +1920,11 @@ func (s *failedStreamSession) Save(ctx context.Context, record durable.RunRecord
 				root.State = durable.AttemptActive
 				record.Attempts[stream.Stream.Attempt] = root
 			}
+			installHistoryFixture(s.owner.t, s.owner.dir, record)
+			os.Exit(crashExit)
 		}
 	}
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	if tc.Alias {
@@ -1973,7 +1975,10 @@ type streamInjectedSession struct {
 	saves    *atomic.Int32
 }
 
-func (s *streamInjectedSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+func (s *streamInjectedSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, s.observe)
+}
+func (s *streamInjectedSession) observe(record durable.RunRecord, commit func() error) error {
 	if s.saves != nil {
 		s.saves.Add(1)
 	}
@@ -2027,7 +2032,7 @@ func (s *streamInjectedSession) Save(ctx context.Context, record durable.RunReco
 	if match && strings.HasSuffix(s.scenario, "-before") {
 		os.Exit(crashExit)
 	}
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	if match {

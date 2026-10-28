@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"unicode/utf8"
 
 	"github.com/Luo-root/pulse"
@@ -25,7 +26,10 @@ const (
 )
 
 var (
-	ErrInvalid          = errors.New("distributed: invalid task")
+	ErrInvalid = errors.New("distributed: invalid task")
+	// ErrInvalidRecord is deterministic corruption observed by LoadOwned after
+	// authoritative ownership and clock checks. It remains an ErrInvalid.
+	ErrInvalidRecord    = fmt.Errorf("distributed: invalid owned record: %w", ErrInvalid)
 	ErrMismatch         = errors.New("distributed: incompatible task")
 	ErrDuplicate        = errors.New("distributed: duplicate registration")
 	ErrSubmitConflict   = errors.New("distributed: submission conflict")

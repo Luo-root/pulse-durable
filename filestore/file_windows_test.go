@@ -36,19 +36,18 @@ func openWithoutDeleteSharing(t *testing.T, path string, share uint32) syscall.H
 func TestWindowsReplaceFailurePreservesRecordAndCleansTemporary(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")
-	record := testRecord("run")
-	if err := session.Save(context.Background(), record, 0); err != nil {
+	record := incrementalSeed("run")
+	if err := session.Initialize(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(store.dir, fileBase("run")+".json")
+	path := filepath.Join(store.dir, fileBase("run")+".head")
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 允许读写但禁止删除共享：读取/CAS 可通过，Windows 必须拒绝随后原子替换。
 	openWithoutDeleteSharing(t, path, syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE)
-	record.Revision = 2
-	if err := session.Save(context.Background(), record, 1); err == nil {
+	if _, err := session.Apply(context.Background(), revisionBatch(t, record)); err == nil {
 		t.Fatal("Save succeeded despite target handle forbidding replacement")
 	}
 	after, err := os.ReadFile(path)
@@ -56,7 +55,7 @@ func TestWindowsReplaceFailurePreservesRecordAndCleansTemporary(t *testing.T) {
 		t.Fatalf("failed replacement changed original record: %v", err)
 	}
 	entries, err := os.ReadDir(store.dir)
-	if err != nil || len(entries) != 2 {
+	if err != nil || len(entries) != 4 {
 		t.Fatalf("failed replacement left temporary files: %v", err)
 	}
 }
@@ -90,11 +89,20 @@ func TestWindowsTemporaryCleanupFailureReleasesLock(t *testing.T) {
 func TestWindowsDeniedReadIsNotMissing(t *testing.T) {
 	store := newTestStore(t)
 	session := acquireTestSession(t, store, "run")
-	if err := session.Save(context.Background(), testRecord("run"), 0); err != nil {
+	if err := session.Initialize(context.Background(), incrementalSeed("run")); err != nil {
 		t.Fatal(err)
 	}
 	// 不允许共享读取的已有句柄产生真实读取拒绝，不依赖 Windows 忽略的 Unix mode bits。
-	openWithoutDeleteSharing(t, filepath.Join(store.dir, fileBase("run")+".json"), 0)
+	path := filepath.Join(store.dir, fileBase("run")+".head")
+	openWithoutDeleteSharing(t, path, 0)
+	probe, err := os.Open(path)
+	if err == nil {
+		_ = probe.Close()
+		t.Skip("Windows runner does not enforce the requested sharing denial")
+	}
+	if !errors.Is(err, syscall.Errno(32)) {
+		t.Fatalf("sharing-denial probe error = %v; want sharing violation", err)
+	}
 	if _, err := session.Load(context.Background()); err == nil || errors.Is(err, durable.ErrNotFound) {
 		t.Fatalf("denied Load error = %v; want access failure", err)
 	}

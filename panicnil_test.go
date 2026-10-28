@@ -69,7 +69,7 @@ type panicNilSaveSession struct {
 	calls int
 }
 
-func (s *panicNilSaveSession) Save(context.Context, RunRecord, uint64) error {
+func (s *panicNilSaveSession) Apply(context.Context, ChangeBatch) (CommitAck, error) {
 	s.calls++
 	panic(nil)
 }
@@ -78,11 +78,11 @@ func TestPanicNilSaveStops(t *testing.T) {
 	requirePanicNilChild(t)
 	session := &panicNilSaveSession{}
 	state := &runState{session: session, record: RunRecord{Revision: 2}}
-	first := state.save(context.Background(), RunRecord{})
+	first := state.applyDelta(context.Background(), newRecordTransaction(2))
 	if first == nil || state.stopped != first || state.record.Revision != 2 {
 		t.Fatalf("Save panic was accepted or not latched: err=%v stopped=%v revision=%d", first, state.stopped, state.record.Revision)
 	}
-	if again := state.save(context.Background(), RunRecord{}); again != first || session.calls != 1 {
+	if again := state.applyDelta(context.Background(), newRecordTransaction(2)); again != first || session.calls != 1 {
 		t.Fatalf("Save continued after uncertainty: err=%v calls=%d", again, session.calls)
 	}
 }

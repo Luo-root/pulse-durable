@@ -73,8 +73,8 @@ type commitPanic struct {
 	saves atomic.Int32
 }
 
-func (f *commitPanic) SaveOwned(ctx context.Context, req d.SaveRequest) error {
-	if err := f.fake.SaveOwned(ctx, req); err != nil {
+func (f *commitPanic) InitializeOwned(ctx context.Context, req d.InitializeRequest) error {
+	if err := f.fake.InitializeOwned(ctx, req); err != nil {
 		return err
 	}
 	f.saves.Add(1)
@@ -98,13 +98,13 @@ func TestSavePanicSealsSession(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			s := &session{c: backend, ctx: ctx, cancel: cancel, timeout: time.Second}
-			if err := s.Save(ctx, durable.RunRecord{Revision: 1}, 0); !errors.Is(err, d.ErrUnknown) {
+			if err := s.Initialize(ctx, durable.RunRecord{Revision: 1}); !errors.Is(err, d.ErrUnknown) {
 				t.Fatalf("not unknown: %v", err)
 			}
 			if !s.uncertain() || ctx.Err() == nil {
 				t.Fatal("panic did not seal and cancel")
 			}
-			if err := s.Save(context.Background(), durable.RunRecord{Revision: 2}, 1); !errors.Is(err, d.ErrLeaseLost) {
+			if err := s.Initialize(context.Background(), durable.RunRecord{Revision: 2}); !errors.Is(err, d.ErrLeaseLost) {
 				t.Fatal("sealed session allowed new save")
 			}
 			closed := make(chan struct{})

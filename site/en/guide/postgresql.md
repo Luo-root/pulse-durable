@@ -1,6 +1,8 @@
 # PostgreSQL tutorial
 
-This page targets the **Durable v0.1.0** API and requires **Go 1.26+**, **Pulse v0.5.0**. This is release preparation, not a claim of publication. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases): installation commands are unavailable before their tags are published. See [Installation](installation.md) for development pins and three tag names.
+This page describes the current development branch's breaking `Initialize`/`Apply` API, requiring **Go 1.26+** and **Pulse v0.5.0**. The standalone PostgreSQL backend remains under development; this page claims neither publication nor real-database acceptance in this round. `Session.Save` and `RunOptions.RequireDelta` have been removed. All official backends use the new protocol without optional delta mode or full-record fallback. `durable.New` and Runtime Run/Resume require no opt-in.
+
+No published installation pin for the new API is supplied here, and old v0.1.0 does not apply to the example below. Validate the local checkout per [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md). Cross-module pins await a coordinated update; check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for publication.
 
 ## 1. Prepare a database and install modules
 
@@ -10,8 +12,7 @@ Use an existing PostgreSQL service or prepare an isolated example database. The 
 mkdir durable-postgres
 cd durable-postgres
 go mod init example.com/durable-postgres
-go get github.com/Luo-root/pulse-durable@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+# No published pin for this API is supplied here; configure the source workspace per Contributing.
 ```
 
 Supply a DSN through the environment, using a URI or pgx key/value syntax. These are example credentials: adapt them to your service and configure TLS for your deployment. Never commit a real DSN or log it. PowerShell:
@@ -132,22 +133,26 @@ enter downstream: 41
 result: 42 ready
 ```
 
-Downstream exits only after upstream Save confirms and publishes `prepared`. The second process skips confirmed upstream, restarts unconfirmed downstream from its function beginning, and uses `pulse.ReadOutput` on the new Execution's declared outlet, rather than decoding database records directly. `os.Exit(75)` skips defer. PostgreSQL releases advisory locks after detecting connection loss, which may not be instantaneous. The `go run` wrapper may return 1 and print `exit status 75`, rather than returning the program's exit code. To inspect it directly, first `go build -o durable-postgres.exe .`, run `.\durable-postgres.exe` in PowerShell, inspect `$LASTEXITCODE`, then run `.\durable-postgres.exe -resume`.
+Downstream exits only after upstream Apply confirms and publishes `prepared`. The second process skips confirmed upstream, restarts unconfirmed downstream from its function beginning, and uses `pulse.ReadOutput` on the new Execution's declared outlet, rather than decoding database records directly. `os.Exit(75)` skips defer. PostgreSQL releases advisory locks after detecting connection loss, which may not be instantaneous. The `go run` wrapper may return 1 and print `exit status 75`, rather than returning the program's exit code. To inspect it directly, first `go build -o durable-postgres.exe .`, run `.\durable-postgres.exe` in PowerShell, inspect `$LASTEXITCODE`, then run `.\durable-postgres.exe -resume`.
 
 Another `-resume` reads confirmed results only; another Run with this RunID returns `ErrConflict`. Use new RunIDs for new business without overwriting old records. Preserve graph, inputs, Version, and Codec contracts for recovery; proactively change business Version when function or closure semantics change. Without a local DSN, the example can only be compiled, not claimed as a PostgreSQL execution or database acceptance.
 
 ## 4. Connections, locks, and shutdown
 
-- Initialization creates and strictly checks schema `pulse_durable` v1, with `schema_meta` and `runs` tables. Complete RunRecord JSON is stored as BYTEA; decimal TEXT revisions preserve the uint64 range.
+- The development implementation creates and strictly checks physical schema `pulse_durable` v2: `schema_meta`, `snapshots`, `heads`, and `batches`. Initial snapshots and batch wire use BYTEA; decimal TEXT revisions preserve the uint64 range. Old v1, unknown, or incompatible schemas are explicitly rejected, never automatically deleted, modified, or migrated. Preserve the old version with its database and use a separate new database for the new version.
 - Same-Store held or pending RunIDs immediately return `ErrBusy`. Across Stores, Acquire obtains a pool connection, then checks `pg_try_advisory_lock`. Detected contention returns `ErrBusy`, without waiting for the owner to release. Pool waiting and network checks share a default maximum of **30 seconds**, with shorter caller deadlines taking precedence. If pool exhaustion prevents remote ownership detection, timeout returns `context.DeadlineExceeded`, not `ErrBusy`.
-- Every Session occupies one connection until Close, with Load/Save using that connection. Different RunIDs can proceed concurrently within pool capacity; long business executions retain connections. Business execution does not hold a Save transaction.
+- Every Session occupies one connection until Close, with Load/Initialize/Apply using that connection. Different RunIDs can proceed concurrently within pool capacity; long business executions retain connections. Business execution does not hold a commit transaction.
 - Close returns a connection only after confirmed advisory unlock. Failed or uncertain unlock destroys the connection; cleanup is bounded to **five seconds**. Store.Close cancels pending Acquire, closes active Sessions, waits for cleanup, and is repeatable. Stop and wait for all Run/Resume calls and business tasks, close directly acquired Sessions, then close Store. Store.Close does not stop business functions.
 - Advisory locks provide connection-level exclusion, **not leases, fencing tokens, dispatch, or automatic takeover**. After disconnect, old business functions can still produce external effects; lock release does not establish exactly-once. Applications still need idempotency, deduplication, or an outbox. Hosts define policies for network failures, database restarts, and pool exhaustion.
 - Use PostgreSQL backup tools such as `pg_dump`, including `pulse_durable` in restore drills. Never log DSNs or passwords. Hosts own access control, backups, retention, TLS, and credentials. This tutorial does not establish acceptance for network failures, database restarts, backup/restore, or distributed fencing.
 
-## 5. Save confirmation, Load, and Codec
+## 5. Initialize / Apply confirmation, Load, and Codec
 
-Short transactions perform an initial unique insert or revision CAS: initially expected=0, Revision=1; updates require Revision=expected+1. Conflicts return `ErrConflict`. Commit errors can follow successful database commits and are **not automatically retried**. Stop the original call and wait for ownership release, Acquire the same RunID, Load authoritative state, then close the inspection Session before deciding to Resume. Never blindly Save an old snapshot. Corruption, permissions, and connection errors are not `ErrNotFound` and must not trigger record creation.
+Runtime Run constructs valid initial empty execution state, published at Revision 1 by Initialize. It cannot import existing business history; repeated initialization returns `ErrConflict`. Ordinary commits only use typed Apply: one short transaction inserts the batch and CAS-updates the head, checking identity, strictly consecutive expected/next revisions, exact object preconditions, and chain anchors, then returns an exact CommitAck. Applications keep using Run/Resume rather than handwriting business records or batches.
+
+Initial Load verifies the initial snapshot, digests, and consecutive batch chain in a consistent snapshot to rebuild a private projection; explicit Load returns an isolated complete record. Ordinary Apply neither rewrites a complete snapshot nor replays all history. The current uncompacted chain budget is 100000 batches and 256 MiB of wire data; exceeding it returns `ErrBudget`, without dropping history or splitting atomic batches. This is not delivered history compression or unlimited retention. See [Checkpoint cost](checkpoint-cost.md) for cost boundaries.
+
+Initialize/Apply errors can follow successful database commits and are **not automatically retried**. Stop the original call and wait for ownership release, Acquire the same RunID, Load authoritative state, then close the inspection Session before deciding to Resume. Never blindly resubmit old snapshots or batches. Old formats, corruption, permissions, and connection errors are not `ErrNotFound` and must not trigger record creation.
 
 This inspection fragment belongs in an error-returning function with existing `ctx` and `store`; do not run it concurrently with that RunID's Run/Resume:
 
@@ -160,7 +165,7 @@ if err := errors.Join(loadErr, closeErr); err != nil { return err }
 fmt.Println("run:", record.RunID, "revision:", record.Revision)
 ```
 
-The database backend stores complete records, not business-type encodings. `durable.NewCodecs()` handles the example int; register custom types through [Value codecs](codecs.md) and preserve Codec IDs/versions for recovery. Channels, functions, and unsafe.Pointer are unsupported; managed stream endpoints are not saved as ordinary values. Checkpoints contain business data and are not encrypted containers.
+The database backend stores the initial snapshot and incremental batches; Load returns a complete projection. It does not encode business types. `durable.NewCodecs()` handles the example int; register custom types through [Value codecs](codecs.md) and preserve Codec IDs/versions for recovery. Channels, functions, and unsafe.Pointer are unsupported; managed stream endpoints are not saved as ordinary values. Checkpoints contain business data and are not encrypted containers.
 
 ## 6. Real-database tests require a disposable test database
 

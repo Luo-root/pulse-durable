@@ -1,6 +1,8 @@
 # PostgreSQL 使用教程
 
-本文以目标 **Durable v0.1.0** 为 API 基线，需要 **Go 1.26+**、**Pulse v0.5.0**。这是发版准备，不代表已发布；状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，相应 tag 发布前安装命令尚不可用。开发 pin 备选与三 tag 命名见[安装](installation.md)。
+本文描述当前开发分支的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.0**。独立 PostgreSQL 后端仍在开发，本页不是已发布或本轮实库验收通过的声明。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一新协议，没有可选增量模式或整记录写入回退。`durable.New` 和 Runtime Run/Resume 不需要额外开关。
+
+新 API 尚无本页可用的发布安装 pin，旧版 v0.1.0 不适用于下面示例。请按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout；跨模块安装 pin 留待统一更新，发布状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。
 
 ## 1. 准备数据库与安装模块
 
@@ -10,8 +12,7 @@
 mkdir durable-postgres
 cd durable-postgres
 go mod init example.com/durable-postgres
-go get github.com/Luo-root/pulse-durable@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+# 新 API 尚无本页可用的发布 pin；先按贡献指南配置本地源码工作区。
 ```
 
 通过环境变量提供 DSN，URI 或 pgx key/value 格式均可。以下仅为示例凭据，须按本机配置修改，并根据部署配置 TLS；不要将真实 DSN 提交到仓库或写入日志。PowerShell：
@@ -132,22 +133,26 @@ enter downstream: 41
 result: 42 ready
 ```
 
-下游在上游 Save 确认并发布 `prepared` 后才退出。第二个进程跳过已确认上游，从函数开头执行未确认下游，最后通过 `pulse.ReadOutput` 读取新 Execution 的声明出口，而非直接解码数据库记录。`os.Exit(75)` 不执行 defer；PostgreSQL 连接断开后由服务端释放 advisory lock，检测可能不是瞬时的。`go run` 包装命令可能返回 1 并打印 `exit status 75`，不等于业务程序退出码。需要直接查看时先 `go build -o durable-postgres.exe .`，在 PowerShell 执行 `.\durable-postgres.exe`、检查 `$LASTEXITCODE`，再执行 `.\durable-postgres.exe -resume`。
+下游在上游 Apply 确认并发布 `prepared` 后才退出。第二个进程跳过已确认上游，从函数开头执行未确认下游，最后通过 `pulse.ReadOutput` 读取新 Execution 的声明出口，而非直接解码数据库记录。`os.Exit(75)` 不执行 defer；PostgreSQL 连接断开后由服务端释放 advisory lock，检测可能不是瞬时的。`go run` 包装命令可能返回 1 并打印 `exit status 75`，不等于业务程序退出码。需要直接查看时先 `go build -o durable-postgres.exe .`，在 PowerShell 执行 `.\durable-postgres.exe`、检查 `$LASTEXITCODE`，再执行 `.\durable-postgres.exe -resume`。
 
 再次 `-resume` 只读取已确认成果；再次 Run 同 RunID 返回 `ErrConflict`。新业务分配新 RunID，不覆盖旧记录。恢复保留相同图、输入、Version 与 Codec 契约；函数或闭包语义变化需主动升级业务 Version。若本机无 DSN，只能编译示例，不能称 PostgreSQL 已实跑或数据库验收通过。
 
 ## 4. 连接、锁与关闭
 
-- 初始化创建并严格校验 `pulse_durable` schema v1，表为 `schema_meta` 与 `runs`。RunRecord 原始 JSON 存为 BYTEA，revision 为十进制 TEXT，保留完整 uint64 范围。
+- 当前开发实现创建并严格校验 `pulse_durable` 物理 schema v2：`schema_meta`、`snapshots`、`heads`、`batches`。首快照与批 wire 存为 BYTEA，revision 为十进制 TEXT，保留完整 uint64 范围。旧 v1、未知或不匹配 schema 明确拒绝，不自动删除、修改或迁移；保留旧版及其旧库，新版使用独立新库。
 - 同一 Store 已持有或正在申请的 RunID 立即 `ErrBusy`。跨 Store 的 Acquire 先取得池连接，再用 `pg_try_advisory_lock` 检测；确认占用后返回 `ErrBusy`，不等待持有方释放。连接池等待与网络检测总计默认最多 **30 秒**，调用方更短 deadline 优先。池满无法检测远端占用时超时返回 `context.DeadlineExceeded`，不是 `ErrBusy`。
-- 每个 Session 持续占用一条连接直到 Close，Load/Save 使用同一连接。不同 RunID 可以并行，但须给连接池预留容量；长业务会长时间占用连接。业务期间不持有 Save 事务。
+- 每个 Session 持续占用一条连接直到 Close，Load/Initialize/Apply 使用同一连接。不同 RunID 可以并行，但须给连接池预留容量；长业务会长时间占用连接。业务期间不持有提交事务。
 - Close 确认 advisory unlock 后才归还连接；解锁失败或结果不确定时销毁连接，清理最多 **5 秒**。Store.Close 取消 pending Acquire、关闭活动 Session 并等待清理，可重复调用。先停止并等待全部 Run/Resume 和业务任务，再关闭直接获取的 Session，最后关闭 Store；Store.Close 不停止业务函数。
 - advisory lock 是连接级互斥，**不是 lease、fencing token、调度或自动接管服务**。断线后旧业务函数仍可能执行外部副作用，不能由锁释放推导 exactly-once；业务仍需幂等、去重或 outbox。网络故障、数据库重启与池耗尽由宿主制定策略。
 - 使用 PostgreSQL 备份工具（如 `pg_dump`）并将 `pulse_durable` 纳入恢复演练。不要日志记录 DSN 或密码；访问控制、备份、保留、TLS 与凭据由宿主管理。网络故障、数据库重启、备份恢复和分布式 fencing 未由本教程验收。
 
-## 5. Save 确认、Load 与 Codec
+## 5. Initialize / Apply 确认、Load 与 Codec
 
-短事务做首次唯一插入或 revision CAS：首次 expected=0、Revision=1；更新 Revision=expected+1，冲突返回 `ErrConflict`。提交报错可能发生在已落库之后，**不自动重试**。停止原调用并等待所有权释放，Acquire 同一 RunID、Load 权威状态，关闭检查 Session 后再决定 Resume；不要盲目用旧快照 Save。损坏、权限与连接错误不能当作 `ErrNotFound` 来创建记录。
+Runtime Run 构造合法初始空执行状态，由 Initialize 发布 Revision 1；不能用它导入已有业务历史，重复初始化返回 `ErrConflict`。普通提交仅走 typed Apply：同一短事务中插入批并 CAS 推进 head，核对身份、expected/next revision 严格 +1、精确对象前置条件和链锚点；确认后返回精确 CommitAck。应用继续使用 Run/Resume，不手写业务 records 或批。
+
+首次 Load 在一致快照中验证首快照、摘要与连续批链并重建私有投影，显式 Load 返回隔离完整记录。普通 Apply 不重写完整快照、不重放整个历史。当前未合成链预算为 100000 批和 256 MiB wire，超限返回 `ErrBudget`，不自动丢历史或拆开原子批；并非已交付历史压缩或无限保留能力。成本边界见[检查点成本](checkpoint-cost.md)。
+
+Initialize/Apply 报错可能发生在已落库之后，**不自动重试**。停止原调用并等待所有权释放，Acquire 同一 RunID、Load 权威状态，关闭检查 Session 后再决定 Resume；不要盲目重交旧快照或批。旧格式、损坏、权限与连接错误不能当作 `ErrNotFound` 来创建记录。
 
 下面是返回 error 函数中的检查片段，需要已有 `ctx`、`store`，不能与同 RunID 的 Run/Resume 并行：
 
@@ -160,7 +165,7 @@ if err := errors.Join(loadErr, closeErr); err != nil { return err }
 fmt.Println("run:", record.RunID, "revision:", record.Revision)
 ```
 
-数据库后端只保存完整记录，不编码业务类型。`durable.NewCodecs()` 支持本例 int；自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不作为普通值保存。检查点包含业务数据，不是加密容器。
+数据库后端保存首快照和增量批，Load 返回完整投影；它不编码业务类型。`durable.NewCodecs()` 支持本例 int；自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不作为普通值保存。检查点包含业务数据，不是加密容器。
 
 ## 6. 实库测试只能使用可丢弃测试库
 

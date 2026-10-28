@@ -1,6 +1,8 @@
 # SQLite 使用教程
 
-本文以目标 **Durable v0.1.0** 为 API 基线，需要 **Go 1.26+**、**Pulse v0.5.0**。这是发版准备，不代表已发布；状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，相应 tag 发布前安装命令尚不可用。开发 pin 备选与三 tag 命名见[安装](installation.md)。
+本文描述当前开发分支的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.0**，不代表已发布版本。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一实现新协议，没有可选增量模式或整记录写入回退。示例使用 `durable.New` 和 Runtime Run/Resume，无需额外开关。
+
+本页尚未提供新 API 的已发布安装 pin；旧版 v0.1.0 不能代替此开发分支。请按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout，并以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 核实发布状态。安装 pin 将随跨模块发版统一更新，不能把下面程序当作旧 tag 的已验证示例。
 
 ## 1. 安装独立模块
 
@@ -10,11 +12,10 @@
 mkdir durable-sqlite
 cd durable-sqlite
 go mod init example.com/durable-sqlite
-go get github.com/Luo-root/pulse-durable@v0.1.0
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
+# 新 API 尚无本页可用的发布 pin；先按贡献指南配置本地源码工作区。
 ```
 
-SQLite 驱动为纯 Go `modernc.org/sqlite v1.60.1`，内嵌 SQLite 3.53.4，不需要单独安装 SQLite 服务。不要把本例数据库与业务表混用：初始化会严格检查专用 schema，拒绝未知版本、修改的 DDL 或额外 schema 对象。
+SQLite 驱动为纯 Go `modernc.org/sqlite v1.60.1`，内嵌 SQLite 3.53.4，不需要单独安装 SQLite 服务。不要把本例数据库与业务表混用：初始化会严格检查专用物理 schema v2，拒绝旧版、未知版本、修改的 DDL 或额外 schema 对象；不自动删除、修改或迁移旧数据。需保留旧历史时继续用旧版及旧库，新版另用新目录/新数据库文件，不通过清库或覆盖绕过拒绝。
 
 ## 2. 保存完整 main.go
 
@@ -122,7 +123,7 @@ enter downstream: 41
 result: 42 ready
 ```
 
-下游只能在上游 Save 确认、输出发布后读到 `prepared`，因此退出时上游已经持久保存。恢复跳过上游，重新进入未确认的下游；`pulse.ReadOutput` 从新的 Execution 读取已声明出口，不是直接解码数据库 BLOB。再次 `-resume` 只输出结果；再次无 flag 调用 Run 会因同 RunID 已存在返回 `ErrConflict`。新业务应分配新 RunID，不删除旧记录绕过冲突。恢复须保留相同图、输入、Version 和 Codec 契约。
+下游只能在上游 Apply 确认、输出发布后读到 `prepared`，因此退出时上游已经持久保存。恢复跳过上游，重新进入未确认的下游；`pulse.ReadOutput` 从新的 Execution 读取已声明出口，不是直接解码数据库 BLOB。再次 `-resume` 只输出结果；再次无 flag 调用 Run 会因同 RunID 已存在返回 `ErrConflict`。新业务应分配新 RunID，不删除旧记录绕过冲突。恢复须保留相同图、输入、Version 和 Codec 契约。
 
 ## 4. 路径、WAL、锁与备份
 
@@ -133,11 +134,11 @@ result: 42 ready
 - 停止并等待全部 Run/Resume 与业务任务，再关闭直接获取的 Session，最后关闭 Store。Store.Close 不负责停止业务函数。本例正常返回时 defer 关闭 Store；故意退出时由 OS 释放锁。
 - WAL 模式下运行中不能仅复制主数据库文件作为备份。协调所有使用方停机关闭后备份，或使用单独验证的 SQLite 一致性备份流程。运行期间保留数据库、WAL/SHM、`.init.lock` 与 `.runlocks/`，不要删除或替换。权限、备份和保留由宿主管理；断电、备份恢复、迁移未完成单独验收。
 
-## 5. Save 确认、Load 与 Codec
+## 5. Initialize / Apply 确认、Load 与 Codec
 
-后端保存完整 RunRecord 的 JSON BLOB，revision 为十进制 TEXT，保留完整 uint64 范围；它不负责业务值编码。`durable.NewCodecs()` 处理本例的 int；结构体和自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不是普通持久值。检查点包含业务数据，不是加密容器。
+物理 schema v2 使用 `durable_snapshots`、`durable_batches`、`durable_heads`，分别保存首快照、连续不可变批和权威 revision/chain；revision 为十进制 TEXT，保留完整 uint64 范围。每次 Apply 在同一事务中插批并 CAS 推进 head，不重写完整 RunRecord。首次 Load 在一致事务中验证摘要和链并重放，显式 Load 返回隔离完整投影；普通 Apply 使用会话私有投影。当前未合成链限制为 100000 批、256 MiB wire，超限拒绝提交，不自动丢历史或拆开原子批。这不是历史压缩或无限保留承诺；成本边界见[检查点成本](checkpoint-cost.md)。后端不负责业务值编码。`durable.NewCodecs()` 处理本例的 int；结构体和自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不是普通持久值。检查点包含业务数据，不是加密容器。
 
-Save 首次 expected=0、Revision=1，后续 Revision=expected+1；冲突返回 `ErrConflict`。**Save 返回错误不证明未提交**：停止原调用，等待运行和所有权释放，再 Acquire 同一 RunID、Load 权威记录，关闭检查 Session 后决定 Resume。不要用旧快照自动重试 Save，也不要把权限或损坏误判为 `ErrNotFound` 后创建新记录。下面是放在返回 error 的函数中的检查片段，需要已有 `ctx`、`store`；不要与同 RunID 的 Run/Resume 并行：
+Runtime Run 负责构造合法初始状态并 Initialize（Revision=1），不用于导入已有业务历史；重复初始化返回 `ErrConflict`。后续 typed Apply 核对身份、expected/next revision 严格 +1、对象前置条件，并返回精确 CommitAck；这是后端协议，不要求业务手写 records 或批。**Initialize/Apply 返回错误不证明未提交**：停止原调用，等待运行和所有权释放，再 Acquire 同一 RunID、Load 权威记录，关闭检查 Session 后决定 Resume。不要用旧快照或批自动重试，也不要把旧格式、权限或损坏误判为 `ErrNotFound` 后创建新记录。下面是放在返回 error 的函数中的检查片段，需要已有 `ctx`、`store`；不要与同 RunID 的 Run/Resume 并行：
 
 ```go
 session, err := store.Acquire(ctx, "database-demo-001")

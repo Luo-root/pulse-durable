@@ -85,7 +85,12 @@ func (s *session) seal(unsafe bool) {
 	s.mu.Unlock()
 	s.cancel()
 }
-func (s *session) Close() error    { s.seal(false); s.inflight.Wait(); return nil }
+func (s *session) Close() error {
+	s.seal(false)
+	s.inflight.Wait()
+	s.c.DropOwnedProjection(s.token)
+	return nil
+}
 func (s *session) uncertain() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.unsafe }
 func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	op, done, err := s.begin(ctx)
@@ -97,7 +102,9 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if errors.Is(err, d.ErrNotFound) || errors.Is(err, durable.ErrNotFound) {
 		return r, durable.ErrNotFound
 	}
-	if err != nil {
+	// Deterministic corruption follows a successful authoritative load. Keep
+	// renewal alive so execute can Block; every other failure remains unsafe.
+	if err != nil && !errors.Is(err, d.ErrInvalidRecord) {
 		s.seal(true)
 	}
 	return r, err
@@ -136,7 +143,7 @@ func (s *session) confirmed(start time.Time, ttl, margin time.Duration) bool {
 // Contain backend panics at the uncertainty boundary, before runtime recovery
 // could classify infrastructure failure and attempt Release. Track return rather
 // than recover's value so legacy panic(nil) also seals and cancels the session.
-func (s *session) saveOwned(ctx context.Context, req d.SaveRequest) (err error) {
+func (s *session) initializeOwned(ctx context.Context, req d.InitializeRequest) (err error) {
 	returned := false
 	defer func() {
 		if !returned {
@@ -145,22 +152,12 @@ func (s *session) saveOwned(ctx context.Context, req d.SaveRequest) (err error) 
 			err = d.ErrUnknown
 		}
 	}()
-	err = s.c.SaveOwned(ctx, req)
+	err = s.c.InitializeOwned(ctx, req)
 	returned = true
 	return err
 }
 
-// deltaSession is the explicit capability wrapper passed to Runtime. It keeps
-// the base session's lease, sealing and in-flight accounting; it never exposes
-// delta support through the legacy session value.
-type deltaSession struct {
-	*session
-	coordinator d.DeltaCoordinator
-}
-
-var _ durable.DeltaSession = (*deltaSession)(nil)
-
-func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ack durable.CommitAck, err error) {
+func (s *session) Apply(ctx context.Context, batch durable.ChangeBatch) (ack durable.CommitAck, err error) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
 	op, done, err := s.begin(ctx)
@@ -168,11 +165,6 @@ func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ac
 		return durable.CommitAck{}, err
 	}
 	defer done()
-	wire, err := durable.MarshalChangeBatch(batch)
-	if err != nil {
-		s.seal(true)
-		return durable.CommitAck{}, err
-	}
 	id, err := randomID()
 	if err != nil {
 		s.seal(true)
@@ -180,17 +172,12 @@ func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ac
 	}
 	// Digest binds the canonical batch wire to the operation and immutable
 	// ownership token. The random ID is only an idempotency identity.
-	semantics, err := json.Marshal(struct {
-		Operation string
-		Token     d.Token
-		Batch     []byte
-	}{"apply_owned", s.token, wire})
+	digest, err := d.DeltaMutationDigest(s.token, batch)
 	if err != nil {
 		s.seal(true)
 		return durable.CommitAck{}, err
 	}
-	h := sha256.Sum256(semantics)
-	m := d.Mutation{ID: id, Digest: hex.EncodeToString(h[:])}
+	m := d.Mutation{ID: id, Digest: digest}
 	start := time.Now()
 	returned := false
 	defer func() {
@@ -204,10 +191,10 @@ func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ac
 			s.seal(true)
 		}
 		if s.observe != nil {
-			s.observe(Event{Kind: "apply", Token: s.token, Mutation: m, Reason: reason(err), Duration: time.Since(start)})
+			s.observe(Event{Kind: "apply", Token: s.token, Revision: batch.Header().Revision, Mutation: m, Reason: reason(err), Duration: time.Since(start)})
 		}
 	}()
-	ack, err = s.coordinator.ApplyOwned(op, s.token, m, batch)
+	ack, err = s.c.ApplyOwned(op, s.token, m, batch)
 	returned = true
 	if err == nil && ack.Header != batch.Header() {
 		err = durable.ErrConflict
@@ -215,7 +202,7 @@ func (s *deltaSession) Apply(ctx context.Context, batch durable.ChangeBatch) (ac
 	return ack, err
 }
 
-func (s *session) Save(ctx context.Context, r durable.RunRecord, expected uint64) error {
+func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -229,11 +216,11 @@ func (s *session) Save(ctx context.Context, r durable.RunRecord, expected uint64
 		return err
 	}
 	defer done()
-	req := d.SaveRequest{Token: s.token, Record: r, ExpectedRevision: expected}
+	req := d.InitializeRequest{Token: s.token, Record: r}
 	req.Mutation, err = mutation(req)
 	start := time.Now()
 	if err == nil {
-		err = s.saveOwned(op, req)
+		err = s.initializeOwned(op, req)
 	}
 	if err != nil {
 		s.seal(true)

@@ -12,30 +12,42 @@ import (
 
 type transactionSession struct {
 	Session
+	base     *RunRecord
 	calls    int
 	expected uint64
 	saved    RunRecord
 	after    func(RunRecord) error
 }
 
-func (s *transactionSession) Save(_ context.Context, r RunRecord, expected uint64) error {
+func (s *transactionSession) Apply(_ context.Context, batch ChangeBatch) (CommitAck, error) {
 	s.calls++
-	s.expected, s.saved = expected, r
-	if s.after != nil {
-		return s.after(r)
+	s.expected = batch.Header().ExpectedRevision
+	proposal := cloneRecord(*s.base)
+	ack, err := batch.ApplyTo(&proposal)
+	if err != nil {
+		return CommitAck{}, err
 	}
-	return nil
+	s.saved = proposal
+	if s.after != nil {
+		if err := s.after(proposal); err != nil {
+			return CommitAck{}, err
+		}
+	}
+	return ack, nil
 }
 
 func transactionState() (*runState, *transactionSession) {
 	session := &transactionSession{}
-	return &runState{session: session, record: RunRecord{
+	state := &runState{session: session, record: RunRecord{
 		Format: RecordFormat, RunID: "transaction", Revision: 4, RootScope: "root",
 		Attempts: map[string]AttemptRecord{"old": {Parent: "root", NodeID: "work", Index: 1, Limit: 1, State: AttemptActive}},
 		Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Nodes: map[string]NodeRecord{
 			"result": {NodeID: "result", Outputs: []ValueRecord{{Data: []byte("original")}}},
 		}}},
-	}}, session
+	}}
+	session.base = &state.record
+	session.saved = cloneRecord(state.record)
+	return state, session
 }
 
 func stageTransactionFailure(t *testing.T, s *runState) *recordTransaction {
@@ -206,7 +218,9 @@ func TestRecordTransactionSaveFailureDoesNotPublish(t *testing.T) {
 
 func TestRecordTransactionConfirmedCopiesAreIsolated(t *testing.T) {
 	s, session := transactionState()
-	oldRecord := s.record
+	// Only externally published snapshots are isolation boundaries; the private
+	// runtime projection now updates in place after the exact acknowledgement.
+	oldRecord := cloneRecord(s.record)
 	before := cloneRecord(oldRecord)
 	tx := stageTransactionFailure(t, s)
 	session.after = func(r RunRecord) error {

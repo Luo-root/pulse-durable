@@ -27,19 +27,20 @@ type Store interface {
 }
 
 // Session 是同一 RunID 的独占读写会话。
-// Load 返回隔离副本，无记录时返回 ErrNotFound。
-// Save 必须原子比较并交换：首次 expectedRevision=0 且 Revision=1；
-// 后续 Revision=expectedRevision+1，RunID 必须等于该会话的 RunID。
-// 任意不符合条件的写入返回 ErrConflict，且不改变旧记录。
-// Save 可能实际写成却返回错误；调用方停止本次运行，Resume 必须重新 Load。
-// Close 可重复调用；关闭后的 Load/Save 必须返回错误。
+// Load 返回经完整性验证的隔离副本，无检查点时返回 ErrNotFound。
+// Initialize 仅发布 Revision=1 的初始空执行状态，已有检查点时返回 ErrConflict。
+// Apply 是唯一普通写入口，原子核对身份、连续修订号和精确对象前置条件。
+// 写入错误可能表示已提交；调用方必须停止，从新会话 Load 裁决，不能盲重试。
+// 物理链锚点由会话加载、校验和维护，不属于 ChangeHeader。
+// Close 幂等并等待在途操作退出；关闭后拒绝新操作。
 type Session interface {
 	Load(context.Context) (RunRecord, error)
-	Save(context.Context, RunRecord, uint64) error
+	Initialize(context.Context, RunRecord) error
+	Apply(context.Context, ChangeBatch) (CommitAck, error)
 	Close() error
 }
 
-// RunRecord 只含可序列化数据，存储后端仅需 JSON 存取与 RunID/Revision 核对。
+// RunRecord 只含可序列化数据；后端维护基础快照、增量与权威 head。
 // Definition 与 Inputs 是 SHA-256 指纹；记录不保存业务错误文本。
 // Scopes/Attempts 中的键是持久随机身份，不能由运行路径或内存计数重新派生。
 type RunRecord struct {
@@ -114,6 +115,11 @@ type ValueRecord struct {
 	// Stream 引用独立流记录，与 Data/Digest 互斥；TypeID/Version 描述消息元素。
 	Stream *StreamDescriptorRecord `json:"stream,omitempty"`
 }
+
+// CloneRecord returns an isolated deep copy, preserving nil versus empty maps,
+// slices and encoded Data. Backends must not use a JSON round trip for copies:
+// omitempty normalization would destroy exact ChangeBatch preconditions.
+func CloneRecord(r RunRecord) RunRecord { return cloneRecord(r) }
 
 func cloneRecord(r RunRecord) RunRecord {
 	out := r

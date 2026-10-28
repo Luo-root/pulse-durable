@@ -11,11 +11,11 @@ go get github.com/Luo-root/pulse-durable@v0.1.0
 go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
 ```
 
-- [SQLite 完整教程](../site/guide/sqlite.md)：初始化、完整 Run/Resume 程序、持久化后读取输出、Save/Load 和 Codec、路径、WAL、锁与备份。
+- [SQLite 教程](../site/guide/sqlite.md)：当前开发分支的 Initialize/Apply 契约、Runtime 用法及旧物理格式拒绝边界；不代表已发布版本。
 - [安装与版本](../site/guide/installation.md)：三 tag 命名、发布前开发 pin 备选。
 - [贡献指南](../CONTRIBUTING.md)：独立模块与临时源码工作区验证。根 `./...` 不包含本模块。
 
-仅支持有 OS 文件锁的本机文件系统；不支持 SQLite URI、`:memory:`、网络共享、分布式 lease/fencing、迁移或 exactly-once 外部副作用。使用专用数据库；构造严格校验 schema，设置并读回 WAL、FULL、5000ms busy timeout。保留 `.init.lock`、`.runlocks/` 与运行中的 WAL/SHM 文件，不删锁解锁。Save 报错后须等待原调用结束和所有权释放，重新 Load 权威状态，不盲目重试旧快照。关闭前先停止并等待业务运行。备份不能只复制运行中的主数据库；断电、备份恢复与迁移未完成单独验收。
+仅支持有 OS 文件锁的本机文件系统；不支持 SQLite URI、`:memory:`、网络共享、分布式 lease/fencing、迁移或 exactly-once 外部副作用。使用专用数据库；构造严格校验 schema，设置并读回 WAL、FULL、5000ms busy timeout。保留 `.init.lock`、`.runlocks/` 与运行中的 WAL/SHM 文件，不删锁解锁。schema 2 使用首快照、不可变批和小 head；schema 1 明确拒绝，不修改或删除旧数据，也不自动迁移。逻辑 RecordFormat 仍为 2。普通提交仅用 Apply，不重写快照；新会话首次 Load 在单一事务中校验并重放链，此后 Apply 只校验 head 和受影响对象。链上限为 100000 批 / 256 MiB canonical wire，达到后明确停止；显式 compaction 尚未提供。Initialize/Apply 报错后须等待原调用结束和所有权释放，重新 Acquire/Load 权威状态，不盲目重试。投影更新后的写入失败或未知提交会封闭原会话。关闭前先停止并等待业务运行。备份不能只复制运行中的主数据库；断电、备份恢复与迁移未完成单独验收。
 
 ## English
 
@@ -23,8 +23,8 @@ This optional local SQLite backend implements Durable `Store` / `Session` using 
 
 This is release preparation, not a claim of publication. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases). The commands above are unavailable until root `v0.1.0` and submodule `sqlitestore/v0.1.0` tags are published.
 
-- [Complete SQLite tutorial](../site/en/guide/sqlite.md): initialization, complete Run/Resume program, persistent output reading, Save/Load and Codec, paths, WAL, locks, and backups.
+- [SQLite tutorial](../site/en/guide/sqlite.md): the current development branch's Initialize/Apply contract, Runtime usage, and old-layout rejection boundary; not a claim about a published version.
 - [Installation and versions](../site/en/guide/installation.md): three tag names and pre-release development pin alternatives.
 - [Contributing](../CONTRIBUTING.md): independent-module and temporary source-workspace validation. Root `./...` excludes this module.
 
-Use local filesystems supporting OS locks only, not SQLite URIs, `:memory:`, network shares, distributed leases/fencing, migration, or exactly-once external effects. Use a dedicated database: construction strictly checks schema and sets/reads back WAL, FULL, and 5000ms busy timeout. Keep `.init.lock`, `.runlocks/`, and live WAL/SHM files; never delete locks to unlock. After a Save error, wait for the original call and ownership release, then Load authoritative state without blindly retrying old snapshots. Stop and wait for business execution before closing. Backups cannot copy only the live main database. Power-loss, backup/restore, and migration have not received separate acceptance.
+Use local filesystems supporting OS locks only, not SQLite URIs, `:memory:`, network shares, distributed leases/fencing, migration, or exactly-once external effects. Use a dedicated database: construction strictly checks schema and sets/reads back WAL, FULL, and 5000ms busy timeout. Keep `.init.lock`, `.runlocks/`, and live WAL/SHM files; never delete locks to unlock. Schema 2 stores an initial snapshot, immutable batches and a small head. Schema 1 is rejected without modifying or deleting old data; there is no automatic migration. Logical RecordFormat remains 2. Ordinary Apply never rewrites a snapshot. A new session's first Load validates and replays the chain in one transaction; subsequent Apply checks only the head and affected objects. Chains stop at 100000 batches or 256 MiB of canonical wire; explicit compaction is not yet provided. After an Initialize/Apply error, wait for the call and ownership release, then acquire a new session and Load authoritative state without blindly retrying. A write failure after private projection mutation, or an uncertain commit, invalidates the original session. Stop and wait for business execution before closing. Backups cannot copy only the live main database. Power-loss, backup/restore, and migration have not received separate acceptance.

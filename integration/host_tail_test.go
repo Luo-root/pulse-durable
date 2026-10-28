@@ -22,7 +22,7 @@ func TestCompletedSourceHostTailAcrossProcessExit(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHostTailProcessHelper$", "-test.count=1")
 		cmd.Env = append(os.Environ(), "PULSE_HOST_TAIL_DIR="+dir, "PULSE_HOST_TAIL_PHASE="+phase)
-		output, err := cmd.CombinedOutput()
+		output, err := boundedProcessOutput(cmd)
 		if len(output) > 0 {
 			t.Logf("%s: %s", phase, output)
 		}
@@ -185,12 +185,14 @@ type hostTailObservationSession struct {
 	owner *hostTailObservationStore
 }
 
-func (s *hostTailObservationSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
-		return err
-	}
-	if _, complete := record.Scopes[record.RootScope].Nodes["source"]; complete {
-		s.owner.once.Do(func() { close(s.owner.confirmed) })
-	}
-	return nil
+func (s *hostTailObservationSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, func(record durable.RunRecord, commit func() error) error {
+		if err := commit(); err != nil {
+			return err
+		}
+		if _, complete := record.Scopes[record.RootScope].Nodes["source"]; complete {
+			s.owner.once.Do(func() { close(s.owner.confirmed) })
+		}
+		return nil
+	})
 }

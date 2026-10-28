@@ -36,7 +36,7 @@ func taskFixture(t *testing.T, ns, id string) d.Task {
 	return task
 }
 func record(t d.Task, rev uint64) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: t.Identity().RunID, Revision: rev, Version: t.Route().BusinessVersion, Definition: t.Route().Definition, Inputs: t.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{}, Attempts: map[string]durable.AttemptRecord{}}
+	return durable.RunRecord{Format: durable.RecordFormat, RunID: t.Identity().RunID, Revision: rev, Version: t.Route().BusinessVersion, Definition: t.Route().Definition, Inputs: t.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: t.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
 }
 func mut(id string) d.Mutation { return d.Mutation{ID: id, Digest: digest([]byte(id))} }
 func TestValidationAndLosslessRevision(t *testing.T) {
@@ -114,7 +114,7 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 	}
 	t.Logf("migrate ok ns=%s role=%s", ns, role)
 	var schemaVersion int
-	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 2 {
+	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 3 {
 		t.Fatalf("migration version=%d err=%v", schemaVersion, e)
 	}
 	cfg, e := pgxpool.ParseConfig(dsn)
@@ -209,15 +209,20 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e := admin.Exec(ctx, "UPDATE pulse_durable_distributed.runs SET revision=$1::numeric,record=$2 WHERE namespace=$3 AND run_id=$4", strconv.FormatUint(r.Revision, 10), b, ns, "concurrent"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
-		if e := c.SaveOwned(ctx, d.SaveRequest{Token: a.Token, ExpectedRevision: math.MaxUint64 - 1, Record: record(task, math.MaxUint64), Mutation: mut("max-revision")}); e != nil {
-			t.Fatal(e)
+		if _, e := c.LoadOwned(ctx, a.Token); !errors.Is(e, d.ErrInvalid) {
+			t.Fatalf("forged checkpoint without authoritative chain accepted: %v", e)
 		}
-		s, e := c.Get(ctx, task.Identity())
-		if e != nil || s.Revision != math.MaxUint64 {
+		var exact string
+		if e := admin.QueryRow(ctx, "SELECT revision::text FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2", ns, "concurrent").Scan(&exact); e != nil || exact != strconv.FormatUint(math.MaxUint64-1, 10) {
 			t.Fatal("revision precision", e)
 		}
-		if _, e = c.Cancel(ctx, task.Identity(), mut("cancel-concurrent")); e != nil {
-			t.Fatal(e)
+		cancelled, e := c.Cancel(ctx, task.Identity(), mut("cancel-concurrent"))
+		if e != nil || cancelled.Status != d.Canceled || cancelled.Revision != math.MaxUint64-1 {
+			t.Fatalf("cannot cancel corrupt checkpoint: status=%s revision=%d err=%v", cancelled.Status, cancelled.Revision, e)
+		}
+		var retained []byte
+		if e = admin.QueryRow(ctx, "SELECT record FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2", ns, "concurrent").Scan(&retained); e != nil || string(retained) != string(b) {
+			t.Fatal("Cancel changed corrupt checkpoint evidence", scrub(e, false))
 		}
 	})
 	t.Run("submit and stale owner same revision", func(t *testing.T) {
@@ -231,7 +236,7 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal(e)
 		}
 		a := claimOne(t, c, task, "a", time.Minute)
-		if e = c.SaveOwned(ctx, d.SaveRequest{Token: a.Token, Record: record(task, 1), Mutation: mut("save-a")}); e != nil {
+		if e = c.InitializeOwned(ctx, d.InitializeRequest{Token: a.Token, Record: record(task, 1), Mutation: mut("save-a")}); e != nil {
 			t.Fatal(e)
 		}
 		// Administrator barrier deliberately expires A without modifying revision.
@@ -248,7 +253,12 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e = c.LoadOwned(ctx, a.Token); !errors.Is(e, d.ErrLeaseLost) {
 			t.Fatal(e)
 		}
-		if e = c.SaveOwned(ctx, d.SaveRequest{Token: a.Token, ExpectedRevision: 1, Record: record(task, 2), Mutation: mut("stale-save")}); !errors.Is(e, d.ErrLeaseLost) {
+		batch := nextBatch(t, record(task, 1))
+		digest, e := d.DeltaMutationDigest(a.Token, batch)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = c.ApplyOwned(ctx, a.Token, d.Mutation{ID: "stale-apply", Digest: digest}, batch); !errors.Is(e, d.ErrLeaseLost) {
 			t.Fatal(e)
 		}
 		if _, e = c.Renew(ctx, a.Token, time.Minute); !errors.Is(e, d.ErrLeaseLost) {
@@ -260,10 +270,12 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e = c.Finish(ctx, d.FinishRequest{Token: a.Token, ExpectedRevision: 1, Outcome: durable.OutcomeCompleted, Mutation: mut("stale-finish")}); !errors.Is(e, d.ErrLeaseLost) {
 			t.Fatal(e)
 		}
-		invalid := record(task, 2)
-		invalid.Inputs = "invalid"
-		if e = c.SaveOwned(ctx, d.SaveRequest{Token: b.Token, ExpectedRevision: 1, Record: invalid, Mutation: mut("bad-record")}); !errors.Is(e, d.ErrInvalid) {
-			t.Fatal(e)
+		invalid := record(task, 1)
+		invalid.Inputs = strings.Repeat("f", 64)
+		badBatch := nextBatch(t, invalid)
+		badDigest, _ := d.DeltaMutationDigest(b.Token, badBatch)
+		if _, e = c.ApplyOwned(ctx, b.Token, d.Mutation{ID: "bad-record", Digest: badDigest}, badBatch); e == nil {
+			t.Fatal("bad batch identity accepted")
 		}
 		found, e := c.FindClaim(ctx, ns, b.Token.Worker, b.Token.LeaseID)
 		if e != nil || len(found) != 1 {
@@ -286,7 +298,7 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal(e)
 		}
 		a := claimOne(t, c, task, "c", time.Minute)
-		if e := c.SaveOwned(ctx, d.SaveRequest{Token: a.Token, Record: record(task, 1), Mutation: mut("finish-save")}); e != nil {
+		if e := c.InitializeOwned(ctx, d.InitializeRequest{Token: a.Token, Record: record(task, 1), Mutation: mut("finish-save")}); e != nil {
 			t.Fatal(e)
 		}
 		s, e := c.Finish(ctx, d.FinishRequest{Token: a.Token, ExpectedRevision: 1, Outcome: durable.OutcomeCompleted, Mutation: mut("finish")})

@@ -44,19 +44,27 @@ type panicNilFileSession struct {
 	owner *panicNilFileStore
 }
 
-func (s *panicNilFileSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+func (s *panicNilFileSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	if _, err := batch.ApplyTo(&record); err != nil {
+		return durable.CommitAck{}, err
+	}
+	expected := batch.Header().ExpectedRevision
 	call := s.owner.saves.Add(1)
 	if recoveryHasNode(record, "panicnil-file", "work") && s.owner.fired.CompareAndSwap(false, true) {
 		s.owner.panicSave.Store(call)
 		s.owner.panicExpected.Store(expected)
 		if s.owner.after {
-			if err := s.Session.Save(ctx, record, expected); err != nil {
-				return err
+			if _, err := s.Session.Apply(ctx, batch); err != nil {
+				return durable.CommitAck{}, err
 			}
 		}
 		panic(nil)
 	}
-	return s.Session.Save(ctx, record, expected)
+	return s.Session.Apply(ctx, batch)
 }
 
 func panicNilValueGraph(t *testing.T, body *atomic.Int32) (*pulse.Graph, pulse.Key[int]) {

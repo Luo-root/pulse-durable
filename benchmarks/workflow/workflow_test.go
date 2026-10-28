@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Luo-root/pulse"
+	durable "github.com/Luo-root/pulse-durable"
 )
 
 func TestMain(m *testing.M) {
@@ -28,6 +33,169 @@ func localDir(t testing.TB) string {
 		}
 	})
 	return dir
+}
+
+type capturedBatch struct {
+	batch durable.ChangeBatch
+	nodes int
+	bytes uint64
+}
+
+type captureStore struct {
+	durable.Store
+	seed    durable.RunRecord
+	batches []capturedBatch
+}
+
+type captureSession struct {
+	durable.Session
+	owner *captureStore
+}
+
+func (s *captureStore) Acquire(ctx context.Context, id string) (durable.Session, error) {
+	base, err := s.Store.Acquire(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &captureSession{Session: base, owner: s}, nil
+}
+
+func (s *captureSession) Initialize(ctx context.Context, r durable.RunRecord) error {
+	if err := s.Session.Initialize(ctx, r); err != nil {
+		return err
+	}
+	s.owner.seed = durable.CloneRecord(r)
+	return nil
+}
+
+func (s *captureSession) Apply(ctx context.Context, b durable.ChangeBatch) (durable.CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, b)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	wire, err := durable.MarshalChangeBatch(b)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	copyBatch, err := durable.UnmarshalChangeBatch(wire)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	r, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	s.owner.batches = append(s.owner.batches, capturedBatch{batch: copyBatch, nodes: recordNodes(r), bytes: uint64(len(wire))})
+	return ack, nil
+}
+
+func capturedRuntime(t *testing.T, nodes int) *captureStore {
+	t.Helper()
+	const id = "captured-runtime-replay-budget"
+	store := &captureStore{Store: durable.NewMemoryStore()}
+	runtime, err := durable.New(store, durable.NewCodecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := pulse.New("chain", "one node per business step")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]pulse.Key[uint64], nodes)
+	for i := range keys {
+		keys[i] = pulse.NewKey[uint64](fmt.Sprintf("v%d", i))
+	}
+	for i := range keys {
+		requires := pulse.Requires[uint64]()
+		if i > 0 {
+			requires = pulse.Requires(keys[i-1])
+		}
+		n := pulse.NewNode(fmt.Sprintf("n%d", i), "compute", requires, pulse.Provides(keys[i]), func(rc *pulse.RunCtx) error {
+			input := uint64(1)
+			if i > 0 {
+				v, err := pulse.Get(rc, keys[i-1])
+				if err != nil {
+					return err
+				}
+				input += v
+			}
+			return pulse.Set(rc, keys[i], compute(input, i, 1))
+		})
+		if err := graph.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := graph.DeclareOutput(pulse.NewPort(keys[nodes-1])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Run(t.Context(), graph, pulse.Inputs{}, durable.RunOptions{RunID: id, Version: "compute/1"}); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func TestCapturedRuntimeReplayBudget(t *testing.T) {
+	captured := capturedRuntime(t, 10)
+	if len(captured.batches) == 0 || captured.seed.Revision == 0 {
+		t.Fatalf("runtime capture is empty: seed=%+v batches=%d", captured.seed, len(captured.batches))
+	}
+	var prefix, next int
+	var budget uint64
+	for i, b := range captured.batches {
+		if b.nodes > 0 && b.nodes < 10 {
+			prefix, next = b.nodes, i+1
+			budget = uint64(lenJSON(t, captured.seed))
+			for _, prior := range captured.batches[:next] {
+				budget += prior.bytes
+			}
+			break
+		}
+	}
+	if prefix == 0 || next >= len(captured.batches) {
+		t.Fatalf("capture has no confirmed partial prefix: %+v", captured.batches)
+	}
+	base := durable.NewMemoryStore()
+	meter := &meterStore{Store: base, budget: budget}
+	session, err := meter.Acquire(t.Context(), captured.seed.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.Initialize(t.Context(), captured.seed); err != nil {
+		t.Fatal(err)
+	}
+	for i, b := range captured.batches {
+		_, err := session.Apply(t.Context(), b.batch)
+		if i < next {
+			if err != nil {
+				t.Fatalf("replay batch %d: %v", i, err)
+			}
+			continue
+		}
+		if !errors.Is(err, errBudget) {
+			t.Fatalf("next batch %d error=%v, want budget limit", i, err)
+		}
+		break
+	}
+	authority, err := session.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recordNodes(authority); got != prefix {
+		t.Fatalf("authority prefix=%d, want %d", got, prefix)
+	}
+	if meter.initialSnapshotBytes+meter.canonicalBatchBytes > budget {
+		t.Fatalf("metered bytes=%d exceed budget=%d", meter.initialSnapshotBytes+meter.canonicalBatchBytes, budget)
+	}
+}
+
+func lenJSON(t *testing.T, v any) int {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(data)
 }
 
 func TestCorrectness(t *testing.T) {
@@ -91,8 +259,11 @@ func TestGrowthAndBudget(t *testing.T) {
 			if r.Status != "ok" || r.ConfirmedSteps != c.Nodes {
 				t.Fatalf("%s/%s: %+v", engine, storage, r)
 			}
-			if engine == "durable" && r.Storage["logical_json_bytes"].(uint64) <= uint64(r.Storage["final_record_json_bytes"].(int)) {
-				t.Fatal("cumulative JSON must exceed final snapshot")
+			if engine == "durable" && r.Storage["canonical_batch_bytes"].(uint64) == 0 {
+				t.Fatal("successful Apply must record canonical batch bytes")
+			}
+			if engine == "durable" && r.Storage["initial_snapshot_json_bytes"].(uint64) == 0 {
+				t.Fatal("successful Initialize must record the full snapshot bytes")
 			}
 			if engine == "go-workflows" && r.Storage["history_events"].(int) <= c.Nodes {
 				t.Fatal("missing activity workflow history")
@@ -102,15 +273,10 @@ func TestGrowthAndBudget(t *testing.T) {
 	c := defaults()
 	c.Mode = "growth"
 	c.Warmup = false
-	c.MaxWriteBytes = 32768
+	c.MaxWriteBytes = 1
 	c.Dir = localDir(t)
 	r := runCase(c)
-	if r.Status != "resource_limit" || r.ConfirmedSteps <= 0 || r.ConfirmedSteps >= c.Nodes || r.Storage["logical_json_bytes"].(uint64) > c.MaxWriteBytes || r.NSPerOp != nil {
-		t.Fatalf("budget did not preserve partial progress: %+v", r)
-	}
-	c.MaxWriteBytes = 1
-	r = runCase(c)
-	if r.Status != "resource_limit" || r.Storage["save_calls"] != uint64(1) || r.Storage["successful_saves"] != uint64(0) {
+	if r.Status != "resource_limit" || r.Storage["initialize_calls"] != uint64(1) || r.Storage["successful_initializations"] != uint64(0) {
 		t.Fatalf("initial save limit: %+v", r)
 	}
 }

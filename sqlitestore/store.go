@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +18,6 @@ import (
 
 	durable "github.com/Luo-root/pulse-durable"
 	"github.com/Luo-root/pulse-durable/internal/runlock"
-	"github.com/Luo-root/pulse-durable/recordio"
 	_ "modernc.org/sqlite"
 )
 
@@ -38,7 +36,7 @@ var _ durable.Store = (*Store)(nil)
 
 // New opens an independent file database, creating its parent directory if needed.
 // path is a filename, not a SQLite URI; in-memory databases are not supported.
-// Schema version 1 is initialized atomically; unknown versions are rejected.
+// Schema version 2 is initialized atomically; old and unknown versions are rejected.
 func New(path string) (*Store, error) {
 	return NewContext(context.Background(), path)
 }
@@ -98,11 +96,32 @@ func NewContext(ctx context.Context, path string) (*Store, error) {
 	return &Store{db: db, locks: locks, sessions: make(map[*session]struct{})}, nil
 }
 
-const schemaSQL = `CREATE TABLE durable_runs (
-            run_id TEXT PRIMARY KEY NOT NULL,
-            revision TEXT NOT NULL CHECK(typeof(revision) = 'text'),
-            record BLOB NOT NULL CHECK(typeof(record) = 'blob')
-        ) WITHOUT ROWID`
+const snapshotSQL = `CREATE TABLE durable_snapshots (
+ run_id TEXT PRIMARY KEY NOT NULL,
+ record BLOB NOT NULL CHECK(typeof(record) = 'blob'),
+ digest BLOB NOT NULL CHECK(length(digest) = 32),
+ chain BLOB NOT NULL CHECK(length(chain) = 32)
+) WITHOUT ROWID`
+const headSQL = `CREATE TABLE durable_heads (
+ run_id TEXT PRIMARY KEY NOT NULL,
+ revision TEXT NOT NULL CHECK(typeof(revision) = 'text'),
+ chain BLOB NOT NULL CHECK(length(chain) = 32)
+) WITHOUT ROWID`
+const batchSQL = `CREATE TABLE durable_batches (
+ run_id TEXT NOT NULL,
+ revision TEXT NOT NULL CHECK(typeof(revision) = 'text'),
+ parent_revision TEXT NOT NULL CHECK(typeof(parent_revision) = 'text'),
+ parent_chain BLOB NOT NULL CHECK(length(parent_chain) = 32),
+ digest BLOB NOT NULL CHECK(length(digest) = 32),
+ chain BLOB NOT NULL CHECK(length(chain) = 32),
+ wire BLOB NOT NULL CHECK(typeof(wire) = 'blob'),
+ PRIMARY KEY(run_id, revision)
+) WITHOUT ROWID`
+
+// Explicit compaction is not implemented. Stop rather than permit unbounded
+// recovery cost; a fresh database/run is not an automatic compaction mechanism.
+const maxChainBatches = 100000
+const maxChainBytes = 256 << 20
 
 // Serialize initialization (including journal-mode transitions) across processes.
 // Unlike run ownership, constructors wait up to five seconds, or ctx cancellation.
@@ -162,10 +181,12 @@ func initialize(ctx context.Context, db *sql.DB, lockPath string) (resultErr err
 		return err
 	}
 	if schemaVersion == 0 {
-		if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
-			return err
+		for _, ddl := range []string{snapshotSQL, headSQL, batchSQL} {
+			if _, err := tx.ExecContext(ctx, ddl); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, "PRAGMA user_version=1"); err != nil {
+		if _, err := tx.ExecContext(ctx, "PRAGMA user_version=2"); err != nil {
 			return err
 		}
 	}
@@ -177,7 +198,7 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 1 {
+	if version != 0 && version != 2 {
 		return fmt.Errorf("sqlitestore: unsupported schema version %d", version)
 	}
 	rows, err := db.QueryContext(ctx, "SELECT type, name, sql FROM sqlite_schema WHERE substr(name, 1, 7) != 'sqlite_'")
@@ -193,18 +214,16 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		count++
-		// Only this module's exact v1 DDL (ignoring whitespace) is accepted.
-		// This checks PK, NOT NULL, storage types, CHECKs and WITHOUT ROWID;
-		// superficially similar or externally modified schemas are not adopted.
-		if version != 1 || kind != "table" || name != "durable_runs" || strings.Join(strings.Fields(definition.String), " ") != strings.Join(strings.Fields(schemaSQL), " ") {
+		expected := map[string]string{"durable_snapshots": snapshotSQL, "durable_heads": headSQL, "durable_batches": batchSQL}[name]
+		if version != 2 || kind != "table" || expected == "" || strings.Join(strings.Fields(definition.String), " ") != strings.Join(strings.Fields(expected), " ") {
 			return errors.New("sqlitestore: incompatible or unrelated database schema")
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if version == 1 && count != 1 {
-		return errors.New("sqlitestore: missing v1 schema")
+	if version == 2 && count != 3 {
+		return errors.New("sqlitestore: missing v2 schema")
 	}
 	return nil
 }
@@ -268,105 +287,20 @@ func (s *Store) Close() error {
 }
 
 type session struct {
-	mu       sync.Mutex
-	store    *Store
-	runID    string
-	lock     *runlock.Lock
-	closed   bool
-	closeErr error
+	mu         sync.Mutex
+	store      *Store
+	runID      string
+	lock       *runlock.Lock
+	closed     bool
+	closeErr   error
+	cache      *durable.RunRecord
+	chain      [32]byte
+	batchCount int
+	batchBytes int
+	poisoned   bool
 }
 
 var _ durable.Session = (*session)(nil)
-
-type querier interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-func (s *session) load(ctx context.Context, q querier) (durable.RunRecord, error) {
-	var revision string
-	var data []byte
-	err := q.QueryRowContext(ctx, "SELECT revision, record FROM durable_runs WHERE run_id = ?", s.runID).Scan(&revision, &data)
-	if errors.Is(err, sql.ErrNoRows) {
-		return durable.RunRecord{}, durable.ErrNotFound
-	}
-	if err != nil {
-		return durable.RunRecord{}, err
-	}
-	n, err := strconv.ParseUint(revision, 10, 64)
-	if err != nil || n == 0 || strconv.FormatUint(n, 10) != revision {
-		return durable.RunRecord{}, errors.New("sqlitestore: invalid stored revision")
-	}
-	r, err := recordio.Decode(data)
-	if err != nil {
-		return durable.RunRecord{}, err
-	}
-	if r.RunID != s.runID || r.Revision != n {
-		return durable.RunRecord{}, errors.New("sqlitestore: stored record identity or revision mismatch")
-	}
-	return r, nil
-}
-
-func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return durable.RunRecord{}, os.ErrClosed
-	}
-	if err := checkContext(ctx); err != nil {
-		return durable.RunRecord{}, err
-	}
-	return s.load(ctx, s.store.db)
-}
-
-// Save atomically inserts revision 1 or updates exactly expectedRevision.
-// Revision is decimal TEXT so all uint64 values remain exact. No retries occur.
-// Corrupt existing records are rejected rather than silently overwritten.
-func (s *session) Save(ctx context.Context, record durable.RunRecord, expectedRevision uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return os.ErrClosed
-	}
-	if err := checkContext(ctx); err != nil {
-		return err
-	}
-	if record.RunID != s.runID || expectedRevision == ^uint64(0) || record.Revision != expectedRevision+1 {
-		return durable.ErrConflict
-	}
-	data, err := recordio.Encode(record)
-	if err != nil {
-		return err
-	}
-	tx, err := s.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return saveContextError(ctx, err)
-	}
-	defer tx.Rollback()
-	current, err := s.load(ctx, tx)
-	if err != nil && !errors.Is(err, durable.ErrNotFound) {
-		return saveContextError(ctx, err)
-	}
-	if current.Revision != expectedRevision {
-		return durable.ErrConflict
-	}
-	var result sql.Result
-	if expectedRevision == 0 {
-		result, err = tx.ExecContext(ctx, "INSERT INTO durable_runs(run_id, revision, record) VALUES (?, ?, ?) ON CONFLICT(run_id) DO NOTHING", s.runID, strconv.FormatUint(record.Revision, 10), data)
-	} else {
-		result, err = tx.ExecContext(ctx, "UPDATE durable_runs SET revision = ?, record = ? WHERE run_id = ? AND revision = ?", strconv.FormatUint(record.Revision, 10), data, s.runID, strconv.FormatUint(expectedRevision, 10))
-	}
-	if err != nil {
-		return saveContextError(ctx, err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return saveContextError(ctx, err)
-	}
-	if n != 1 {
-		return durable.ErrConflict
-	}
-	return tx.Commit()
-}
 
 // saveContextError preserves the driver's error unless cancellation is known to
 // have happened before the transaction could commit. Commit errors remain opaque:

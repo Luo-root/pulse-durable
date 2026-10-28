@@ -137,14 +137,19 @@ func (s *activeAliasStore) Acquire(ctx context.Context, id string) (durable.Sess
 	return &activeAliasSession{Session: session, signals: s.signals}, nil
 }
 
-func (s *activeAliasSession) Save(ctx context.Context, record durable.RunRecord, revision uint64) error {
-	if err := s.Session.Save(ctx, record, revision); err != nil {
-		return err
+func (s *activeAliasSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, batch)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
 	}
 	if _, ok := record.Scopes[record.RootScope].Nodes["mount"]; ok {
 		s.signals.saveOnce.Do(func() { close(s.signals.saved) })
 	}
-	return nil
+	return ack, nil
 }
 
 func TestActiveAliasCanCommitBeforeSourceFinishes(t *testing.T) {
@@ -358,9 +363,14 @@ func (s *failedAliasStore) Acquire(ctx context.Context, id string) (durable.Sess
 	return &failedAliasSession{Session: session, signals: s.signals}, nil
 }
 
-func (s *failedAliasSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
-		return err
+func (s *failedAliasSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, batch)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
 	}
 	s.signals.mu.Lock()
 	defer s.signals.mu.Unlock()
@@ -378,7 +388,7 @@ func (s *failedAliasSession) Save(ctx context.Context, record durable.RunRecord,
 			s.signals.saveOnce[attempt-1].Do(func() { close(s.signals.saved[attempt-1]) })
 		}
 	}
-	return nil
+	return ack, nil
 }
 
 func TestFailedAliasPartialHistoryCanAdvanceParentRetry(t *testing.T) {
@@ -419,7 +429,14 @@ func (s *failedAliasBoundaryStore) Acquire(ctx context.Context, id string) (dura
 	return &failedAliasBoundarySession{Session: session, owner: s}, err
 }
 
-func (s *failedAliasBoundarySession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
+func (s *failedAliasBoundarySession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	if _, err := batch.ApplyTo(&record); err != nil {
+		return durable.CommitAck{}, err
+	}
 	match := false
 	for _, stream := range record.Streams {
 		if stream.Stream.Terminal == "failed" && s.owner.fired.CompareAndSwap(false, true) {
@@ -429,16 +446,18 @@ func (s *failedAliasBoundarySession) Save(ctx context.Context, record durable.Ru
 				root := record.Attempts[stream.Stream.Attempt]
 				root.State = durable.AttemptActive
 				record.Attempts[stream.Stream.Attempt] = root
+				batch = durable.OverrideAttemptForTest(batch, stream.Stream.Attempt, root)
 			}
 		}
 	}
-	if err := s.Session.Save(ctx, record, expected); err != nil {
-		return err
+	ack, err := s.Session.Apply(ctx, batch)
+	if err != nil {
+		return durable.CommitAck{}, err
 	}
 	if match {
-		return errors.New("after failed-terminal Save")
+		return durable.CommitAck{}, errors.New("after failed-terminal Apply")
 	}
-	return nil
+	return ack, nil
 }
 
 func TestFailedAliasHistoryDoesNotBlockSuccessfulRetryResume(t *testing.T) {

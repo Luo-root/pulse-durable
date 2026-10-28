@@ -3,7 +3,7 @@ module github.com/Luo-root/pulse-durable/postgresstore
 go 1.26.0
 
 require (
-	github.com/Luo-root/pulse-durable v0.0.0-20261023040750-1b397e91c878
+	github.com/Luo-root/pulse-durable v0.1.1-0.20261028063114-a0a4a7fb9e83
 	github.com/jackc/pgx/v5 v5.11.0
 )
 

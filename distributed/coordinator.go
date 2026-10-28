@@ -79,11 +79,10 @@ type Mutation struct {
 	ID     string
 	Digest string
 }
-type SaveRequest struct {
-	Token            Token
-	ExpectedRevision uint64
-	Record           durable.RunRecord
-	Mutation         Mutation
+type InitializeRequest struct {
+	Token    Token
+	Record   durable.RunRecord
+	Mutation Mutation
 }
 type FinishRequest struct {
 	Token            Token
@@ -116,8 +115,11 @@ type ListRequest struct {
 // business failure or automatically replay. All mutations have stable IDs/digests.
 //
 // LoadOwned returns ErrNotFound ONLY for an absent record under valid ownership.
-// SaveOwned also checks revision CAS, exact task identity/version/definition/inputs
-// in actual encoded record, bounds and JSON format; first revision=1, then +1.
+// ErrInvalidRecord identifies deterministic record corruption ONLY after a
+// successful authoritative ownership/clock check; other errors do not permit Block.
+// InitializeOwned publishes only the initial revision=1 checkpoint. ApplyOwned
+// is the sole ordinary checkpoint transition, atomically fencing ownership and
+// matching the authoritative revision and chain head before publishing a batch.
 // Finish accepts only Runtime OutcomeCompleted/OutcomeFailed and matching final
 // revision; the runtime must confirm all root outputs/final failure first. It
 // atomically sets immutable succeeded/failed. Cancel races Finish under same lock
@@ -135,23 +137,16 @@ type Coordinator interface {
 	FindClaim(context.Context, string, Worker, string) ([]Claim, error)
 	ResolveClaim(context.Context, string, Worker, string) (ClaimResolution, error)
 	Renew(context.Context, Token, time.Duration) (time.Time, error)
+	// DropOwnedProjection discards only local cached state for this exact token.
+	// It is idempotent, performs no database operation and never releases a lease.
+	DropOwnedProjection(Token)
 	LoadOwned(context.Context, Token) (durable.RunRecord, error)
-	SaveOwned(context.Context, SaveRequest) error
+	InitializeOwned(context.Context, InitializeRequest) error
+	ApplyOwned(context.Context, Token, Mutation, durable.ChangeBatch) (durable.CommitAck, error)
 	Finish(context.Context, FinishRequest) (Snapshot, error)
 	Release(context.Context, Token, Mutation) error
 	Block(context.Context, Token, string, Mutation) error
 	Cancel(context.Context, Identity, Mutation) (Snapshot, error)
-}
-
-// DeltaCoordinator is the optional owned-delta capability. It is deliberately
-// separate from Coordinator so legacy backends remain valid and full-save
-// execution remains the default. Implementations must fence token ownership,
-// bind the batch header to the authoritative task/record, and atomically apply
-// the batch under the same ownership lock. Mutation covers the canonical batch
-// wire plus operation and token semantics; an error may mean the write committed.
-type DeltaCoordinator interface {
-	Coordinator
-	ApplyOwned(context.Context, Token, Mutation, durable.ChangeBatch) (durable.CommitAck, error)
 }
 
 // PullPolicy bounds admission, not DB ownership. Active includes pending claims,

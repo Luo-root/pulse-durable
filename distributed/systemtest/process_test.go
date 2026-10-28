@@ -142,7 +142,7 @@ func provision(t *testing.T) fixture {
 	}
 	// Administrative DDL is limited to the explicitly authorized Docker database.
 	c := cfg.ConnConfig
-	allowedDatabase := c.Database == "durable_distributed_test" || c.Database == "durable_dist_security_20261025"
+	allowedDatabase := c.Database == "durable_distributed_test" || c.Database == "durable_dist_security_20261025" || c.Database == "durable_clock_diag_20261028"
 	if c.Host != "127.0.0.1" || c.Port != 55432 || !allowedDatabase || c.User != "durable_test" {
 		t.Fatal("provisioning restricted to authorized local Docker database")
 	}
