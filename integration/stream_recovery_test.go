@@ -1234,7 +1234,7 @@ func streamRecoveryProcess(t *testing.T, dir, scenario, phase string) error {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStreamRecoveryProcessHelper$", "-test.count=1", "-test.timeout=12s")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PULSE_STREAM_DIR="+dir, "PULSE_STREAM_CASE="+scenario, "PULSE_STREAM_PHASE="+phase, "GORACE=atexit_sleep_ms=0")
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	if len(output) > 0 {
 		t.Logf("%s/%s: %s", scenario, phase, output)
 	}
@@ -1686,7 +1686,7 @@ func failedStreamProcess(t *testing.T, dir string, tc failedStreamCase, phase st
 	}
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStreamProcessHelper$", "-test.count=1", "-test.timeout=10s")
 	cmd.Env = append(os.Environ(), "PULSE_FAILED_DIR="+dir, "PULSE_FAILED_CASE="+string(data), "PULSE_FAILED_PHASE="+phase)
-	output, err := cmd.CombinedOutput()
+	output, err := boundedProcessOutput(cmd)
 	t.Logf("%s/%s: %s", tc.Name, phase, output)
 	if ctx.Err() != nil {
 		t.Fatal(ctx.Err())

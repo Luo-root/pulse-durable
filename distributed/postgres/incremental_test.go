@@ -65,7 +65,7 @@ func TestPostgresIncrementalChainAndHeadCAS(t *testing.T) {
 	if _, e = c.ApplyOwned(ctx, claim.Token, d.Mutation{ID: "wrong-head", Digest: digest}, b); !errors.Is(e, d.ErrRevisionConflict) {
 		t.Fatalf("head CAS bypass: %v", e)
 	}
-	if _, e = c.LoadOwned(ctx, claim.Token); !errors.Is(e, d.ErrInvalid) {
+	if _, e = c.LoadOwned(ctx, claim.Token); !errors.Is(e, d.ErrInvalidRecord) {
 		t.Fatalf("corrupt head accepted: %v", e)
 	}
 }

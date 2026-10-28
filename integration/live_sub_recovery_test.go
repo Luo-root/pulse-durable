@@ -19,7 +19,7 @@ func TestLiveSubRecoveryAcrossProcessExit(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLiveSubRecoveryProcessHelper$", "-test.count=1")
 		cmd.Env = append(os.Environ(), "PULSE_LIVE_SUB_DIR="+dir, "PULSE_LIVE_SUB_PHASE="+phase)
-		output, err := cmd.CombinedOutput()
+		output, err := boundedProcessOutput(cmd)
 		cancel()
 		if len(output) != 0 {
 			t.Logf("%s: %s", phase, output)

@@ -102,7 +102,9 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if errors.Is(err, d.ErrNotFound) || errors.Is(err, durable.ErrNotFound) {
 		return r, durable.ErrNotFound
 	}
-	if err != nil {
+	// Deterministic corruption follows a successful authoritative load. Keep
+	// renewal alive so execute can Block; every other failure remains unsafe.
+	if err != nil && !errors.Is(err, d.ErrInvalidRecord) {
 		s.seal(true)
 	}
 	return r, err

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync/atomic"
 
@@ -114,10 +115,21 @@ func (c *Coordinator) loadProjection(ctx context.Context, t d.Token, p *projecti
 	if e != nil {
 		return durable.RunRecord{}, e
 	}
-	s, _, snapshot, e := decodeSnapshot(b)
-	if e != nil || s.Task.Identity() != t.Identity {
+	return c.decodeProjection(t, p, b)
+}
+
+// Only a successful fenced load response may classify record corruption. SQL,
+// transport, clock and token errors above retain their conservative semantics.
+func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r durable.RunRecord, err error) {
+	s, owner, snapshot, e := decodeSnapshot(b)
+	if e != nil || owner != t || s.Status != d.Running {
 		return durable.RunRecord{}, d.ErrInvalid
 	}
+	defer func() {
+		if errors.Is(err, d.ErrInvalid) {
+			err = d.ErrInvalidRecord
+		}
+	}()
 	if s.Revision == 0 {
 		return durable.RunRecord{}, d.ErrNotFound
 	}
@@ -129,7 +141,7 @@ func (c *Coordinator) loadProjection(ctx context.Context, t d.Token, p *projecti
 	if chainText(digest) != log.Digest {
 		return durable.RunRecord{}, d.ErrInvalid
 	}
-	r, e := decodeRecord(s.Task, 1, snapshot)
+	r, e = decodeRecord(s.Task, 1, snapshot)
 	if e != nil {
 		return durable.RunRecord{}, e
 	}

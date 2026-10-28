@@ -115,6 +115,8 @@ type ListRequest struct {
 // business failure or automatically replay. All mutations have stable IDs/digests.
 //
 // LoadOwned returns ErrNotFound ONLY for an absent record under valid ownership.
+// ErrInvalidRecord identifies deterministic record corruption ONLY after a
+// successful authoritative ownership/clock check; other errors do not permit Block.
 // InitializeOwned publishes only the initial revision=1 checkpoint. ApplyOwned
 // is the sole ordinary checkpoint transition, atomically fencing ownership and
 // matching the authoritative revision and chain head before publishing a batch.

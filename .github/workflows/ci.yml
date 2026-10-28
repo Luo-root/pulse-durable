@@ -44,8 +44,16 @@ jobs:
             echo "$out"
             exit 1
           fi
-      - name: Test, including process exit and recovery
-        run: go test -race -count=1 -timeout=180s ./...
+      - name: Test runtime and file storage
+        shell: bash
+        run: |
+          packages=$(go list ./...)
+          packages=$(printf '%s\n' "$packages" | grep -v '/integration$')
+          go test -race -count=1 -timeout=180s $packages
+      # Serial process-recovery cases need a package budget, not longer fault deadlines.
+      # Helpers retain 12-20s parent deadlines; the entire job remains capped at 15 minutes.
+      - name: Test process exit and recovery
+        run: go test -race -count=1 -timeout=300s -v ./integration
 
   distributed-contracts:
     strategy:

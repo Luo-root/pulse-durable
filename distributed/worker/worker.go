@@ -394,6 +394,9 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 			switch {
 			case errors.Is(loadErr, durable.ErrNotFound):
 				_, outcome, err = rt.RunClaimed(ctx, claimed, a.Graph, in, opts)
+			case errors.Is(loadErr, d.ErrInvalidRecord):
+				outcome = durable.OutcomeRejected
+				err = loadErr
 			case loadErr == nil:
 				_, outcome, err = rt.ResumeClaimed(ctx, claimed, a.Graph, in, opts)
 			default:
