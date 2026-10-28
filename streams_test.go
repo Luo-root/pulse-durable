@@ -121,9 +121,7 @@ func TestFailedStreamSaveFailureAndLegacyConvergence(t *testing.T) {
 			stream := p.s.record.Streams[key]
 			stream.Stream.Terminal = terminal
 			p.s.record.Streams[key] = stream
-			if err := p.s.save(context.Background(), cloneRecord(p.s.record)); err != nil {
-				t.Fatal(err)
-			}
+			replaceMemoryFixture(p.s.session, p.s.record)
 			if err := p.s.validateLoaded(); err != nil {
 				t.Fatal(err)
 			}
@@ -160,9 +158,7 @@ func TestLegacyStreamRepairSaveOutcomeIsAuthoritative(t *testing.T) {
 			stream := p.s.record.Streams[key]
 			stream.Stream.Terminal = "failed"
 			p.s.record.Streams[key] = stream
-			if err := p.s.save(context.Background(), cloneRecord(p.s.record)); err != nil {
-				t.Fatal(err)
-			}
+			replaceMemoryFixture(p.s.session, p.s.record)
 			before := cloneRecord(p.s.record)
 			base := p.s.session
 			p.s.session = &terminalFaultSession{Session: base, after: after, failure: pulse.ErrSkipped}
@@ -207,13 +203,13 @@ type terminalFaultSession struct {
 	failure error
 }
 
-func (s *terminalFaultSession) Save(ctx context.Context, record RunRecord, expected uint64) error {
+func (s *terminalFaultSession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck, error) {
 	if s.after {
-		if err := s.Session.Save(ctx, record, expected); err != nil {
-			return err
+		if _, err := s.Session.Apply(ctx, batch); err != nil {
+			return CommitAck{}, err
 		}
 	}
-	return s.failure
+	return CommitAck{}, s.failure
 }
 
 func TestConsumerCanConfirmBeforeItsStreamProducerCompletes(t *testing.T) {
@@ -670,12 +666,24 @@ type streamObservationSession struct {
 	afterSave func(RunRecord)
 }
 
-func (s *streamObservationSession) Save(ctx context.Context, record RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+func (s *streamObservationSession) Initialize(ctx context.Context, record RunRecord) error {
+	if err := s.Session.Initialize(ctx, record); err != nil {
 		return err
 	}
 	s.afterSave(record)
 	return nil
+}
+func (s *streamObservationSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, b)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	s.afterSave(record)
+	return ack, nil
 }
 
 func receiveHost(ctx context.Context, sub *pulse.StreamSubscription[int]) (pulse.Delivery[int], error) {

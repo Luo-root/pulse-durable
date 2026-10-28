@@ -35,12 +35,19 @@ type claimedTestSession struct {
 
 func (s *claimedTestSession) RunID() string { return s.id }
 func (s *claimedTestSession) Close() error  { s.owner.closes.Add(1); return s.Session.Close() }
-func (s *claimedTestSession) Save(ctx context.Context, r RunRecord, rev uint64) error {
-	err := s.Session.Save(ctx, r, rev)
+func (s *claimedTestSession) Initialize(ctx context.Context, r RunRecord) error {
+	err := s.Session.Initialize(ctx, r)
 	if err == nil && (s.uncertain || s.uncertainAt == r.Revision) {
 		return context.Canceled
 	}
 	return err
+}
+func (s *claimedTestSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, b)
+	if err == nil && (s.uncertain || s.uncertainAt == b.Header().Revision) {
+		return CommitAck{}, context.Canceled
+	}
+	return ack, err
 }
 func claimForTest(t *testing.T, s *countedStore, id string) *claimedTestSession {
 	t.Helper()
@@ -310,12 +317,9 @@ func TestClaimedRestoreValidation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				rev := record.Revision
 				record.Format = 999
 				record.Revision++
-				if err := session.Save(context.Background(), record, rev); err != nil {
-					t.Fatal(err)
-				}
+				replaceMemoryFixture(session.Session, record)
 			}
 			_, outcome, err := rt.ResumeClaimed(context.Background(), session, g, inputs, options)
 			if err == nil || outcome != OutcomeRejected {

@@ -43,11 +43,6 @@ type RunOptions struct {
 	// BeforeStart 在恢复计划装配后、Start 前调用。宿主可 SubscribeStream 并启动读取 goroutine；
 	// goroutine 须等待执行启动后再 Receive，并在执行取消时退出。回调错误或 panic 会取消执行、释放会话。
 	BeforeStart func(*pulse.Execution) error
-	// RequireDelta explicitly selects DeltaSession before any business starts.
-	// Missing capability is rejected; Apply errors never fall back to Save.
-	// The initial seed uses one full Save. Final node validation may materialize
-	// a complete proposal, while stream/message hot checkpoints use typed deltas.
-	RequireDelta bool
 }
 
 // Event 是 Durable 自身的恢复事实，不伪造 Pulse Waiting/Running 或业务耗时。
@@ -141,14 +136,6 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 		}
 		defer func() { err = errors.Join(err, checkpointError("close session", closeSession(session))) }()
 	}
-	var delta DeltaSession
-	if opts.RequireDelta {
-		var ok bool
-		delta, ok = session.(DeltaSession)
-		if !ok || nilValue(delta) {
-			return nil, ErrUnsupportedCapability
-		}
-	}
 	outcome = OutcomeInfrastructure
 	stored, loadErr := load(session, ctx)
 	if resume {
@@ -178,7 +165,7 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 		stored = RunRecord{Format: RecordFormat, RunID: opts.RunID, Version: opts.Version,
 			Definition: d.fingerprint, RootScope: id, Scopes: make(map[string]ScopeRecord), Attempts: make(map[string]AttemptRecord)}
 	}
-	state = &runState{session: session, delta: delta, def: d, record: cloneRecord(stored), event: opts.OnEvent}
+	state = &runState{session: session, def: d, record: cloneRecord(stored), event: opts.OnEvent}
 	execOptions := append([]pulse.ExecOption(nil), opts.ExecOptions...)
 	execOptions = append(execOptions, pulse.WithExecCheckpoint(stored.RootScope, state.hooks()))
 	outcome = OutcomeRejected
@@ -225,7 +212,7 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 		proposed := cloneRecord(stored)
 		proposed.Inputs = inputHash
 		proposed.Scopes[stored.RootScope] = ScopeRecord{Graph: d.root.graph, Path: d.root.path, Inputs: inputHash, Nodes: make(map[string]NodeRecord)}
-		if err := state.save(ctx, proposed); err != nil {
+		if err := state.initialize(ctx, proposed); err != nil {
 			return execution, checkpointError("initialize run", err)
 		}
 	}

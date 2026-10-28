@@ -20,7 +20,7 @@ import (
 
 const recoveryExit = 73
 
-var uncertainSave = errors.New("test: SQLite committed but acknowledgement was lost")
+var uncertainApply = errors.New("test: SQLite committed but acknowledgement was lost")
 
 // These are Runtime tests against a real SQLite database, not lock tests.
 // Every Run and Resume reconstructs the graph in a separate process. Audit files
@@ -214,7 +214,7 @@ func assertAudit(t *testing.T, dir, name, want string) {
 }
 
 // The wrapper only selects a boundary from the candidate record. All persistence
-// is performed by the real SQLite Session.Save; no product fault hooks are used.
+// is performed by the real SQLite Session.Apply; no product fault hooks are used.
 type recoveryStore struct {
 	durable.Store
 	scenario string
@@ -234,7 +234,14 @@ type recoverySession struct {
 	fired    bool
 }
 
-func (s *recoverySession) Save(c context.Context, r durable.RunRecord, expected uint64) error {
+func (s *recoverySession) Apply(c context.Context, b durable.ChangeBatch) (durable.CommitAck, error) {
+	r, err := s.Session.Load(c)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	if _, err = b.ApplyTo(&r); err != nil {
+		return durable.CommitAck{}, err
+	}
 	match := false
 	switch s.scenario {
 	case "retry-failed", "retry-exhausted":
@@ -261,17 +268,18 @@ func (s *recoverySession) Save(c context.Context, r durable.RunRecord, expected 
 	if match && strings.HasSuffix(s.scenario, "before") {
 		os.Exit(recoveryExit)
 	}
-	if err := s.Session.Save(c, r, expected); err != nil {
-		return err
+	ack, err := s.Session.Apply(c, b)
+	if err != nil {
+		return durable.CommitAck{}, err
 	}
 	if match {
 		s.fired = true
 		if strings.HasPrefix(s.scenario, "uncertain-") {
-			return uncertainSave
+			return durable.CommitAck{}, uncertainApply
 		}
 		os.Exit(recoveryExit)
 	}
-	return nil
+	return ack, nil
 }
 
 func TestSQLiteRecoveryHelper(t *testing.T) {
@@ -308,8 +316,8 @@ func TestSQLiteRecoveryHelper(t *testing.T) {
 	}
 	if phase == "run" && strings.HasPrefix(scenario, "uncertain-") {
 		var checkpoint *pulse.CheckpointError
-		if !errors.Is(err, uncertainSave) || !errors.As(err, &checkpoint) || e == nil || e.Snapshot().Graph.Status != pulse.GraphStatusFailed {
-			t.Fatalf("committed Save error was swallowed: %v", err)
+		if !errors.Is(err, uncertainApply) || !errors.As(err, &checkpoint) || e == nil || e.Snapshot().Graph.Status != pulse.GraphStatusFailed {
+			t.Fatalf("committed Apply error was swallowed: %v", err)
 		}
 		os.Exit(recoveryExit)
 	}
@@ -515,9 +523,9 @@ func assertFinishedStream(t *testing.T, r durable.RunRecord) {
 	}
 }
 
-// Observe entry into Save without a scheduler-delay guess. The concrete session
-// mutex is held by Save, and its Store connection is checked out for BEGIN.
-func awaitSQLiteSave(t *testing.T, ss *session) {
+// Observe entry into Apply without a scheduler-delay guess. The concrete session
+// mutex is held by Apply, and its Store connection is checked out for BEGIN.
+func awaitSQLiteApply(t *testing.T, ss *session) {
 	t.Helper()
 	deadline := time.NewTimer(3 * time.Second)
 	defer deadline.Stop()
@@ -531,19 +539,19 @@ func awaitSQLiteSave(t *testing.T, ss *session) {
 		}
 		select {
 		case <-deadline.C:
-			t.Fatal("Save did not enter its database operation")
+			t.Fatal("Apply did not enter its database operation")
 		default:
 			runtime.Gosched()
 		}
 	}
 }
 
-func TestSQLiteBusySaveCancellation(t *testing.T) {
+func TestSQLiteBusyApplyCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runs.sqlite")
 	writer, blocker := openStore(t, path), openStore(t, path)
 	ss := acquire(t, writer, "cancelled-run")
-	old := record("cancelled-run", 1)
-	if err := ss.Save(t.Context(), old, 0); err != nil {
+	old, batches := runtimeBatches(t, "cancelled-run")
+	if err := ss.Initialize(t.Context(), old); err != nil {
 		t.Fatal(err)
 	}
 	// A separate RunID owns this connection's independent write transaction;
@@ -571,8 +579,8 @@ func TestSQLiteBusySaveCancellation(t *testing.T) {
 	c, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- ss.Save(c, record("cancelled-run", 2), 1) }()
-	awaitSQLiteSave(t, ss.(*session))
+	go func() { _, err := ss.Apply(c, batches[0]); done <- err }()
+	awaitSQLiteApply(t, ss.(*session))
 	started := time.Now()
 	cancel()
 	var saveErr error
@@ -585,31 +593,34 @@ func TestSQLiteBusySaveCancellation(t *testing.T) {
 		select {
 		case saveErr = <-done:
 		case <-time.After(7 * time.Second):
-			t.Fatal("Save remained stuck after releasing SQLite write lock")
+			t.Fatal("Apply remained stuck after releasing SQLite write lock")
 		}
-		t.Errorf("cancelled busy Save exceeded 7s finite bound (configured busy timeout is 5s)")
+		t.Errorf("cancelled busy Apply exceeded 7s finite bound (configured busy timeout is 5s)")
 	}
 	elapsed := time.Since(started)
-	t.Logf("busy Save cancellation returned in %s: %v", elapsed, saveErr)
+	t.Logf("busy Apply cancellation returned in %s: %v", elapsed, saveErr)
 	if !errors.Is(saveErr, context.Canceled) || errors.Is(saveErr, durable.ErrBusy) || errors.Is(saveErr, durable.ErrConflict) {
 		t.Errorf("busy cancellation classification: %v", saveErr)
 	}
 	// Check authority before releasing the blocking transaction or issuing a new
-	// write. A failed/uncertain Save is never blindly retried.
+	// write. A failed/uncertain Apply is never blindly retried.
 	got, err := ss.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, old) {
-		t.Fatal("cancelled Save changed authoritative record")
+		t.Fatal("cancelled Apply changed authoritative record")
 	}
 	release()
-	if err := ss.Save(t.Context(), record("cancelled-run", 2), 1); err != nil {
+	if _, err := ss.Apply(t.Context(), batches[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batches[0].ApplyTo(&old); err != nil {
 		t.Fatal(err)
 	}
 	got, err = ss.Load(t.Context())
-	if err != nil || !reflect.DeepEqual(got, record("cancelled-run", 2)) {
-		t.Fatalf("new Save after proven noncommit: revision=%d err=%v", got.Revision, err)
+	if err != nil || !reflect.DeepEqual(got, old) {
+		t.Fatalf("new Apply after proven noncommit: revision=%d err=%v", got.Revision, err)
 	}
 }
 
@@ -618,10 +629,11 @@ func TestSQLiteConcurrentOperationsAndClose(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "runs.sqlite")
 		s := openStore(t, path)
 		ss := acquire(t, s, "close-run")
-		if err := ss.Save(t.Context(), record("close-run", 1), 0); err != nil {
+		initial, batches := runtimeBatches(t, "close-run")
+		if err := ss.Initialize(t.Context(), initial); err != nil {
 			t.Fatal(err)
 		}
-		// Occupy the only connection as a deterministic barrier: Save has taken
+		// Occupy the only connection as a deterministic barrier: Apply has taken
 		// its session mutex before Load and both Close operations are released.
 		conn, err := s.db.Conn(t.Context())
 		if err != nil {
@@ -636,8 +648,8 @@ func TestSQLiteConcurrentOperationsAndClose(t *testing.T) {
 			revision uint64
 		}
 		done := make(chan result, 4)
-		go func() { err := ss.Save(c, record("close-run", 2), 1); done <- result{name: "save", err: err} }()
-		awaitSQLiteSave(t, ss.(*session))
+		go func() { _, err := ss.Apply(c, batches[0]); done <- result{name: "apply", err: err} }()
+		awaitSQLiteApply(t, ss.(*session))
 		start := make(chan struct{})
 		ready := make(chan struct{}, 3)
 		go func() {
@@ -674,7 +686,7 @@ func TestSQLiteConcurrentOperationsAndClose(t *testing.T) {
 				}
 			case <-deadline.C:
 				cancel()
-				t.Fatal("Load/Save/Session.Close/Store.Close deadlocked")
+				t.Fatal("Load/Apply/Session.Close/Store.Close deadlocked")
 			}
 		}
 		deadline.Stop()
@@ -682,8 +694,8 @@ func TestSQLiteConcurrentOperationsAndClose(t *testing.T) {
 		if _, err := ss.Load(t.Context()); !errors.Is(err, os.ErrClosed) {
 			t.Errorf("Load after Close: %v", err)
 		}
-		if err := ss.Save(t.Context(), record("close-run", 3), 2); !errors.Is(err, os.ErrClosed) {
-			t.Errorf("Save after Close: %v", err)
+		if _, err := ss.Apply(t.Context(), batches[1]); !errors.Is(err, os.ErrClosed) {
+			t.Errorf("Apply after Close: %v", err)
 		}
 	}
 }

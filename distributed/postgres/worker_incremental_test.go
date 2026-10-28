@@ -1,0 +1,222 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/Luo-root/pulse"
+	durable "github.com/Luo-root/pulse-durable"
+	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/Luo-root/pulse-durable/distributed/worker"
+)
+
+// The database really commits before this transport-boundary wrapper drops one
+// response. This is not an uncommitted fake Apply implementation.
+type lostApplyResponse struct {
+	d.Coordinator
+	injected atomic.Bool
+	finishes atomic.Int32
+	releases atomic.Int32
+	lost     d.Mutation
+}
+
+func (c *lostApplyResponse) ApplyOwned(ctx context.Context, t d.Token, m d.Mutation, b durable.ChangeBatch) (durable.CommitAck, error) {
+	ack, e := c.Coordinator.ApplyOwned(ctx, t, m, b)
+	if e == nil && b.Header().Revision >= 40 && c.injected.CompareAndSwap(false, true) {
+		c.lost = m
+		return durable.CommitAck{}, d.ErrUnknown
+	}
+	return ack, e
+}
+func (c *lostApplyResponse) Finish(ctx context.Context, r d.FinishRequest) (d.Snapshot, error) {
+	c.finishes.Add(1)
+	return c.Coordinator.Finish(ctx, r)
+}
+func (c *lostApplyResponse) Release(ctx context.Context, t d.Token, m d.Mutation) error {
+	c.releases.Add(1)
+	return c.Coordinator.Release(ctx, t, m)
+}
+
+func TestPostgresWorker500MessagesUnknownResponseRecovery(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	var traceMu sync.Mutex
+	trace := make([]string, 0, 256)
+	significant := make([]string, 0, 64)
+	failures := make([]string, 0, 64)
+	started := time.Now()
+	c.clockDiagnostic = func(value clockDiagnostic) {
+		line := fmt.Sprintf("%s clock phase=%s delta_us=%d step_us=%d", time.Since(started).Round(time.Millisecond), value.Phase, value.DeltaUS, value.StepUS)
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		if len(failures) == 64 {
+			copy(failures, failures[1:])
+			failures = failures[:63]
+		}
+		failures = append(failures, line)
+	}
+	recordEvent := func(e worker.Event) {
+		// Deliberately omit token IDs, mutation digests, task and payload data.
+		line := fmt.Sprintf("%s kind=%s reason=%s epoch=%d rev=%d duration=%s", time.Since(started).Round(time.Millisecond), e.Kind, e.Reason, e.Token.Epoch, e.Revision, e.Duration.Round(time.Millisecond))
+		traceMu.Lock()
+		defer traceMu.Unlock()
+		if len(trace) == 256 {
+			copy(trace, trace[1:])
+			trace = trace[:255]
+		}
+		trace = append(trace, line)
+		// Keep lifecycle and errors independently: successful empty polling,
+		// renewals and Apply traffic cannot evict an earlier lost owner.
+		if e.Kind == "owned" || e.Kind == "execution" || e.Kind == "finish" {
+			if len(significant) == 64 {
+				copy(significant, significant[1:])
+				significant = significant[:63]
+			}
+			significant = append(significant, line)
+		}
+		if e.Reason != "" && e.Reason != "ok" {
+			if len(failures) == 64 {
+				copy(failures, failures[1:])
+				failures = failures[:63]
+			}
+			failures = append(failures, line)
+		}
+	}
+	defer func() {
+		if t.Failed() {
+			traceMu.Lock()
+			defer traceMu.Unlock()
+			for _, line := range significant {
+				t.Log("lifecycle", line)
+			}
+			for _, line := range failures {
+				t.Log("non-ok", line)
+			}
+			for _, line := range trace {
+				t.Log("tail", line)
+			}
+		}
+	}()
+	var calls atomic.Int32
+	factory := func() (d.Assembly, error) {
+		g, e := pulse.New("pg-worker-500", "")
+		if e != nil {
+			return d.Assembly{}, e
+		}
+		key := pulse.NewKey[pulse.Stream[int]]("numbers")
+		e = pulse.ProduceStream(g, "source", "", key, func(_ *pulse.RunCtx, w *pulse.StreamWriter[int]) error {
+			for i := int(w.Position().Sequence) + 1; i <= 500; i++ {
+				if e := w.SendAt(i, i); e != nil {
+					return e
+				}
+			}
+			return nil
+		}, pulse.WithBuffer(1), pulse.WithStreamSource("pg-worker-500/source", true))
+		if e != nil {
+			return d.Assembly{}, e
+		}
+		e = pulse.ConsumeStream(g, "sink", "", key, func(rc *pulse.RunCtx, v int) error { calls.Add(1); return pulse.SetMessageState(rc, "last", v) }, pulse.WithMessageHandling(pulse.WithMessageRetry(1, 0)))
+		return d.Assembly{Graph: g, Codecs: durable.NewCodecs(), Keys: pulse.NewRegistry()}, e
+	}
+	registry := &d.Registry{}
+	if _, e := registry.Register("worker500", "v1", factory); e != nil {
+		t.Fatal(e)
+	}
+	assembly, e := factory()
+	if e != nil {
+		t.Fatal(e)
+	}
+	task, e := d.NewTask(ctx, d.Identity{Namespace: ns, RunID: "worker500"}, "worker500", "v1", assembly.Graph, pulse.Inputs{}, assembly.Codecs)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = c.Submit(ctx, task); e != nil {
+		t.Fatal(e)
+	}
+	wrapped := &lostApplyResponse{Coordinator: c}
+	run := func(backend d.Coordinator, id string, kind string) worker.Event {
+		events := make(chan worker.Event, 4)
+		cfg := worker.Config{Coordinator: backend, Renewer: c, Registry: registry, Namespace: ns, WorkerID: id, Capacity: 1, BatchMax: 1, TTL: 15 * time.Second, RenewInterval: time.Second, RenewTimeout: 2 * time.Second, OperationTimeout: 5 * time.Second, PollMin: 10 * time.Millisecond, PollMax: 20 * time.Millisecond, Observe: func(e worker.Event) {
+			recordEvent(e)
+			if e.Kind == kind {
+				select {
+				case events <- e:
+				default:
+				}
+			}
+		}}
+		w, e := worker.New(cfg)
+		if e != nil {
+			t.Fatal(e)
+		}
+		local, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- w.Run(local) }()
+		defer func() {
+			stop()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Error("worker failed to join")
+			}
+		}()
+		select {
+		case event := <-events:
+			w.Pause()
+			if e := w.Drain(ctx); e != nil {
+				t.Fatal(e)
+			}
+			return event
+		case <-ctx.Done():
+			t.Fatal("worker event timeout", ctx.Err())
+		}
+		return worker.Event{}
+	}
+	first := run(wrapped, "old", "execution")
+	if !wrapped.injected.Load() || wrapped.finishes.Load() != 0 || wrapped.releases.Load() != 0 {
+		t.Fatalf("unknown response incorrectly finished/released: event=%+v", first)
+	}
+	s, e := c.Get(ctx, task.Identity())
+	if e != nil || s.Status != d.Running || s.Revision < 40 {
+		t.Fatal("unknown write lost authority", e)
+	}
+	receipts, e := c.FindMutation(ctx, task.Identity(), wrapped.lost)
+	if e != nil || len(receipts) != 1 || receipts[0].Operation != "apply" {
+		t.Fatal("lost response missing exact mutation receipt", e)
+	}
+	if _, e = admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	finish := run(c, "new", "finish")
+	if finish.Reason != "ok" || finish.Token.Epoch != 2 {
+		t.Fatalf("recovery finish: %+v", finish)
+	}
+	s, e = c.Get(ctx, task.Identity())
+	if e != nil || s.Status != d.Succeeded {
+		t.Fatal("not succeeded", e)
+	}
+	var count, receiptsCount int
+	var snapshotRevision int
+	if e = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND run_id=$2 AND operation='apply'),(convert_from(record,'UTF8')::jsonb->>'revision')::int FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&count, &receiptsCount, &snapshotRevision); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	if count < 1500 || count != receiptsCount || snapshotRevision != 1 {
+		t.Fatalf("not incremental: batches=%d receipts=%d snapshot=%d", count, receiptsCount, snapshotRevision)
+	}
+	// A callback interrupted before its commit may run again. Confirmed messages
+	// must be exactly the 500 logical inputs; inspect replay under a fresh owner
+	// before Finish is impossible, so verify immutable wire evidence via SQL.
+	var confirmed int
+	if e = admin.QueryRow(ctx, `SELECT count(*) FROM pulse_durable_distributed.batches b CROSS JOIN LATERAL jsonb_array_elements(convert_from(b.wire,'UTF8')::jsonb->'ops') op WHERE namespace=$1 AND run_id=$2 AND op->>'kind'='message' AND op->'value'->>'state'='confirmed'`, ns, task.Identity().RunID).Scan(&confirmed); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	if confirmed != 500 || calls.Load() < 500 {
+		t.Fatalf("business coverage confirmed=%d calls=%d", confirmed, calls.Load())
+	}
+	t.Logf("500 confirmed messages, %d batches/receipts, %d callbacks, unknown commit recovered at epoch 2", count, calls.Load())
+}

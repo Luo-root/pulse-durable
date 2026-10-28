@@ -91,8 +91,11 @@ func TestGrowthAndBudget(t *testing.T) {
 			if r.Status != "ok" || r.ConfirmedSteps != c.Nodes {
 				t.Fatalf("%s/%s: %+v", engine, storage, r)
 			}
-			if engine == "durable" && r.Storage["logical_json_bytes"].(uint64) <= uint64(r.Storage["final_record_json_bytes"].(int)) {
-				t.Fatal("cumulative JSON must exceed final snapshot")
+			if engine == "durable" && r.Storage["canonical_batch_bytes"].(uint64) == 0 {
+				t.Fatal("successful Apply must record canonical batch bytes")
+			}
+			if engine == "durable" && r.Storage["initial_snapshot_json_bytes"].(uint64) == 0 {
+				t.Fatal("successful Initialize must record the full snapshot bytes")
 			}
 			if engine == "go-workflows" && r.Storage["history_events"].(int) <= c.Nodes {
 				t.Fatal("missing activity workflow history")
@@ -102,15 +105,15 @@ func TestGrowthAndBudget(t *testing.T) {
 	c := defaults()
 	c.Mode = "growth"
 	c.Warmup = false
-	c.MaxWriteBytes = 32768
+	c.MaxWriteBytes = 4096
 	c.Dir = localDir(t)
 	r := runCase(c)
-	if r.Status != "resource_limit" || r.ConfirmedSteps <= 0 || r.ConfirmedSteps >= c.Nodes || r.Storage["logical_json_bytes"].(uint64) > c.MaxWriteBytes || r.NSPerOp != nil {
+	if r.Status != "resource_limit" || r.ConfirmedSteps <= 0 || r.ConfirmedSteps >= c.Nodes || r.Storage["initial_snapshot_json_bytes"].(uint64)+r.Storage["canonical_batch_bytes"].(uint64) > c.MaxWriteBytes || r.NSPerOp != nil {
 		t.Fatalf("budget did not preserve partial progress: %+v", r)
 	}
 	c.MaxWriteBytes = 1
 	r = runCase(c)
-	if r.Status != "resource_limit" || r.Storage["save_calls"] != uint64(1) || r.Storage["successful_saves"] != uint64(0) {
+	if r.Status != "resource_limit" || r.Storage["initialize_calls"] != uint64(1) || r.Storage["successful_initializations"] != uint64(0) {
 		t.Fatalf("initial save limit: %+v", r)
 	}
 }

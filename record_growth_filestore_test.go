@@ -106,7 +106,8 @@ func BenchmarkRecordGrowth(b *testing.B) {
 					b.StopTimer()
 					b.ReportMetric(float64(len(encoded)), "record-B")
 				})
-				b.Run(name+"/FileSave", func(b *testing.B) {
+				b.Run(name+"/FileApply", func(b *testing.B) {
+					b.StopTimer()
 					store := growthFileStore(b)
 					session, err := store.Store.Acquire(context.Background(), record.RunID)
 					if err != nil {
@@ -117,28 +118,82 @@ func BenchmarkRecordGrowth(b *testing.B) {
 							b.Error(err)
 						}
 					})
-					next := record
-					if err := session.Save(context.Background(), next, 0); err != nil {
+					seed := durable.CloneRecordForGrowthBenchmark(record)
+					seed.Revision = 1
+					seed.Attempts = nil
+					seed.Streams = nil
+					seed.Messages = nil
+					seed.Managed = nil
+					root := seed.Scopes[seed.RootScope]
+					root.Nodes = nil
+					seed.Scopes = map[string]durable.ScopeRecord{seed.RootScope: root}
+					if err := session.Initialize(context.Background(), seed); err != nil {
 						b.Fatal(err)
 					}
-					b.ReportAllocs()
-					b.ResetTimer()
-					for i := 0; i < b.N; i++ {
-						expected := next.Revision
-						next.Revision++
-						if err := session.Save(context.Background(), next, expected); err != nil {
-							b.Fatal(err)
-						}
-					}
-					b.StopTimer()
-					info, err := os.Stat(growthRecordPath(store.dir, record.RunID))
+					batches, err := durable.GrowthSeedBatchesForTest(seed, record)
 					if err != nil {
 						b.Fatal(err)
 					}
-					if want := len(growthJSON(b, next)); info.Size() != int64(want) {
-						b.Fatalf("file bytes=%d; encoded bytes=%d", info.Size(), want)
+					for _, batch := range batches {
+						if _, err := session.Apply(context.Background(), batch); err != nil {
+							b.Fatal(err)
+						}
 					}
-					b.ReportMetric(float64(info.Size()), "record-B")
+					next, err := session.Load(context.Background())
+					if err != nil {
+						b.Fatal(err)
+					}
+					expected := durable.CloneRecord(record)
+					expected.Revision = next.Revision
+					if !reflect.DeepEqual(next, expected) {
+						b.Fatal("seed background projection mismatch")
+					}
+					messageID := fmt.Sprintf("%032x", 1)
+					var written, wireBytes int64
+					b.ReportAllocs()
+					b.ResetTimer()
+					b.StartTimer()
+					for i := 0; i < b.N; i++ {
+						batch, err := durable.GrowthUpdateForTest(next, messageID)
+						if err != nil {
+							b.Fatal(err)
+						}
+						if _, err := session.Apply(context.Background(), batch); err != nil {
+							b.Fatal(err)
+						}
+						b.StopTimer()
+						// Count actual newly persisted batch envelope plus the replaced head. The
+						// head's old bytes were overwritten, so directory size delta is insufficient.
+						wire, err := durable.MarshalChangeBatch(batch)
+						if err != nil {
+							b.Fatal(err)
+						}
+						wireBytes += int64(len(wire))
+						bytes, err := growthCommitBytes(store.dir, batch.Header().RunID, batch.Header().Revision)
+						if err != nil {
+							b.Fatal(err)
+						}
+						written += bytes
+						if _, err := batch.ApplyTo(&next); err != nil {
+							b.Fatal(err)
+						}
+						b.StartTimer()
+					}
+					b.StopTimer()
+					b.ReportMetric(float64(written)/float64(b.N), "written-B/op")
+					b.ReportMetric(float64(wireBytes)/float64(b.N), "wire-B/op")
+					persisted, err := session.Load(context.Background())
+					if err != nil {
+						b.Fatal(err)
+					}
+					if !reflect.DeepEqual(persisted, next) {
+						b.Fatal("incremental benchmark projection mismatch")
+					}
+					bytes, err := growthDiskBytes(store.dir)
+					if err != nil {
+						b.Fatal(err)
+					}
+					b.ReportMetric(float64(bytes), "stored-B")
 				})
 			}
 		}
@@ -146,8 +201,9 @@ func BenchmarkRecordGrowth(b *testing.B) {
 }
 
 // Keep real runs bounded: 1024-message costs are component fixtures above.
-// The Stat after every successful Save counts actual logical JSON bytes; its
-// overhead is included in this instrumented pipeline benchmark only.
+// Each successful Apply counts its immutable envelope and replaced head bytes;
+// initialization counts its new snapshot and head. Measurement overhead is
+// included in this instrumented pipeline benchmark only (not FileApply).
 func BenchmarkRecordGrowthPipeline(b *testing.B) {
 	for _, count := range []int{8, 128} {
 		for _, payloadBytes := range []int{32, 4096} {
@@ -375,17 +431,82 @@ type growthCountingSession struct {
 	path  string
 }
 
-func (s *growthCountingSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+func (s *growthCountingSession) Initialize(ctx context.Context, r durable.RunRecord) error {
+	before, err := growthDiskBytes(s.store.dir)
+	if err != nil {
 		return err
 	}
-	info, err := os.Stat(s.path)
+	if err := s.Session.Initialize(ctx, r); err != nil {
+		return err
+	}
+	return s.count(before)
+}
+func (s *growthCountingSession) Apply(ctx context.Context, b durable.ChangeBatch) (durable.CommitAck, error) {
+	ack, err := s.Session.Apply(ctx, b)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	written, err := growthCommitBytes(s.store.dir, b.Header().RunID, b.Header().Revision)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	s.store.saves++
+	s.store.bytes += written
+	return ack, nil
+}
+func (s *growthCountingSession) count(before int64) error {
+	after, err := growthDiskBytes(s.store.dir)
 	if err != nil {
 		return err
 	}
 	s.store.saves++
-	s.store.bytes += info.Size()
+	s.store.bytes += after - before
 	return nil
+}
+func growthDiskBytes(dir string) (int64, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return 0, err
+		}
+		total += info.Size()
+	}
+	return total, nil
+}
+
+// growthCommitBytes counts both files written by one successful Apply, not
+// cumulative directory size (which omits the replaced head's write cost).
+func growthCommitBytes(dir, runID string, revision uint64) (int64, error) {
+	sum := sha256.Sum256([]byte(runID))
+	base := hex.EncodeToString(sum[:])
+	path := filepath.Join(dir, base+".head")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	var head struct {
+		HeadID   string `json:"head_id"`
+		Revision uint64 `json:"head_revision"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return 0, err
+	}
+	if head.Revision != revision {
+		return 0, fmt.Errorf("unexpected head revision %d", head.Revision)
+	}
+	info, err := os.Stat(filepath.Join(dir, base+".batch-"+head.HeadID))
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(data)) + info.Size(), nil
 }
 
 func growthRecordPath(dir, runID string) string {

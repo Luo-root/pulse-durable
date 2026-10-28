@@ -1,12 +1,12 @@
 CREATE SCHEMA pulse_durable_distributed;
 REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
-CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=2), signature text NOT NULL);
+CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=3), signature text NOT NULL);
 CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel')), PRIMARY KEY(role_name,namespace,permission));
 CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','blocked','succeeded','failed','canceled')),
  epoch bigint NOT NULL DEFAULT 0 CHECK(epoch>=0), revision numeric(20,0) NOT NULL DEFAULT 0 CHECK(revision>=0 AND revision<=18446744073709551615),
- record bytea, lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ record bytea, snapshot_digest text, head_chain text, root_scope text, log_bytes bigint NOT NULL DEFAULT 0 CHECK(log_bytes BETWEEN 0 AND 268435456), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
  last_mutation_id text, last_mutation_digest text, reason text NOT NULL DEFAULT '',
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), finished_at timestamptz,
  PRIMARY KEY(namespace,run_id),
@@ -15,10 +15,12 @@ CREATE TABLE pulse_durable_distributed.runs(
  CHECK((status IN ('succeeded','failed','canceled'))=(finished_at IS NOT NULL)),
  CHECK(octet_length(task)<=8388608 AND octet_length(record)<=16777216)
 );
+CREATE TABLE pulse_durable_distributed.batches(namespace text NOT NULL, run_id text NOT NULL, revision numeric(20,0) NOT NULL, wire bytea NOT NULL CHECK(octet_length(wire) BETWEEN 1 AND 16777216), digest text NOT NULL, parent_chain text NOT NULL, next_chain text NOT NULL, PRIMARY KEY(namespace,run_id,revision), FOREIGN KEY(namespace,run_id) REFERENCES pulse_durable_distributed.runs(namespace,run_id));
 CREATE INDEX queued_route ON pulse_durable_distributed.runs(namespace,route,run_id) WHERE status='queued';
 CREATE INDEX expired_runs ON pulse_durable_distributed.runs(namespace,lease_until,run_id) WHERE status='running';
 CREATE TABLE pulse_durable_distributed.leases(namespace text NOT NULL, lease_id text NOT NULL, worker_id text NOT NULL, boot_id text NOT NULL, run_id text, epoch bigint, closed boolean NOT NULL DEFAULT true, claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(namespace,lease_id), CHECK((run_id IS NULL AND epoch IS NULL AND closed) OR (run_id IS NOT NULL AND epoch>0)));
 CREATE TABLE pulse_durable_distributed.events(namespace text NOT NULL, run_id text NOT NULL, event_seq bigint GENERATED ALWAYS AS IDENTITY, operation text NOT NULL, epoch bigint NOT NULL, revision numeric(20,0) NOT NULL, lease_id text, mutation_id text, mutation_digest text, occurred_at timestamptz NOT NULL, PRIMARY KEY(namespace,run_id,event_seq));
+CREATE UNIQUE INDEX mutation_guard ON pulse_durable_distributed.events(namespace,run_id,mutation_id) WHERE mutation_id IS NOT NULL;
 REVOKE ALL ON ALL TABLES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 CREATE FUNCTION pulse_durable_distributed.snapshot(r pulse_durable_distributed.runs) RETURNS jsonb LANGUAGE sql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
@@ -27,7 +29,7 @@ $$;
 CREATE FUNCTION pulse_durable_distributed.api(op text, a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE
  ns text:=a->>'namespace'; rid text:=a->>'run_id'; r pulse_durable_distributed.runs; l pulse_durable_distributed.leases; t timestamptz;
- needed text; b bytea; d jsonb; j jsonb; rev numeric; result jsonb:='[]'::jsonb; slot integer:=0; ttl bigint; lid text; changed boolean:=false;
+ first_sample timestamptz; needed text; b bytea; d jsonb; j jsonb; rev numeric; result jsonb:='[]'::jsonb; slot integer:=0; ttl bigint; lid text; changed boolean:=false;
 BEGIN
  IF NOT check_schema() THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unsafe schema or credentials'; END IF;
  needed:=CASE WHEN op IN ('get','list','find','receipt') THEN 'query' WHEN op='resolve' THEN 'worker' WHEN op='submit' THEN 'submit' WHEN op='cancel' THEN 'cancel' ELSE 'worker' END;
@@ -127,13 +129,16 @@ BEGIN
  SELECT * INTO r FROM runs WHERE namespace=ns AND run_id=rid FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION USING ERRCODE='PD003',MESSAGE='not found'; END IF;
  t:=clock_timestamp();
- IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+ IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_first;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text; END IF;
+ first_sample:=t;
  IF op='cancel' AND r.status IN ('succeeded','failed','canceled') THEN RETURN snapshot(r); END IF;
  IF op<>'cancel' THEN
   IF r.status IN ('succeeded','failed','canceled') THEN RAISE EXCEPTION USING ERRCODE='PD006',MESSAGE='terminal'; END IF;
   IF r.status<>'running' OR r.epoch IS DISTINCT FROM (a->>'epoch')::bigint OR r.lease_id IS DISTINCT FROM a->>'lease_id' OR r.worker_id IS DISTINCT FROM a->>'worker_id' OR r.boot_id IS DISTINCT FROM a->>'boot_id' OR r.lease_until<=t THEN RAISE EXCEPTION USING ERRCODE='PD004',MESSAGE='lease lost'; END IF;
  END IF;
- IF op='load' THEN RETURN snapshot(r); END IF;
+ IF op='load' THEN
+  RETURN snapshot(r)||jsonb_build_object('snapshot_digest',r.snapshot_digest,'head_chain',r.head_chain,'batches',coalesce((SELECT jsonb_agg(jsonb_build_object('revision',revision::text,'wire',encode(wire,'base64'),'digest',digest,'parent_chain',parent_chain,'next_chain',next_chain) ORDER BY revision) FROM batches WHERE namespace=ns AND run_id=rid),'[]'::jsonb));
+ END IF;
  IF op='renew' THEN
   ttl:=(a->>'ttl_us')::bigint;
   IF ttl IS NULL OR ttl NOT BETWEEN 1000 AND 86400000000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid'; END IF;
@@ -142,12 +147,26 @@ BEGIN
  END IF;
  IF coalesce(octet_length(a->>'mutation_id'),0) NOT BETWEEN 1 AND 256 OR coalesce(a->>'mutation_digest','') !~ '^[0-9a-f]{64}$' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid mutation'; END IF;
  IF EXISTS(SELECT 1 FROM events WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='mutation reused'; END IF;
- IF op IN ('save','finish') THEN
+ IF op IN ('initialize','apply','finish') THEN
   rev:=(a->>'expected')::numeric;
   IF rev IS NULL OR rev<0 OR rev>18446744073709551615 OR trunc(rev)<>rev THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid revision'; END IF;
   IF r.revision<>rev THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='revision conflict'; END IF;
  END IF;
- IF op='save' THEN
+ IF op='apply' THEN
+  b:=decode(a->>'wire','base64');
+  IF rev=0 OR rev=18446744073709551615 OR r.head_chain IS DISTINCT FROM a->>'parent_chain' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='head conflict'; END IF;
+  IF b IS NULL OR octet_length(b) NOT BETWEEN 1 AND 16777216 OR encode(sha256(b),'hex') IS DISTINCT FROM a->>'batch_digest' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid batch'; END IF;
+  IF r.log_bytes+octet_length(b)>268435456 OR rev>=100000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='checkpoint log budget exhausted'; END IF;
+  IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid batch JSON'; END IF;
+  j:=convert_from(b,'UTF8')::jsonb; d:=convert_from(r.task,'UTF8')::jsonb;
+  IF j->>'version' IS DISTINCT FROM '1' OR j->'header'->>'batch_format' IS DISTINCT FROM '1' OR j->'header'->>'logical_format' IS DISTINCT FROM '2'
+   OR j->'header'->>'run_id' IS DISTINCT FROM rid OR j->'header'->>'business_version' IS DISTINCT FROM d->'route'->>'business_version' OR j->'header'->>'definition_digest' IS DISTINCT FROM d->'route'->>'definition' OR j->'header'->>'inputs_digest' IS DISTINCT FROM d->>'inputs' OR j->'header'->>'root_scope' IS DISTINCT FROM r.root_scope
+   OR j->'header'->>'expected_revision' IS DISTINCT FROM rev::text OR j->'header'->>'revision' IS DISTINCT FROM (rev+1)::text
+   OR a->>'next_chain' IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(r.head_chain,'hex')||sha256(b)||decode(lpad(to_hex(trunc((rev+1)/4294967296)::bigint),8,'0')||lpad(to_hex(mod(rev+1,4294967296)::bigint),8,'0'),'hex')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='batch identity'; END IF;
+  INSERT INTO batches(namespace,run_id,revision,wire,digest,parent_chain,next_chain) VALUES(ns,rid,rev+1,b,a->>'batch_digest',r.head_chain,a->>'next_chain');
+  UPDATE runs SET revision=rev+1,head_chain=a->>'next_chain',log_bytes=log_bytes+octet_length(b) WHERE namespace=ns AND run_id=rid;
+ ELSIF op='initialize' THEN
+  IF rev<>0 OR r.record IS NOT NULL THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='already initialized'; END IF;
   b:=decode(a->>'record','base64');
   IF b IS NULL OR octet_length(b) NOT BETWEEN 1 AND 16777216 OR rev=18446744073709551615 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid record'; END IF;
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid JSON'; END IF;
@@ -158,7 +177,9 @@ BEGIN
    OR jsonb_typeof(j->'revision') IS DISTINCT FROM 'number' OR jsonb_typeof(j->'format') IS DISTINCT FROM 'number'
    OR j->>'revision' !~ '^[1-9][0-9]*$' OR coalesce(j->>'root_scope','')='' OR jsonb_typeof(j->'scopes') IS DISTINCT FROM 'object' OR jsonb_typeof(j->'attempts') IS DISTINCT FROM 'object'
   THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid record'; END IF;
-  UPDATE runs SET record=b,revision=rev+1 WHERE namespace=ns AND run_id=rid;
+  IF (SELECT count(*) FROM jsonb_object_keys(j->'scopes'))<>1 OR j->'scopes'->(j->>'root_scope') IS NULL OR coalesce(j->'attempts','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'streams','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'messages','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'managed','{}'::jsonb)<>'{}'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial state'; END IF;
+  IF coalesce(j->'scopes'->(j->>'root_scope')->>'graph','')='' OR j->'scopes'->(j->>'root_scope')->>'inputs' IS DISTINCT FROM j->>'inputs' OR coalesce(j->'scopes'->(j->>'root_scope')->'nodes','{}'::jsonb)<>'{}'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial root'; END IF;
+  UPDATE runs SET record=b,revision=1,root_scope=j->>'root_scope',snapshot_digest=encode(sha256(b),'hex'),head_chain=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||sha256(b)||int8send(1::bigint)),'hex') WHERE namespace=ns AND run_id=rid;
  ELSIF op='finish' THEN
   IF r.record IS NULL OR a->>'outcome' NOT IN ('completed','failed') OR a->>'outcome' IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid outcome'; END IF;
   UPDATE runs SET status=CASE WHEN a->>'outcome'='completed' THEN 'succeeded' ELSE 'failed' END,finished_at=t,lease_id=NULL,worker_id=NULL,boot_id=NULL,lease_until=NULL WHERE namespace=ns AND run_id=rid;
@@ -170,9 +191,15 @@ BEGIN
  ELSIF op='cancel' THEN
   UPDATE runs SET status='canceled',finished_at=t,lease_id=NULL,worker_id=NULL,boot_id=NULL,lease_until=NULL WHERE namespace=ns AND run_id=rid;
  ELSE RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid operation'; END IF;
+ -- Re-sample the database clock after validation and immutable batch insertion.
+ -- The row lock still holds; an expired owner cannot publish a head/receipt.
+ t := clock_timestamp();
+ IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_final;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text||';step_us='||trunc(extract(epoch FROM (t-first_sample))*1000000)::text; END IF;
+ IF op<>'cancel' AND r.lease_until<=t THEN RAISE EXCEPTION USING ERRCODE='PD004',MESSAGE='lease lost'; END IF;
  UPDATE runs SET reason=CASE WHEN status='blocked' THEN reason ELSE '' END,lease_id=CASE WHEN status='running' THEN lease_id END,worker_id=CASE WHEN status='running' THEN worker_id END,boot_id=CASE WHEN status='running' THEN boot_id END,lease_until=CASE WHEN status='running' THEN lease_until END,last_mutation_id=a->>'mutation_id',last_mutation_digest=a->>'mutation_digest',updated_at=t WHERE namespace=ns AND run_id=rid RETURNING * INTO r;
  INSERT INTO events(namespace,run_id,operation,epoch,revision,lease_id,mutation_id,mutation_digest,occurred_at) VALUES(ns,rid,op,r.epoch,r.revision,a->>'lease_id',a->>'mutation_id',a->>'mutation_digest',t);
+ IF op='apply' THEN RETURN '{}'::jsonb; END IF;
  RETURN snapshot(r);
 END $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pulse_durable_distributed FROM PUBLIC;
-INSERT INTO pulse_durable_distributed.meta VALUES(2,'');
+INSERT INTO pulse_durable_distributed.meta VALUES(3,'');

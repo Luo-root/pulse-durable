@@ -185,12 +185,14 @@ type hostTailObservationSession struct {
 	owner *hostTailObservationStore
 }
 
-func (s *hostTailObservationSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
-		return err
-	}
-	if _, complete := record.Scopes[record.RootScope].Nodes["source"]; complete {
-		s.owner.once.Do(func() { close(s.owner.confirmed) })
-	}
-	return nil
+func (s *hostTailObservationSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, func(record durable.RunRecord, commit func() error) error {
+		if err := commit(); err != nil {
+			return err
+		}
+		if _, complete := record.Scopes[record.RootScope].Nodes["source"]; complete {
+			s.owner.once.Do(func() { close(s.owner.confirmed) })
+		}
+		return nil
+	})
 }

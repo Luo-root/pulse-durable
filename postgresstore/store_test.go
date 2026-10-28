@@ -94,30 +94,38 @@ func TestPGContract(t *testing.T) {
 	}
 	_ = b.Close()
 
-	record := testRecord("same-run", 1, []byte{0, 1, 2, 0xff})
-	if err := a.Save(context.Background(), record, 0); err != nil {
+	record := initialRecord("same-run")
+	if err := a.Initialize(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	batch := nodeBatch(t, record, []byte{0, 1, 2, 0xff})
+	if _, err := a.Apply(context.Background(), batch); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := a.Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(loaded.Scopes["scope"].Nodes["node"].Outputs[0].Data) != string(record.Scopes["scope"].Nodes["node"].Outputs[0].Data) {
+	if string(loaded.Scopes["scope"].Nodes["node"].Outputs[0].Data) != string([]byte{0, 1, 2, 0xff}) {
 		t.Fatal("blob changed during save/load")
 	}
 	if _, err := second.Acquire(context.Background(), "same-run"); !errors.Is(err, durable.ErrBusy) {
 		t.Fatalf("lock not held: %v", err)
 	}
-	if err := a.Save(context.Background(), testRecord("same-run", 2, nil), 0); !errors.Is(err, durable.ErrConflict) {
+	if _, err := a.Apply(context.Background(), batch); !errors.Is(err, durable.ErrConflict) {
 		t.Fatalf("stale CAS error=%v", err)
 	}
-	if err := a.Save(context.Background(), testRecord("wrong-run", 2, nil), 1); !errors.Is(err, durable.ErrConflict) {
+	wrong := loaded
+	wrong.RunID = "wrong-run"
+	if _, err := a.Apply(context.Background(), nodeBatch(t, wrong, nil)); !errors.Is(err, durable.ErrConflict) {
 		t.Fatalf("wrong RunID error=%v", err)
 	}
-	if err := a.Save(context.Background(), testRecord("same-run", 1, nil), math.MaxUint64); !errors.Is(err, durable.ErrConflict) {
+	invalid := initialRecord("same-run")
+	invalid.Revision = math.MaxUint64
+	if err := a.Initialize(context.Background(), invalid); !errors.Is(err, durable.ErrConflict) {
 		t.Fatalf("MaxUint64 error=%v", err)
 	}
-	if err := a.Save(context.Background(), testRecord("same-run", 2, nil), 1); err != nil {
+	if _, err := a.Apply(context.Background(), nodeBatch(t, loaded, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Close(); err != nil {

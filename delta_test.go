@@ -35,9 +35,9 @@ func (s *deltaTestSession) Load(context.Context) (RunRecord, error) {
 	}
 	return cloneRecord(s.owner.record), nil
 }
-func (s *deltaTestSession) Save(_ context.Context, r RunRecord, rev uint64) error {
+func (s *deltaTestSession) Initialize(_ context.Context, r RunRecord) error {
 	o := s.owner
-	if rev != o.record.Revision || r.Revision != rev+1 {
+	if o.record.Revision != 0 || r.Revision != 1 {
 		return ErrConflict
 	}
 	o.record = cloneRecord(r)
@@ -54,10 +54,13 @@ func (s *deltaTestSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck,
 	if o.oracle {
 		// Drive the actual legacy transaction consumer at every revision using the
 		// same captured typed changes and same persistent IDs, not a full-record diff.
-		legacy = &runState{record: cloneRecord(o.record), session: &transactionSession{}}
-		if err := legacy.commitRecordTransaction(ctx, b.tx); err != nil {
+		legacy = &runState{record: cloneRecord(o.record)}
+		// Test-only full-record materialization oracle, never a product backend.
+		if err := b.tx.check(legacy.record); err != nil {
 			return CommitAck{}, err
 		}
+		b.tx.apply(&legacy.record)
+		legacy.record.Format, legacy.record.Revision = RecordFormat, b.Header().Revision
 	}
 	ack, err := b.ApplyTo(&o.record)
 	if err != nil {
@@ -119,7 +122,6 @@ func TestDeltaRuntimeManaged500RevisionsAndResume(t *testing.T) {
 	total := 0
 	g := deltaManagedGraph(t, 500, &total)
 	opts := testOptions("delta-500")
-	opts.RequireDelta = true
 	if _, err := r.Run(t.Context(), g, pulse.Inputs{}, opts); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,6 @@ func TestDeltaRuntimeUncertainApplyRequiresAuthoritativeResume(t *testing.T) {
 			total := 0
 			g := deltaManagedGraph(t, 10, &total)
 			opts := testOptions("uncertain")
-			opts.RequireDelta = true
 			if _, err := r.Run(t.Context(), g, pulse.Inputs{}, opts); err == nil {
 				t.Fatal("uncertain Apply succeeded")
 			}
@@ -185,13 +186,12 @@ func TestDeltaRuntimeUncertainApplyRequiresAuthoritativeResume(t *testing.T) {
 		})
 	}
 }
-func TestDeltaUnsupportedBeforeBusiness(t *testing.T) {
+func TestMemorySupportsRequiredDelta(t *testing.T) {
 	total := 0
 	g := deltaManagedGraph(t, 1, &total)
 	r, _ := New(NewMemoryStore(), NewCodecs())
 	opts := testOptions("unsupported")
-	opts.RequireDelta = true
-	if e, err := r.Run(t.Context(), g, pulse.Inputs{}, opts); e != nil || !errors.Is(err, ErrUnsupportedCapability) || total != 0 {
+	if e, err := r.Run(t.Context(), g, pulse.Inputs{}, opts); e == nil || err != nil || total != 1 {
 		t.Fatalf("%v %v total=%d", e, err, total)
 	}
 }
@@ -202,7 +202,7 @@ func TestDeltaFailureSealsPrivateRecord(t *testing.T) {
 			before := cloneRecord(s.record)
 			o := &deltaTestStore{record: cloneRecord(before)}
 			d := &deltaTestSession{o}
-			s.delta = d
+			s.session = d
 			o.after = func(ChangeBatch) error {
 				switch mode {
 				case "panic":
@@ -215,7 +215,7 @@ func TestDeltaFailureSealsPrivateRecord(t *testing.T) {
 				return errors.New("unknown")
 			}
 			if mode == "ack" {
-				s.delta = badAckSession{d}
+				s.session = badAckSession{d}
 			}
 			tx := stageTransactionFailure(t, s)
 			err := s.commitRecordTransaction(t.Context(), tx)
@@ -239,7 +239,7 @@ func (s badAckSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck, err
 func TestDeltaContextOverflowAndExactPreconditions(t *testing.T) {
 	s, _ := transactionState()
 	o := &deltaTestStore{record: cloneRecord(s.record)}
-	s.delta = &deltaTestSession{o}
+	s.session = &deltaTestSession{o}
 	tx := stageTransactionFailure(t, s)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -266,21 +266,19 @@ func TestDeltaContextOverflowAndExactPreconditions(t *testing.T) {
 
 func BenchmarkDeltaRuntimeManaged(b *testing.B) {
 	for _, n := range []int{10, 100, 500} {
-		for _, delta := range []bool{false, true} {
-			b.Run(fmt.Sprintf("rounds=%d/delta=%t", n, delta), func(b *testing.B) {
-				total := 0
-				g := deltaManagedGraph(b, n, &total)
-				b.ReportAllocs()
-				b.ResetTimer()
-				for range b.N {
-					o := &deltaTestStore{benchmark: true}
-					r, _ := New(o, NewCodecs())
-					_, err := r.Run(context.Background(), g, pulse.Inputs{}, RunOptions{RunID: "bench", Version: "1", RequireDelta: delta})
-					if err != nil {
-						b.Fatal(err)
-					}
+		b.Run(fmt.Sprintf("rounds=%d", n), func(b *testing.B) {
+			total := 0
+			g := deltaManagedGraph(b, n, &total)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				o := &deltaTestStore{benchmark: true}
+				r, _ := New(o, NewCodecs())
+				_, err := r.Run(context.Background(), g, pulse.Inputs{}, RunOptions{RunID: "bench", Version: "1"})
+				if err != nil {
+					b.Fatal(err)
 				}
-			})
-		}
+			}
+		})
 	}
 }

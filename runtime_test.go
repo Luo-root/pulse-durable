@@ -70,9 +70,7 @@ func rewriteRecord(t *testing.T, store Store, id string, edit func(*RunRecord)) 
 	expected := r.Revision
 	edit(&r)
 	r.Revision = expected + 1
-	if err := s.Save(context.Background(), r, expected); err != nil {
-		t.Fatal(err)
-	}
+	replaceMemoryFixture(s, r)
 }
 
 func TestRunResumeCompleteAndSkippedRecords(t *testing.T) {
@@ -251,17 +249,37 @@ func (s *faultStore) Acquire(ctx context.Context, id string) (Session, error) {
 	return &faultSession{Session: session, owner: s}, nil
 }
 
-func (s *faultSession) Save(ctx context.Context, record RunRecord, expected uint64) error {
+func (s *faultSession) Initialize(ctx context.Context, record RunRecord) error {
 	s.owner.saves.Add(1)
 	if s.owner.match(record) && s.owner.fired.CompareAndSwap(false, true) {
 		if s.owner.after {
-			if err := s.Session.Save(ctx, record, expected); err != nil {
+			if err := s.Session.Initialize(ctx, record); err != nil {
 				return err
 			}
 		}
 		return s.owner.failure
 	}
-	return s.Session.Save(ctx, record, expected)
+	return s.Session.Initialize(ctx, record)
+}
+
+func (s *faultSession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck, error) {
+	s.owner.saves.Add(1)
+	record, err := s.Session.Load(ctx)
+	if err != nil {
+		return CommitAck{}, err
+	}
+	if _, err := batch.ApplyTo(&record); err != nil {
+		return CommitAck{}, err
+	}
+	if s.owner.match(record) && s.owner.fired.CompareAndSwap(false, true) {
+		if s.owner.after {
+			if _, err := s.Session.Apply(ctx, batch); err != nil {
+				return CommitAck{}, err
+			}
+		}
+		return CommitAck{}, s.owner.failure
+	}
+	return s.Session.Apply(ctx, batch)
 }
 
 func recordHasNode(record RunRecord, graph, node string) bool {
@@ -476,7 +494,7 @@ func testCheckpointState(t *testing.T, ctx context.Context, g *pulse.Graph) (*ru
 	s := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "business/1",
 		Definition: def.fingerprint, Inputs: inputs, RootScope: root, Attempts: make(map[string]AttemptRecord),
 		Scopes: map[string]ScopeRecord{root: {Graph: def.root.graph, Inputs: inputs, Nodes: make(map[string]NodeRecord)}}}}
-	if err := s.save(ctx, cloneRecord(s.record)); err != nil {
+	if err := s.initialize(ctx, cloneRecord(s.record)); err != nil {
 		t.Fatal(err)
 	}
 	return s, store

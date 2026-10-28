@@ -1,6 +1,16 @@
 # 检查点成本与历史增长
 
-本页记录 [Pulse #411](https://github.com/Luo-root/pulse/issues/411) 的有限规模测量，帮助宿主估算检查点的单次保存成本、累计写出量和保留空间。它不定义产品吞吐目标或业务保留期，也没有引入压缩、增量存储或分布式所有权能力。存储保证见[存储指南](storage.md)，记录字段见[数据模型](../reference/data-model.md)。
+本页保留 [Pulse #411](https://github.com/Luo-root/pulse/issues/411) 的**历史整快照写入测量**，帮助宿主区分单次保存成本、累计逻辑写出量和保留空间。它不是当前增量后端的性能结果，也不定义产品吞吐目标或业务保留期。存储保证见[存储指南](storage.md)，记录字段见[数据模型](../reference/data-model.md)。
+
+## 当前开发协议与历史数据边界
+
+当前开发分支统一采用 `Session.Initialize`/`Apply`：Initialize 只发布 Revision 1 的合法初始空执行状态；普通提交使用 typed ChangeBatch，按身份、连续修订号和精确前置条件原子应用，成功返回 CommitAck 后 Runtime 才发布成果。MemoryStore 维护私有投影但不持久；filestore 保存初始快照、不可变批和原子替换的小 head；SQLite 与独立 PostgreSQL 在事务中插批并 CAS 推进 head。业务使用 `durable.New`、Run/Resume，不手写业务 records 或批，也不设置 `RequireDelta`；旧 Save 接口与全量回退已删除。初始化或提交报错可能已落盘，必须停止并由新会话 Load 裁决，不能盲重试。
+
+物理格式升级不迁移、不自动删除或覆盖旧 JSON/旧库。需保留旧数据时继续使用旧版和隔离存储；新版另用新目录/新库。独立 PostgreSQL 的 advisory lock 不是 distributed/postgres 的 token/epoch/lease fencing；后者的设计不能当作前者的能力或实库验收。本轮 PostgreSQL 仍在开发，未在本页宣称实库通过或已发布。
+
+增量减少普通提交的整记录重写，不代表历史自动压缩或 Load 成本恒定。首次 Load 要校验快照、摘要、连续批链并重建隔离投影；批日志、消息尝试历史与业务保留期仍要单独预算。当前 SQLite 成本夹具的 `fullSnapshotObserver` 是在另一个 SQLite 库写完整投影的**简化观察器**，不是旧版精确 benchmark；10 条消息时增量可能更贵，不能宣称所有规模都更快。本页不添加未经核实的新数字；当前性能对照应统一收口到[生产性能对比](production-comparison.md)，不得把本页历史表改标为新结果。
+
+下文的 Save、单 JSON 文件及其公式均指 2026-10-16 历史实现。文件长度累加是逻辑 bytes，不是设备 I/O；SQLite 主库/WAL 文件大小也不等于设备实际写入量。
 
 普通节点图从 1 到 10000 步的同任务对照、当前公开版本与真实进程恢复成本见[规模与性能](performance.md)。本页保留原历史测量，不改写成新版本数据。
 
@@ -10,7 +20,7 @@
 
 新增的 `TestRecordGrowthHistorySurvivesDrainAndResume` 用真实 filestore 完成 8 条消息，检查 Pending 为零、连续确认前沿为 8，同时仍有 8 条不同序号的 confirmed 历史。然后新建 Store 和 Runtime，从文件 Resume，检查历史保持一致、出口字符串相同、两个节点的业务体都没有再次执行。这是同进程内重新打开文件的恢复检查；跨进程退出恢复由已有集成用例覆盖。
 
-当前修改路径通常先克隆记录来构造候选；`runState.save` 还会克隆交给 Session 的记录，并在保存成功后克隆成自己的已确认记录。`cloneRecord` 遍历 map、复制切片和编码字节，字符串作为不可变值复用。filestore 的更新则先读取并解码完整旧 JSON 检查 Revision，再验证元数据、编码完整新记录、写临时文件、同步和原子替换。它只保留当前 JSON 文件，不把每次 Revision 都另存一份。
+该历史基线的修改路径通常先克隆记录来构造候选；`runState.save` 还会克隆交给 Session 的记录，并在保存成功后克隆成自己的已确认记录。`cloneRecord` 遍历 map、复制切片和编码字节，字符串作为不可变值复用。filestore 的更新则先读取并解码完整旧 JSON 检查 Revision，再验证元数据、编码完整新记录、写临时文件、同步和原子替换。它只保留当前 JSON 文件，不把每次 Revision 都另存一份。
 
 ## 测量环境和方法
 
@@ -110,7 +120,7 @@ D_JSON ≈ 活跃记录 JSON 总量 + λ × T × 平均完成记录大小
 
 ## 复跑
 
-新增 benchmark 位于根目录 `record_growth_filestore_test.go`，真实 clone 的测试入口在 `record_growth_test.go`。从 Durable 仓库根目录运行下面的 PowerShell 命令；示例将临时文件放到仓库同级的 `validation-scale`，实际测量也使用独立验证目录。
+以下命令对应上文历史基线中的 `record_growth_filestore_test.go` 和 `record_growth_test.go`。必须在隔离 checkout 中使用测量时的 commit 与依赖；当前开发分支的同名测试已适配新协议，不能用其输出复现旧 Save 成本。不要回退或覆盖当前工作目录。下面命令从历史 checkout 根目录运行，将临时文件放到其同级 `validation-scale`；实际测量也使用独立验证目录。
 
 ```powershell
 $env:GOWORK = 'off'

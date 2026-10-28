@@ -468,8 +468,11 @@ type injectedSession struct {
 	first    bool
 }
 
-func (s *injectedSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+func (s *injectedSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, s.observe)
+}
+func (s *injectedSession) observe(record durable.RunRecord, commit func() error) error {
+	if err := commit(); err != nil {
 		return err
 	}
 	if !s.first {

@@ -62,14 +62,12 @@ func (s *runtimeWireSession) Load(_ context.Context) (RunRecord, error) {
 	}
 	return cloneRecord(r), nil
 }
-func (s *runtimeWireSession) Save(_ context.Context, record RunRecord, revision uint64) error {
-	old, ok := s.owner.records[s.runID]
-	if !ok {
-		if revision != 0 || record.Revision != 1 {
-			return ErrConflict
-		}
-	} else if revision != old.Revision || record.Revision != revision+1 {
+func (s *runtimeWireSession) Initialize(_ context.Context, record RunRecord) error {
+	if _, ok := s.owner.records[s.runID]; ok {
 		return ErrConflict
+	}
+	if err := ValidateInitialRecord(record, s.runID); err != nil {
+		return err
 	}
 	s.owner.records[s.runID] = cloneRecord(record)
 	return nil
@@ -136,7 +134,6 @@ func TestChangeBatchWireRealRuntimeManagedFiveHundredRoundsAndResume(t *testing.
 		t.Fatal(err)
 	}
 	opts := testOptions("wire-runtime-500")
-	opts.RequireDelta = true
 	if _, err := runtime.Run(t.Context(), graph, pulse.Inputs{}, opts); err != nil {
 		if store.lastError != nil {
 			t.Fatal(store.lastError)

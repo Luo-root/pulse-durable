@@ -276,11 +276,25 @@ func (s *startupFaultSession) Load(ctx context.Context) (durable.RunRecord, erro
 	return s.Session.Load(ctx)
 }
 
-func (s *startupFaultSession) Save(ctx context.Context, r durable.RunRecord, revision uint64) error {
+func (s *startupFaultSession) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if s.owner.op == "save" || (s.owner.saveMatch != nil && s.owner.saveMatch(r) && s.owner.fired.CompareAndSwap(false, true)) {
 		return s.owner.fail()
 	}
-	return s.Session.Save(ctx, r, revision)
+	return s.Session.Initialize(ctx, r)
+}
+
+func (s *startupFaultSession) Apply(ctx context.Context, b durable.ChangeBatch) (durable.CommitAck, error) {
+	r, err := s.Session.Load(ctx)
+	if err != nil {
+		return durable.CommitAck{}, err
+	}
+	if _, err := b.ApplyTo(&r); err != nil {
+		return durable.CommitAck{}, err
+	}
+	if s.owner.op == "save" || (s.owner.saveMatch != nil && s.owner.saveMatch(r) && s.owner.fired.CompareAndSwap(false, true)) {
+		return durable.CommitAck{}, s.owner.fail()
+	}
+	return s.Session.Apply(ctx, b)
 }
 
 func (s *startupFaultSession) Close() error {
@@ -314,7 +328,11 @@ func TestRuntimeStoreOperationsAreCheckpointFailures(t *testing.T) {
 				recoveryAdd(t, g, pulse.NewNode("work", "", nil, nil, func(*pulse.RunCtx) error { body.Add(1); return nil }))
 				e, err := recoveryRuntime(t, store, durable.NewCodecs()).Run(context.Background(), g, pulse.Inputs{}, recoveryOptions("run"))
 				checkRecoveryFailure(t, err, wantCause)
-				if strings.HasPrefix(failure, "panic-") && !strings.Contains(err.Error(), op+" panicked") {
+				operation := op
+				if operation == "save" {
+					operation = "initialize"
+				}
+				if strings.HasPrefix(failure, "panic-") && !strings.Contains(err.Error(), operation+" panicked") {
 					t.Fatalf("Store panic was attributed to a different operation: %v", err)
 				}
 				wantBody := int32(0)

@@ -1,6 +1,16 @@
 # Checkpoint cost and history growth
 
-This page records bounded measurements for [Pulse #411](https://github.com/Luo-root/pulse/issues/411), to help hosts estimate individual checkpoint operations, cumulative writes, and retained storage. It defines no product throughput target or business retention period, and introduces no compression, incremental storage, or distributed ownership capability. See [Storage](storage.md) for guarantees and the [Data model](../reference/data-model.md) for record fields.
+This page retains **historical full-snapshot write measurements** for [Pulse #411](https://github.com/Luo-root/pulse/issues/411), distinguishing individual checkpoint costs, cumulative logical writes, and retained storage. These are not performance results for current incremental backends and define no product throughput target or business retention period. See [Storage](storage.md) for guarantees and the [Data model](../reference/data-model.md) for record fields.
+
+## Current development protocol versus historical data
+
+The development branch uniformly uses `Session.Initialize`/`Apply`: Initialize publishes only a valid initial empty execution state at Revision 1. Ordinary commits atomically apply typed ChangeBatch operations with identity, consecutive revision, and exact precondition checks; Runtime publishes results only after a successful CommitAck. MemoryStore maintains a private non-durable projection. Filestore stores an initial snapshot, immutable batches, and an atomically replaced small head. SQLite and standalone PostgreSQL insert batches and CAS the head within transactions. Applications use `durable.New` and Run/Resume, not handwritten business records or batches, and do not set `RequireDelta`; the old Save interface and full-record fallback are removed. Initialization or commit errors may follow persistence: stop and adjudicate with Load from a new session, never blindly retry.
+
+Physical-format upgrades neither migrate nor automatically delete or overwrite old JSON/databases. Preserve old data with the old version and isolated storage; use a new directory/database for the new version. Standalone PostgreSQL advisory locks are not distributed/postgres token/epoch/lease fencing; the latter's design establishes neither the former's capabilities nor database acceptance. PostgreSQL remains under development in this round; this page claims neither real-database acceptance nor publication.
+
+Incremental commits reduce full-record rewrites, not history automatically or Load to constant cost. Initial Load validates the snapshot, digests, and consecutive batch chain to rebuild an isolated projection. Budget batch logs, message-attempt history, and business retention separately. The current SQLite cost fixture's `fullSnapshotObserver` is a **simplified observer** writing complete projections to another SQLite database, not an exact old-version benchmark. Incremental storage can cost more at 10 messages; do not claim every scale is faster. No unverified new figures are added here; keep current comparisons on [Production performance comparison](production-comparison.md), without relabeling these historical tables as new results.
+
+Save, single-JSON-file descriptions, and formulas below refer to the 2026-10-16 implementation. Summed file lengths are logical bytes, not device I/O; SQLite database/WAL file sizes likewise do not establish actual device writes.
 
 See [scale and performance](performance.md) for equal-task comparisons at 1–10000 ordinary business steps, current pinned revisions and actual process-recovery costs. This page keeps its original historical measurements.
 
@@ -10,7 +20,7 @@ See [scale and performance](performance.md) for equal-task comparisons at 1–10
 
 The new `TestRecordGrowthHistorySurvivesDrainAndResume` completes eight messages through a real filestore, checks that Pending is empty and the contiguous acknowledgement frontier is eight, and verifies eight distinct confirmed history entries. It then creates a new Store and Runtime, resumes from the file, and checks unchanged history, the same output string, and no additional execution of either node body. This reopens files within one process; existing integration tests cover process exit and recovery.
 
-A mutation path typically clones the record to build a proposal. `runState.save` also clones the record passed to Session and, after successful persistence, clones it into its confirmed state. `cloneRecord` traverses maps and copies slices and encoded bytes; immutable strings are reused. A filestore update reads and decodes the complete previous JSON to check Revision, validates metadata, encodes the complete new record, writes a temporary file, syncs it, and atomically replaces the record. Only the current JSON file is retained, rather than a separate file for every revision.
+At that historical baseline, a mutation path typically clones the record to build a proposal. `runState.save` also clones the record passed to Session and, after successful persistence, clones it into its confirmed state. `cloneRecord` traverses maps and copies slices and encoded bytes; immutable strings are reused. A filestore update reads and decodes the complete previous JSON to check Revision, validates metadata, encodes the complete new record, writes a temporary file, syncs it, and atomically replaces the record. Only the current JSON file is retained, rather than a separate file for every revision.
 
 ## Environment and method
 
@@ -110,7 +120,7 @@ First collect active/completed run counts, history and Pending sizes, and save f
 
 ## Reproduce
 
-The benchmarks are in root `record_growth_filestore_test.go`; the test-only entry point for the real clone is in `record_growth_test.go`. Run the following PowerShell commands from the Durable repository root. This example places temporary files in a sibling `validation-scale` directory; the recorded measurements likewise used a separate validation directory.
+These commands refer to `record_growth_filestore_test.go` and `record_growth_test.go` at the historical baseline above. Use that measured commit and dependency in an isolated checkout: same-named tests on the development branch have been adapted to the new protocol and cannot reproduce old Save costs. Do not roll back or overwrite the current workspace. Run the commands from the historical checkout root, placing temporary files in its sibling `validation-scale` directory; the recorded measurements likewise used separate validation storage.
 
 ```powershell
 $env:GOWORK = 'off'

@@ -12,7 +12,7 @@ import (
 // immutable RunID binding. RunID must be nonempty valid UTF-8 and match RunOptions.
 // The caller must prevent concurrent executions on the same session, retain
 // ownership until execution returns and any coordinated Finish/Release completes,
-// then Close it. A distributed implementation must fence Load and Save itself;
+// then Close it. A distributed implementation must fence Load, Initialize and Apply itself;
 // this interface does not implement leases or distributed coordination.
 type ClaimedSession interface {
 	Session
@@ -34,7 +34,7 @@ const (
 	// OutcomeInterrupted means no business terminal verdict was confirmed. Host
 	// cancellation and BeforeStart failures can be retried through recovery.
 	OutcomeInterrupted Outcome = "interrupted"
-	// OutcomeInfrastructure includes checkpoint failures and uncertain Save results.
+	// OutcomeInfrastructure includes checkpoint failures and uncertain write results.
 	// Reload authority before deciding whether any attempted write committed.
 	OutcomeInfrastructure Outcome = "infrastructure"
 	// OutcomeRejected means invalid or incompatible invocation; no business started.

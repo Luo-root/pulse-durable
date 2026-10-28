@@ -179,7 +179,7 @@ go build -o demo .
 
 Run `./demo query` in another terminal; the completed task should be `succeeded`. The worker keeps polling; press Ctrl+C to drain and exit. Use `demo.exe` on Windows. To observe `canceled`, run `./demo cancel` before a new task is claimed; canceling a completed task returns its existing terminal state. Use a new RunID for another run.
 
-`Migrate` explicitly installs or upgrades the separate `pulse_durable_distributed` schema and grants namespace permissions. `New` validates and connects without DDL. The demo uses one application role for simplicity; deploy separate submit/query/worker/cancel roles with multiple `postgres.Grant` entries as needed. Give workers query permission too, for recovery queries. Do not call `New` with administrator credentials or use legacy `postgresstore` tables or sessions for these tasks.
+`Migrate` explicitly installs or verifies physical schema version 3 in the separate `pulse_durable_distributed` schema and grants namespace permissions. Older schemas are rejected without changing their data; use a new database. Logical records remain format 2. Checkpoints use mandatory InitializeOwned/ApplyOwned with one initial snapshot, immutable batches and a fenced revision/chain head CAS. `New` validates and connects without DDL. The demo uses one application role for simplicity; deploy separate submit/query/worker/cancel roles with multiple `postgres.Grant` entries as needed. Give workers query permission too, for recovery queries. Do not call `New` with administrator credentials or use legacy `postgresstore` tables or sessions for these tasks.
 
 ## Routing and upgrades
 

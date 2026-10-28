@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"sync"
 
 	"github.com/Luo-root/pulse"
@@ -14,7 +13,6 @@ import (
 type runState struct {
 	mu      sync.Mutex
 	session Session
-	delta   DeltaSession // selected explicitly before business starts
 	def     *definition
 	record  RunRecord
 	stopped error
@@ -41,33 +39,32 @@ func checkCheckpointContext(ctx context.Context) error {
 	return nil
 }
 
-// save 的调用方串行持有 mu，首次保存发生在业务启动前。
-// proposed 与当前内存记录隔离，只有 Save 成功才推进内存；不确定错误锁存并停止。
-func (s *runState) save(ctx context.Context, proposed RunRecord) (err error) {
+// initialize 只在业务启动前调用；确认成功后发布，未知结果封闭本次运行。
+func (s *runState) initialize(ctx context.Context, proposed RunRecord) (err error) {
 	if s.stopped != nil {
 		return s.stopped
 	}
 	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
-	if s.record.Revision == math.MaxUint64 {
-		return s.stop(fmt.Errorf("%w: revision exhausted", ErrConflict))
+	if s.record.Revision != 0 {
+		return s.stop(fmt.Errorf("%w: already initialized", ErrConflict))
 	}
 	proposed.Format = RecordFormat
-	proposed.Revision = s.record.Revision + 1
+	proposed.Revision = 1
 	// panic(nil) 在兼容模式下 recover 为 nil，须按调用是否正常返回判定。
-	// Store panic 沿原契约不保留原值；Save 异常仍须锁存 stopped。
+	// Store panic 沿原契约不保留原值；Initialize 异常仍须锁存 stopped。
 	returned := false
 	defer func() {
 		if !returned {
 			_ = recover()
-			err = s.stop(fmt.Errorf("durable: store save panicked"))
+			err = s.stop(fmt.Errorf("durable: store initialize panicked"))
 		}
 	}()
-	err = s.session.Save(ctx, cloneRecord(proposed), s.record.Revision)
+	err = s.session.Initialize(ctx, cloneRecord(proposed))
 	returned = true
 	if err != nil {
-		return s.stop(&operationError{op: "store save", cause: err})
+		return s.stop(&operationError{op: "store initialize", cause: err})
 	}
 	s.record = cloneRecord(proposed)
 	return nil

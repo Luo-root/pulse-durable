@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -93,12 +92,9 @@ func (f *fake) Renew(ctx context.Context, t d.Token, ttl time.Duration) (time.Ti
 	}
 	return time.Now().Add(ttl), nil
 }
-func copyRecord(r durable.RunRecord) durable.RunRecord {
-	b, _ := json.Marshal(r)
-	var out durable.RunRecord
-	_ = json.Unmarshal(b, &out)
-	return out
-}
+func copyRecord(r durable.RunRecord) durable.RunRecord { return durable.CloneRecord(r) }
+func (f *fake) DropOwnedProjection(d.Token)            {}
+
 func (f *fake) LoadOwned(ctx context.Context, t d.Token) (durable.RunRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -107,7 +103,7 @@ func (f *fake) LoadOwned(ctx context.Context, t d.Token) (durable.RunRecord, err
 	}
 	return copyRecord(*f.record), nil
 }
-func (f *fake) SaveOwned(ctx context.Context, r d.SaveRequest) error {
+func (f *fake) InitializeOwned(ctx context.Context, r d.InitializeRequest) error {
 	if _, ok := ctx.Deadline(); !ok {
 		panic("unbounded Save")
 	}
@@ -127,7 +123,7 @@ func (f *fake) SaveOwned(ctx context.Context, r d.SaveRequest) error {
 	if f.record != nil {
 		rev = f.record.Revision
 	}
-	if r.ExpectedRevision != rev {
+	if rev != 0 {
 		return d.ErrRevisionConflict
 	}
 	rr := copyRecord(r.Record)
@@ -136,6 +132,21 @@ func (f *fake) SaveOwned(ctx context.Context, r d.SaveRequest) error {
 		return d.ErrUnknown
 	}
 	return nil
+}
+func (f *fake) ApplyOwned(ctx context.Context, token d.Token, m d.Mutation, b durable.ChangeBatch) (durable.CommitAck, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if token != f.token {
+		return durable.CommitAck{}, d.ErrLeaseLost
+	}
+	if f.record == nil {
+		return durable.CommitAck{}, d.ErrNotFound
+	}
+	ack, err := b.ApplyTo(f.record)
+	if err == nil && f.saveUnknown {
+		return durable.CommitAck{}, d.ErrUnknown
+	}
+	return ack, err
 }
 func (f *fake) Finish(ctx context.Context, r d.FinishRequest) (d.Snapshot, error) {
 	f.finish <- r
@@ -313,7 +324,7 @@ func TestSessionSealWaitsForInflightSave(t *testing.T) {
 	defer cancel()
 	s := &session{c: f, token: d.Token{}, timeout: time.Second, ctx: ctx, cancel: cancel}
 	saved := make(chan error, 1)
-	go func() { saved <- s.Save(ctx, durable.RunRecord{Revision: 1}, 0) }()
+	go func() { saved <- s.Initialize(ctx, durable.RunRecord{Revision: 1}) }()
 	await(t, f.saveEntered)
 	s.seal(true)
 	closed := make(chan struct{})
@@ -324,7 +335,7 @@ func TestSessionSealWaitsForInflightSave(t *testing.T) {
 	default:
 	}
 	newSave := make(chan error, 1)
-	go func() { newSave <- s.Save(context.Background(), durable.RunRecord{}, 0) }()
+	go func() { newSave <- s.Initialize(context.Background(), durable.RunRecord{}) }()
 	close(f.saveExit)
 	if err := await(t, newSave); !errors.Is(err, d.ErrLeaseLost) {
 		t.Fatal(err)

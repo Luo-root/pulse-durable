@@ -35,9 +35,9 @@ type deltaCoordinator struct {
 	staleRejects      atomic.Int32
 }
 
-func (f *deltaCoordinator) SaveOwned(ctx context.Context, req d.SaveRequest) error {
-	err := f.fake.SaveOwned(ctx, req)
-	if err == nil && req.ExpectedRevision == 0 {
+func (f *deltaCoordinator) InitializeOwned(ctx context.Context, req d.InitializeRequest) error {
+	err := f.fake.InitializeOwned(ctx, req)
+	if err == nil {
 		f.mu.Lock()
 		if f.seed == nil {
 			r := copyRecord(req.Record)
@@ -131,24 +131,24 @@ func (f *deltaCoordinator) ApplyOwned(ctx context.Context, token d.Token, m d.Mu
 func (f *deltaCoordinator) saved() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.batches) }
 
 func deltaConfig(c d.Coordinator, r *d.Registry, require bool) Config {
-	return Config{Coordinator: c, Renewer: c, Registry: r, Namespace: "ns", WorkerID: "one", Capacity: 1, BatchMax: 1, TTL: time.Second, RenewInterval: 20 * time.Millisecond, RenewTimeout: 50 * time.Millisecond, OperationTimeout: 300 * time.Millisecond, PollMin: time.Millisecond, PollMax: 2 * time.Millisecond, RequireDelta: require}
+	return Config{Coordinator: c, Renewer: c, Registry: r, Namespace: "ns", WorkerID: "one", Capacity: 1, BatchMax: 1, TTL: time.Second, RenewInterval: 20 * time.Millisecond, RenewTimeout: 50 * time.Millisecond, OperationTimeout: 300 * time.Millisecond, PollMin: time.Millisecond, PollMax: 2 * time.Millisecond}
 }
 
-func TestRequireDeltaRejectsUnsupportedAndTypedNilBeforeClaim(t *testing.T) {
+func TestRequiredCoordinatorRejectsTypedNilBeforeClaim(t *testing.T) {
 	w, f := fixture(t, func(*pulse.RunCtx) error { return nil })
-	if _, err := New(deltaConfig(f, w.cfg.Registry, true)); !errors.Is(err, durable.ErrUnsupportedCapability) {
-		t.Fatalf("unsupported=%v", err)
+	if _, err := New(deltaConfig(f, w.cfg.Registry, true)); err != nil {
+		t.Fatalf("required coordinator=%v", err)
 	}
 	var typed *deltaCoordinator
-	if _, err := New(deltaConfig(typed, w.cfg.Registry, true)); !errors.Is(err, durable.ErrUnsupportedCapability) {
+	if _, err := New(deltaConfig(typed, w.cfg.Registry, true)); !errors.Is(err, d.ErrInvalid) {
 		t.Fatalf("typed nil=%v", err)
 	}
 	var nilMap nilDeltaMap
-	if _, err := New(deltaConfig(nilMap, w.cfg.Registry, true)); !errors.Is(err, durable.ErrUnsupportedCapability) {
+	if _, err := New(deltaConfig(nilMap, w.cfg.Registry, true)); !errors.Is(err, d.ErrInvalid) {
 		t.Fatalf("map nil=%v", err)
 	}
 	var nilFunc nilDeltaFunc
-	if _, err := New(deltaConfig(nilFunc, w.cfg.Registry, true)); !errors.Is(err, durable.ErrUnsupportedCapability) {
+	if _, err := New(deltaConfig(nilFunc, w.cfg.Registry, true)); !errors.Is(err, d.ErrInvalid) {
 		t.Fatalf("func nil=%v", err)
 	}
 	f.mu.Lock()
@@ -233,7 +233,7 @@ func TestDeltaRuntimeUsesWireAuthoritySeedAndFinish(t *testing.T) {
 	}
 }
 
-func TestLegacyDefaultStillFullSave(t *testing.T) {
+func TestDefaultRequiresIncrementalCheckpoints(t *testing.T) {
 	w, f := fixture(t, func(*pulse.RunCtx) error { return nil })
 	if _, err := New(deltaConfig(f, w.cfg.Registry, false)); err != nil {
 		t.Fatal(err)
@@ -242,8 +242,8 @@ func TestLegacyDefaultStillFullSave(t *testing.T) {
 	await(t, f.finish)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.record == nil {
-		t.Fatal("legacy path did not seed with Save")
+	if f.record == nil || f.record.Revision <= 1 {
+		t.Fatal("default path did not apply incremental checkpoints")
 	}
 }
 
@@ -259,7 +259,7 @@ func TestDeltaSessionDigestFenceAndFailures(t *testing.T) {
 	dc.mu.Lock()
 	b := dc.batches[0]
 	dc.mu.Unlock()
-	ds := &deltaSession{session: s, coordinator: dc}
+	ds := s
 	if _, err := ds.Apply(context.Background(), b); !errors.Is(err, d.ErrLeaseLost) {
 		t.Fatalf("stale owner=%v", err)
 	}
@@ -346,7 +346,7 @@ func TestDeltaDirectFaultSentinelCommitsThenSeals(t *testing.T) {
 			dc := &deltaCoordinator{fake: authority, wrongAck: tc.wrongAck, commitThenErr: tc.commitErr, commitThenPanic: tc.commitPanic}
 			ctx, cancelSession := context.WithCancel(context.Background())
 			s := &session{c: dc, token: token, timeout: time.Second, ctx: ctx, cancel: cancelSession}
-			ds := &deltaSession{session: s, coordinator: dc}
+			ds := s
 			_, err := ds.Apply(context.Background(), batch)
 			if !errors.Is(err, tc.expected) {
 				t.Fatalf("Apply err=%v want=%v", err, tc.expected)
@@ -385,7 +385,7 @@ func TestDeltaCloseWaitsForBlockedApply(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &session{c: dc, token: token, timeout: time.Second, ctx: ctx, cancel: cancel}
-	ds := &deltaSession{session: s, coordinator: dc}
+	ds := s
 	applyDone := make(chan struct{})
 	go func() { _, _ = ds.Apply(context.Background(), b); close(applyDone) }()
 	await(t, dc.enteredApply)
@@ -420,7 +420,7 @@ func nilRenew(context.Context, d.Token, time.Duration) (time.Time, error) {
 func nilLoad(context.Context, d.Token) (durable.RunRecord, error) {
 	return durable.RunRecord{}, d.ErrInvalid
 }
-func nilSave(context.Context, d.SaveRequest) error { return d.ErrInvalid }
+func nilSave(context.Context, d.InitializeRequest) error { return d.ErrInvalid }
 func nilFinish(context.Context, d.FinishRequest) (d.Snapshot, error) {
 	return d.Snapshot{}, d.ErrInvalid
 }
@@ -449,10 +449,13 @@ func (nilDeltaMap) ResolveClaim(c context.Context, n string, w d.Worker, i strin
 func (nilDeltaMap) Renew(c context.Context, t d.Token, ttl time.Duration) (time.Time, error) {
 	return nilRenew(c, t, ttl)
 }
+func (nilDeltaMap) DropOwnedProjection(d.Token) {}
 func (nilDeltaMap) LoadOwned(c context.Context, t d.Token) (durable.RunRecord, error) {
 	return nilLoad(c, t)
 }
-func (nilDeltaMap) SaveOwned(c context.Context, r d.SaveRequest) error { return nilSave(c, r) }
+func (nilDeltaMap) InitializeOwned(c context.Context, r d.InitializeRequest) error {
+	return nilSave(c, r)
+}
 func (nilDeltaMap) Finish(c context.Context, r d.FinishRequest) (d.Snapshot, error) {
 	return nilFinish(c, r)
 }
@@ -488,10 +491,13 @@ func (nilDeltaFunc) ResolveClaim(c context.Context, n string, w d.Worker, i stri
 func (nilDeltaFunc) Renew(c context.Context, t d.Token, ttl time.Duration) (time.Time, error) {
 	return nilRenew(c, t, ttl)
 }
+func (nilDeltaFunc) DropOwnedProjection(d.Token) {}
 func (nilDeltaFunc) LoadOwned(c context.Context, t d.Token) (durable.RunRecord, error) {
 	return nilLoad(c, t)
 }
-func (nilDeltaFunc) SaveOwned(c context.Context, r d.SaveRequest) error { return nilSave(c, r) }
+func (nilDeltaFunc) InitializeOwned(c context.Context, r d.InitializeRequest) error {
+	return nilSave(c, r)
+}
 func (nilDeltaFunc) Finish(c context.Context, r d.FinishRequest) (d.Snapshot, error) {
 	return nilFinish(c, r)
 }

@@ -397,6 +397,7 @@ func TestLegacyFailedStreamValidationPrecedesRepair(t *testing.T) {
 			stored := cloneRecord(p.s.record)
 			store := NewMemoryStore()
 			store.records = map[string]RunRecord{"run": stored}
+			store.chains = map[string][32]byte{"run": SeedChain(memorySeedDigest(stored))}
 			g := testGraph(t, "streams")
 			input, output, value := pulse.NewKey[pulse.Stream[int]]("input"), pulse.NewKey[pulse.Stream[int]]("output"), pulse.NewKey[int]("value")
 			var calls atomic.Int32
@@ -572,7 +573,7 @@ func TestResumeFixedFormatOneRecord(t *testing.T) {
 	if err := json.Unmarshal([]byte(legacyFormatOne), &record); err != nil {
 		t.Fatal(err)
 	}
-	store := &MemoryStore{records: map[string]RunRecord{record.RunID: record}}
+	store := &MemoryStore{records: map[string]RunRecord{record.RunID: record}, chains: map[string][32]byte{record.RunID: SeedChain(memorySeedDigest(record))}}
 	g, err := pulse.New("legacy-format-one", "旧格式完整节点恢复")
 	if err != nil {
 		t.Fatal(err)

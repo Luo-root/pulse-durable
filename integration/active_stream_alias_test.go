@@ -385,8 +385,11 @@ type activeStreamAliasSession struct {
 	resumeOpened bool
 }
 
-func (s *activeStreamAliasSession) Save(ctx context.Context, record durable.RunRecord, expected uint64) error {
-	if err := s.Session.Save(ctx, record, expected); err != nil {
+func (s *activeStreamAliasSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
+	return observeApply(ctx, s.Session, batch, func(record durable.RunRecord, commit func() error) error { return s.observe(ctx, record, commit) })
+}
+func (s *activeStreamAliasSession) observe(ctx context.Context, record durable.RunRecord, commit func() error) error {
+	if err := commit(); err != nil {
 		return err
 	}
 	if s.phase == "run" {

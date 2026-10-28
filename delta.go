@@ -2,25 +2,9 @@ package durable
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 )
-
-// ErrUnsupportedCapability means an explicitly requested runtime path is absent.
-var ErrUnsupportedCapability = errors.New("durable: unsupported capability")
-
-// DeltaSession is an optional, explicitly selected Session capability. Load and
-// the initial seed Save retain the Session contract. Apply must atomically check
-// the batch identity, revision and exact typed object preconditions before making
-// any change visible. An error can mean the write committed: never retry blindly.
-// Format 1 batches carry format2 logical records; this is not format3, a receipt
-// protocol, or a claim of incremental support in any production backend.
-// Wrappers must deliberately expose this interface; Runtime never unwraps them.
-type DeltaSession interface {
-	Session
-	Apply(context.Context, ChangeBatch) (CommitAck, error)
-}
 
 // ChangeHeader binds a batch to one immutable run and one revision transition.
 // Namespace/ownership fencing belongs to the session, not caller-supplied fields.
@@ -148,6 +132,9 @@ func (tx *recordTransaction) copy() *recordTransaction {
 }
 
 func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err error) {
+	if s.stopped != nil {
+		return s.stopped
+	}
 	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
@@ -162,7 +149,7 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 			err = s.stop(fmt.Errorf("durable: store delta apply panicked"))
 		}
 	}()
-	ack, err := s.delta.Apply(ctx, batch)
+	ack, err := s.session.Apply(ctx, batch)
 	returned = true
 	if err != nil {
 		return s.stop(&operationError{op: "store delta apply", cause: err})
@@ -170,7 +157,7 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	if ack.Header != batch.header {
 		return s.stop(fmt.Errorf("%w: delta acknowledgement mismatch", ErrConflict))
 	}
-	// All Save and Load boundary values are isolated, and batch owns a separate
+	// All Initialize and Load boundary values are isolated, and batch owns a separate
 	// transaction copy. Only the private record is mutated after confirmation.
 	tx.apply(&s.record)
 	s.record.Format, s.record.Revision = RecordFormat, batch.header.Revision

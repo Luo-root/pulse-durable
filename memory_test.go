@@ -20,12 +20,17 @@ func TestMemoryStoreSessionCASAndIsolation(t *testing.T) {
 	if _, err := s.Load(ctx); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("empty load: %v", err)
 	}
-	r := RunRecord{RunID: "run", Revision: 1, Scopes: map[string]ScopeRecord{"root": {Nodes: map[string]NodeRecord{"node": {
-		NodeID: "node", Outputs: []ValueRecord{{Data: []byte("original")}},
-	}}}}, Attempts: map[string]AttemptRecord{"attempt": {Index: 1}}}
-	if err := s.Save(ctx, r, 0); err != nil {
+	r := contractSeed("run")
+	if err := s.Initialize(ctx, r); err != nil {
 		t.Fatal(err)
 	}
+	tx := newRecordTransaction(1)
+	_ = tx.putNode("root", "node", nil, NodeRecord{NodeID: "node", Outputs: []ValueRecord{{Data: []byte("original")}}})
+	_ = tx.putAttempt("attempt", nil, AttemptRecord{Index: 1})
+	if _, err := s.Apply(ctx, ChangeBatch{changeHeader(r), tx}); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = s.Load(ctx)
 	r.Scopes["root"].Nodes["node"].Outputs[0].Data[0] = 'X'
 	r.Attempts["attempt"] = AttemptRecord{Index: 99}
 	loaded, err := s.Load(ctx)
@@ -41,17 +46,25 @@ func TestMemoryStoreSessionCASAndIsolation(t *testing.T) {
 		t.Fatal("Load did not isolate the record")
 	}
 	for _, bad := range []RunRecord{{RunID: "other", Revision: 2}, {RunID: "run", Revision: 3}, {RunID: "run", Revision: 1}} {
-		if err := s.Save(ctx, bad, 1); !errors.Is(err, ErrConflict) {
+		if err := s.Initialize(ctx, bad); !errors.Is(err, ErrConflict) {
 			t.Fatalf("invalid CAS accepted: %v", err)
 		}
 	}
+	base, _ := s.Load(ctx)
+	next := newRecordTransaction(base.Revision)
+	old := base.Attempts["attempt"]
+	updated := old
+	updated.Index = 2
+	_ = next.putAttempt("attempt", &old, updated)
+	batch := ChangeBatch{changeHeader(base), next}
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- s.Save(ctx, RunRecord{RunID: "run", Revision: 2}, 1)
+			_, err := s.Apply(ctx, batch)
+			results <- err
 		}()
 	}
 	wg.Wait()
@@ -79,7 +92,7 @@ func TestMemoryStoreSessionCASAndIsolation(t *testing.T) {
 	if _, err := s.Load(ctx); err == nil {
 		t.Fatal("closed Load accepted")
 	}
-	if err := s.Save(ctx, RunRecord{RunID: "run", Revision: 3}, 2); err == nil {
+	if _, err := s.Apply(ctx, batch); err == nil {
 		t.Fatal("closed Save accepted")
 	}
 	reopened, err := store.Acquire(ctx, "run")
@@ -88,7 +101,7 @@ func TestMemoryStoreSessionCASAndIsolation(t *testing.T) {
 	}
 	defer reopened.Close()
 	final, err := reopened.Load(ctx)
-	if err != nil || final.Revision != 2 {
+	if err != nil || final.Revision != 3 {
 		t.Fatalf("reopened record: %+v, %v", final, err)
 	}
 }
@@ -102,7 +115,7 @@ func TestMemoryStoreContext(t *testing.T) {
 	}
 	s, _ := store.Acquire(context.Background(), "run")
 	defer s.Close()
-	if err := s.Save(ctx, RunRecord{RunID: "run", Revision: 1}, 0); !errors.Is(err, context.Canceled) {
+	if err := s.Initialize(ctx, contractSeed("run")); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	if _, err := s.Load(context.Background()); !errors.Is(err, ErrNotFound) {
