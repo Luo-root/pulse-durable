@@ -120,7 +120,7 @@ func (s *durableRunner) inspect(ctx context.Context) (int, map[string]any) {
 		m["canonical_batch_bytes"] = s.meter.canonicalBatchBytes
 	}
 	if _, ok := s.store.(*filestore.Store); ok {
-		m["persistence"] = "filestore full JSON snapshots; file Sync + atomic replacement; no promised power-loss durability"
+		m["persistence"] = "initial snapshot + immutable typed batches + atomic head; file Sync; powerloss unverified"
 	}
 	session, err := s.store.Acquire(ctx, runID)
 	if err != nil {

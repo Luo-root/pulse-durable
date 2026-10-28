@@ -4,7 +4,7 @@ This page defines persistent records, encoding states, and Store/Session contrac
 
 ## RunRecord
 
-The current `RecordFormat` is `2`, used for all new ordinary and streaming runs. Ordinary format `1` remains recoverable and upgrades on its next Save; it cannot contain incremental fields. Old Runtime versions reject the new format, preventing an overwrite after silently ignoring stream fields. RunRecord contains serializable data only, without functions, Go call stacks, or automatically captured business error text.
+The current `RecordFormat` is `2`, used for all new ordinary and streaming runs. Runtime's logical validation still recognizes ordinary format `1` without incremental fields, with subsequent business commits using `2`. This does not mean new durable backends read or migrate old physical JSON/schemas. New Initialize accepts only the current logical format; old physical formats must be explicitly rejected with data preserved. Read them with the old version or use a new directory/database. Old Runtime versions reject the new format, preventing an overwrite after silently ignoring stream fields. RunRecord contains serializable data only, without functions, Go call stacks, or automatically captured business error text.
 
 | Field | Meaning |
 | --- | --- |
@@ -51,7 +51,7 @@ The same child graph has different execution scopes at different mounts or in di
 | --- | --- |
 | `AttemptActive` | The same attempt can be reclaimed; inner success stays active until root commit |
 | `AttemptFailed` | The attempt has a real failure; all descendant results are invalid for reuse |
-| `AttemptConfirmed` | The node root attempt and complete NodeRecord were confirmed in the same Save |
+| `AttemptConfirmed` | The node root attempt and complete NodeRecord were confirmed in the same Apply |
 
 A node root attempt has an empty Boundary and Limit `1`. A Retry attempt points to an outer Attempt and stores its own index and limit. Within one Parent/NodeID/Boundary group, indexes are consecutive, limits match, and earlier attempts must have failed.
 
@@ -68,7 +68,7 @@ Confirmation applies to the node root attempt. Inner Retry success does not inde
 
 NodeRecord represents confirmation of the complete node chain. It is not a marker for entering the body or calling Set. Real failures are recorded in Attempt state, not disguised as skipped NodeRecords.
 
-Ordinary values still require complete producer records. A managed stream dependency may refer to a durably opened source, including a source connected through static In/Out bindings, before its body completes. Its stable identity, source attempt, and all ancestors must be valid. The root attempt must still match the Scope, NodeID, and NodeRecord, and be confirmed in the same Save.
+Ordinary values still require complete producer records. A managed stream dependency may refer to a durably opened source, including a source connected through static In/Out bindings, before its body completes. Its stable identity, source attempt, and all ancestors must be valid. The root attempt must still match the Scope, NodeID, and NodeRecord, and be confirmed in the same Apply.
 
 ## ValueRecord
 
@@ -97,11 +97,11 @@ Restoring ready values checks Codec ID/version, digest format, the actual byte c
 
 Active sources must explicitly support continuation. Business code starts from `StreamWriter.Position()` and persists positions with `SendAt`. Completed sources retain their complete NodeRecord; recovery rebuilds their unacknowledged tails without rerunning the body. A confirmed source still permits tail acknowledgements. Failed sources still reject Open/Send/Ack; failed ancestors, forged references, and future generations remain rejected. A legitimate confirmed Sub alias may restore a read-only failed endpoint, with no messages or Open, after verification of historical identity, the failed source root, and valid ancestry. This allows a deeper producer's parent chain to handle its business failure without rerunning the alias, advancing generation, authorizing acknowledgement, or treating canceled as business failure.
 
-A real-failure `Finish` confirms the actual writer root attempt and failed terminals of all streams opened by that root in one Save, without deciding the parent Sub or parent Retry result. Core's subsequent per-output Finish and FailAttempt calls perform strictly idempotent cleanup only. Old sources still cannot Open, Send, or Ack, or change their position, cursor, or generation. A canceled terminal is not this business-failure fact.
+A real-failure `Finish` confirms the actual writer root attempt and failed terminals of all streams opened by that root in one Apply, without deciding the parent Sub or parent Retry result. Core's subsequent per-output Finish and FailAttempt calls perform strictly idempotent cleanup only. Old sources still cannot Open, Send, or Ack, or change their position, cursor, or generation. A canceled terminal is not this business-failure fact.
 
-Legacy format 2 may contain only some failed terminals with an active root. Resume validates all history first, then uses one reliable CAS to reconcile all same-root endpoints and root failure in still-valid scopes. A repair Save error stops execution; the next Load determines authority. Results beneath confirmed/failed ancestors remain untouched, and corrupt history is never guessed or repaired; mixed failed and canceled/successful sibling terminals are inconsistent. Ordinary format 1 retains its compatibility path and cannot contain incremental fields. This repair adds no storage fields or Retry budget.
+Legacy format 2 may contain only some failed terminals with an active root. Resume validates all history first, then uses one reliable CAS to reconcile all same-root endpoints and root failure in still-valid scopes. A repair Apply error stops execution; the next Load determines authority. Results beneath confirmed/failed ancestors remain untouched, and corrupt history is never guessed or repaired; mixed failed and canceled/successful sibling terminals are inconsistent. Ordinary format 1 retains its compatibility path and cannot contain incremental fields. This repair adds no storage fields or Retry budget.
 
-`MessageAttemptRecord` stores source/group/sequence, processing parent attempt, Index/Limit, and state; restarts do not replenish budgets. `ManagedRecord.State` is an explicit full snapshot; Values are arrived ordinary outputs. Input acknowledgement, state, ordinary values, and output messages commit in one whole-record CAS. Failure discards the proposed record; uncertain saves stop execution and Resume reloads authority. Stop explicitly ends reading obligations without pretending to acknowledge every message. External effects still require application idempotency, transactions, or an outbox.
+`MessageAttemptRecord` stores source/group/sequence, processing parent attempt, Index/Limit, and state; restarts do not replenish budgets. `ManagedRecord.State` is an explicit full snapshot; Values are arrived ordinary outputs. Input acknowledgement, state, ordinary values, and output messages commit atomically in one typed ChangeBatch Apply. Failed precondition validation publishes no changes from the batch; uncertain commits stop execution and a new session Load determines authority. Stop explicitly ends reading obligations without pretending to acknowledge every message. External effects still require application idempotency, transactions, or an outbox.
 
 Every confirmed message attempt requires a `ManagedRecord` at its Scope/Parent/NodeID key with matching ownership fields; conversely, every container requires at least one confirmed message with that ownership. A valid message commit persists this identity-bearing container even when both State and Values are empty. Recovery rejects a missing or mismatched container before recovery events, Start, business calls, or Revision/Generation advances, rather than treating lost state as an initial zero value. Manual Ack creates no message attempt and requires no container; unconfirmed active/failed messages also need no existing container, and message-free format 1 records remain recoverable. Historical confirmed records do not become corrupt when a parent attempt or ancestor later fails or the input stream advances generation, although results under failed ancestors cannot be reused. These are record-completeness checks, not a claim that a healthy filestore loses containers or authentication against arbitrary tampering.
 
@@ -138,31 +138,29 @@ type Store interface {
 
 type Session interface {
 	Load(context.Context) (RunRecord, error)
-	Save(context.Context, RunRecord, uint64) error
+	Initialize(context.Context, RunRecord) error
+	Apply(context.Context, ChangeBatch) (CommitAck, error)
 	Close() error
 }
 ```
 
 Store must be concurrency safe, with independent use of different RunIDs. Acquire returns `ErrBusy` when it detects that a RunID is owned, without waiting for that run to release ownership. Connection capacity and network detection may still require waiting, as specified by the backend. Session exclusively owns that run from Acquire until Close. See [Storage](../guide/storage.md) for PostgreSQL's local pending check, 30-second acquisition bound, and shutdown cleanup.
 
-Load returns an isolated copy, or `ErrNotFound` if no record exists. Save performs atomic compare-and-swap and checks that the record RunID matches the session:
+Load validates integrity and returns an isolated complete projection. Only an absent checkpoint returns `ErrNotFound`; old formats, corruption, and permission errors are not absence. Initialize atomically publishes a valid initial empty execution state at Revision `1` only when no checkpoint exists, checking the session RunID, current logical format, business identity, and empty root scope. It is not a history import path. Applications let Runtime Run construct initial state rather than handwriting business records.
 
-| Save | expectedRevision | New record Revision |
-| --- | --- | --- |
-| First | `0` | `1` |
-| Later | Current revision | Current revision plus `1` |
+Apply is the sole ordinary write entry point: typed ChangeBatch atomically checks identity, business version, strictly consecutive expected/next revisions, and exact object preconditions, returning a CommitAck that exactly matches its header. Precondition or CAS conflicts return `ErrConflict` without partial publication; exhausted uint64 revisions must be rejected. There is no compatibility Save, optional DeltaSession, RequireDelta, or full-record fallback.
 
-Failed conditions return `ErrConflict` and leave the old record unchanged. Revisions must not overflow. Close releases ownership and permits repeated calls; Load/Save after close must return errors.
+Durable backends retain an initial snapshot, consecutive immutable batches, and an authoritative head. Backends verify and maintain snapshot digests, batch-wire digests, parent revisions, and chain anchors; the physical chain is not part of ChangeHeader. New sessions must authoritatively load and validate the chain; ordinary Apply must not replay all history or rewrite a complete snapshot on every commit. Initialize may write a complete initial snapshot. Explicit snapshot compaction is a separate maintenance capability, currently not implemented, not an ordinary-commit fallback. Physical compaction is distinct from semantic history compression and retention.
 
-For each mutation, Runtime copies a proposed record and advances its in-memory record only after Save succeeds. Save may commit and then return an error. Stop this execution without rollback or automatic retry; the next Resume must reload. A backend cannot replace CAS with an ordinary overwrite.
+Runtime advances in-memory state and publishes results only after an exact CommitAck. Initialize/Apply may commit and then return an error: stop without rollback or blind retries, wait for ownership release, then adjudicate through Load from a new session. Close is idempotent, waits for in-flight operations, and releases session ownership; Load/Initialize/Apply after close must fail.
 
 ## Concrete built-in Store guarantees
 
-MemoryStore's zero value is usable. Load/Save copy records. It provides only in-process locking and CAS, without cross-process ownership or persistence after exit.
+MemoryStore's zero value is usable. Initialize copies the initial record, Apply validates then updates affected objects only, and Load returns an isolated copy. It provides only in-process locking and CAS, without cross-process ownership or persistence after exit.
 
 FileStore must be created with `filestore.New`. It uses one OS file lock per RunID, released on Close or process exit while the lock file remains. Lock implementations exist for Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, and DragonFly. Other platforms reject session acquisition rather than running without locks. The filesystem must still support the required locks and atomic replacement within a directory.
 
-File records are staged and synced in the same directory before replacement. Confirmation failure after replacement can make commit status uncertain. These single-host guarantees do not extend to distributed leases, fencing, or power-loss durability.
+FileStore uses immutable initial snapshot and batch files, publishing authority through a small `.head` synced and atomically replaced within the same directory, rather than a single authoritative `.json`. Files not referenced by the head cannot be adopted as committed; confirmation failure after head publication can make commit status uncertain. Old `.json` is explicitly rejected, never automatically cleared or migrated; use a new directory. Single-host guarantees do not extend to distributed leases, fencing, or power-loss durability. Incremental writes do not promise every scale is faster; see [Checkpoint cost](../guide/checkpoint-cost.md) for measurement boundaries.
 
 All metadata strings and map keys must be valid UTF-8. Invalid metadata is rejected before writing, preserving the old file and Revision. Loading rejects invalid raw UTF-8 and unpaired JSON Unicode surrogates. Valid Unicode is preserved; Data bytes are not restricted by metadata UTF-8 rules.
 

@@ -11,7 +11,7 @@ go get github.com/Luo-root/pulse-durable@v0.1.0
 go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
 ```
 
-- [SQLite 教程（迁移中）](../site/guide/sqlite.md)：该页仍含旧 Save 契约，不能作为新版 Initialize/Apply 接口示例；当前存储契约以本页及根 Session 接口为准。
+- [SQLite 教程](../site/guide/sqlite.md)：当前开发分支的 Initialize/Apply 契约、Runtime 用法及旧物理格式拒绝边界；不代表已发布版本。
 - [安装与版本](../site/guide/installation.md)：三 tag 命名、发布前开发 pin 备选。
 - [贡献指南](../CONTRIBUTING.md)：独立模块与临时源码工作区验证。根 `./...` 不包含本模块。
 
@@ -23,7 +23,7 @@ This optional local SQLite backend implements Durable `Store` / `Session` using 
 
 This is release preparation, not a claim of publication. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases). The commands above are unavailable until root `v0.1.0` and submodule `sqlitestore/v0.1.0` tags are published.
 
-- [SQLite tutorial (migration in progress)](../site/en/guide/sqlite.md): this page still contains the old Save contract, not examples of the new Initialize/Apply API. Refer to this README and the root Session interface for the current storage contract.
+- [SQLite tutorial](../site/en/guide/sqlite.md): the current development branch's Initialize/Apply contract, Runtime usage, and old-layout rejection boundary; not a claim about a published version.
 - [Installation and versions](../site/en/guide/installation.md): three tag names and pre-release development pin alternatives.
 - [Contributing](../CONTRIBUTING.md): independent-module and temporary source-workspace validation. Root `./...` excludes this module.
 
