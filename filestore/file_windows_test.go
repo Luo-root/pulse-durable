@@ -93,7 +93,16 @@ func TestWindowsDeniedReadIsNotMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 不允许共享读取的已有句柄产生真实读取拒绝，不依赖 Windows 忽略的 Unix mode bits。
-	openWithoutDeleteSharing(t, filepath.Join(store.dir, fileBase("run")+".head"), 0)
+	path := filepath.Join(store.dir, fileBase("run")+".head")
+	openWithoutDeleteSharing(t, path, 0)
+	probe, err := os.Open(path)
+	if err == nil {
+		_ = probe.Close()
+		t.Skip("Windows runner does not enforce the requested sharing denial")
+	}
+	if !errors.Is(err, syscall.Errno(32)) {
+		t.Fatalf("sharing-denial probe error = %v; want sharing violation", err)
+	}
 	if _, err := session.Load(context.Background()); err == nil || errors.Is(err, durable.ErrNotFound) {
 		t.Fatalf("denied Load error = %v; want access failure", err)
 	}
