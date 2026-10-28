@@ -349,7 +349,7 @@ func TestRejectUnrelatedAndMalformedSchema(t *testing.T) {
 	for _, tc := range []struct {
 		name, ddl string
 		version   int
-	}{{"old", legacySchema, 1}, {"unrelated", "CREATE TABLE unrelated(value TEXT)", 0}, {"unversioned_module", snapshotSQL, 0}, {"no_primary_key", strings.Replace(strings.Replace(snapshotSQL, " PRIMARY KEY", "", 1), " WITHOUT ROWID", "", 1), 2}, {"nullable_revision", strings.Replace(headSQL, "revision TEXT NOT NULL", "revision TEXT", 1), 2}, {"missing_check", strings.Replace(snapshotSQL, " CHECK(typeof(record) = 'blob')", "", 1), 2}, {"wrong_type", strings.Replace(headSQL, "revision TEXT", "revision INTEGER", 1), 2}, {"extra_table", snapshotSQL + "; CREATE TABLE extra(value TEXT)", 2}} {
+	}{{"old", legacySchema, 1}, {"unrelated", "CREATE TABLE unrelated(value TEXT)", 0}, {"unversioned_module", snapshotSQL, 0}, {"no_primary_key", strings.Replace(strings.Replace(snapshotSQL, ",\n PRIMARY KEY(run_id, revision)", "", 1), " WITHOUT ROWID", "", 1), 3}, {"nullable_revision", strings.Replace(headSQL, "revision TEXT NOT NULL", "revision TEXT", 1), 3}, {"missing_check", strings.Replace(snapshotSQL, " CHECK(typeof(record) = 'blob')", "", 1), 3}, {"wrong_type", strings.Replace(headSQL, "revision TEXT", "revision INTEGER", 1), 3}, {"extra_table", snapshotSQL + "; CREATE TABLE extra(value TEXT)", 2}} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "r.sqlite")
 			db, e := sql.Open("sqlite", filepath.ToSlash(path))

@@ -85,9 +85,11 @@ type storedBatch struct {
 	Next     string `json:"next_chain"`
 }
 type storedLog struct {
-	Digest  string        `json:"snapshot_digest"`
-	Chain   string        `json:"head_chain"`
-	Batches []storedBatch `json:"batches"`
+	BaseRevision string        `json:"base_revision"`
+	BaseChain    string        `json:"base_chain"`
+	Digest       string        `json:"snapshot_digest"`
+	Chain        string        `json:"head_chain"`
+	Batches      []storedBatch `json:"batches"`
 }
 
 func chainText(h [32]byte) string { return hex.EncodeToString(h[:]) }
@@ -141,11 +143,30 @@ func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r du
 	if chainText(digest) != log.Digest {
 		return durable.RunRecord{}, d.ErrInvalid
 	}
-	r, e = decodeRecord(s.Task, 1, snapshot)
+	base := uint64(1)
+	if log.BaseRevision != "" {
+		base, e = strconv.ParseUint(log.BaseRevision, 10, 64)
+		if e != nil || base == 0 || strconv.FormatUint(base, 10) != log.BaseRevision {
+			return durable.RunRecord{}, d.ErrInvalid
+		}
+	}
+	r, e = decodeRecord(s.Task, base, snapshot)
 	if e != nil {
 		return durable.RunRecord{}, e
 	}
 	chain := durable.SeedChain(digest)
+	if log.BaseChain != "" {
+		if !fingerprint(log.BaseChain) {
+			return durable.RunRecord{}, d.ErrInvalid
+		}
+		if base == 1 && log.BaseChain != chainText(chain) {
+			return durable.RunRecord{}, d.ErrInvalid
+		}
+		b, _ := hex.DecodeString(log.BaseChain)
+		copy(chain[:], b)
+	} else if base != 1 {
+		return durable.RunRecord{}, d.ErrInvalid
+	}
 	for _, entry := range log.Batches {
 		if entry.Revision != strconv.FormatUint(r.Revision+1, 10) || entry.Parent != chainText(chain) {
 			return durable.RunRecord{}, d.ErrInvalid

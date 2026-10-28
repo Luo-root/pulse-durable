@@ -222,7 +222,26 @@ func replaceMemoryFixture(session Session, r RunRecord) {
 	s := session.(*memorySession)
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
-	s.store.records[s.runID] = cloneRecord(r)
-	s.revision = r.Revision
-	s.loaded = true
+	installMemoryFixtureLocked(s.store, r)
+	s.revision, s.chain, s.loaded = r.Revision, s.store.chains[s.runID], true
+}
+
+// installMemoryFixtureLocked starts explicitly at the supplied fixture revision;
+// it does not invent revisions preceding that checkpoint. Caller holds store.mu.
+func installMemoryFixtureLocked(store *MemoryStore, r RunRecord) {
+	chain := SeedChain(memorySeedDigest(r))
+	if store.records == nil {
+		store.records = make(map[string]RunRecord)
+	}
+	if store.chains == nil {
+		store.chains = make(map[string][32]byte)
+	}
+	if store.history == nil {
+		store.history = make(map[string]*memoryHistory)
+	}
+	store.records[r.RunID] = cloneRecord(r)
+	store.chains[r.RunID] = chain
+	store.history[r.RunID] = &memoryHistory{generation: 1, first: r.Revision, base: r.Revision,
+		anchors:   map[uint64][32]byte{r.Revision: chain},
+		snapshots: map[uint64]RevisionImage{r.Revision: {Record: cloneRecord(r), Chain: chain}}}
 }

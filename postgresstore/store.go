@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 const schemaName = "pulse_durable"
 const tableName = "runs"
 
@@ -89,7 +89,7 @@ func (s *Store) initialize(ctx context.Context) (resultErr error) {
 		return scrubPGError(err)
 	}
 	if exists {
-		if err = validateSchemaV2(ctx, tx); err != nil {
+		if err = validateSchemaV3(ctx, tx); err != nil {
 			return err
 		}
 		return scrubPGError(tx.Commit(ctx))
@@ -108,7 +108,7 @@ func (s *Store) initialize(ctx context.Context) (resultErr error) {
 		return scrubPGError(err)
 	}
 	if count == 0 {
-		if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.schema_meta(version) VALUES (2)`); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.schema_meta(version) VALUES (3)`); err != nil {
 			return scrubPGError(err)
 		}
 	} else if count != 1 {

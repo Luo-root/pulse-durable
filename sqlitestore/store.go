@@ -36,7 +36,7 @@ var _ durable.Store = (*Store)(nil)
 
 // New opens an independent file database, creating its parent directory if needed.
 // path is a filename, not a SQLite URI; in-memory databases are not supported.
-// Schema version 2 is initialized atomically; old and unknown versions are rejected.
+// Schema version 3 is initialized atomically; old and unknown versions are rejected.
 func New(path string) (*Store, error) {
 	return NewContext(context.Background(), path)
 }
@@ -97,10 +97,12 @@ func NewContext(ctx context.Context, path string) (*Store, error) {
 }
 
 const snapshotSQL = `CREATE TABLE durable_snapshots (
- run_id TEXT PRIMARY KEY NOT NULL,
+ run_id TEXT NOT NULL,
+ revision TEXT NOT NULL CHECK(typeof(revision) = 'text'),
  record BLOB NOT NULL CHECK(typeof(record) = 'blob'),
  digest BLOB NOT NULL CHECK(length(digest) = 32),
- chain BLOB NOT NULL CHECK(length(chain) = 32)
+ chain BLOB NOT NULL CHECK(length(chain) = 32),
+ PRIMARY KEY(run_id, revision)
 ) WITHOUT ROWID`
 const headSQL = `CREATE TABLE durable_heads (
  run_id TEXT PRIMARY KEY NOT NULL,
@@ -117,9 +119,13 @@ const batchSQL = `CREATE TABLE durable_batches (
  wire BLOB NOT NULL CHECK(typeof(wire) = 'blob'),
  PRIMARY KEY(run_id, revision)
 ) WITHOUT ROWID`
+const manifestSQL = `CREATE TABLE durable_manifests (
+ run_id TEXT PRIMARY KEY NOT NULL,
+ generation TEXT NOT NULL CHECK(typeof(generation) = 'text'),
+ base_revision TEXT NOT NULL CHECK(typeof(base_revision) = 'text'),
+ base_chain BLOB NOT NULL CHECK(length(base_chain) = 32)
+) WITHOUT ROWID`
 
-// Explicit compaction is not implemented. Stop rather than permit unbounded
-// recovery cost; a fresh database/run is not an automatic compaction mechanism.
 const maxChainBatches = 100000
 const maxChainBytes = 256 << 20
 
@@ -181,12 +187,12 @@ func initialize(ctx context.Context, db *sql.DB, lockPath string) (resultErr err
 		return err
 	}
 	if schemaVersion == 0 {
-		for _, ddl := range []string{snapshotSQL, headSQL, batchSQL} {
+		for _, ddl := range []string{snapshotSQL, headSQL, batchSQL, manifestSQL} {
 			if _, err := tx.ExecContext(ctx, ddl); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, "PRAGMA user_version=2"); err != nil {
+		if _, err := tx.ExecContext(ctx, "PRAGMA user_version=3"); err != nil {
 			return err
 		}
 	}
@@ -198,7 +204,7 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 2 {
+	if version != 0 && version != 3 {
 		return fmt.Errorf("sqlitestore: unsupported schema version %d", version)
 	}
 	rows, err := db.QueryContext(ctx, "SELECT type, name, sql FROM sqlite_schema WHERE substr(name, 1, 7) != 'sqlite_'")
@@ -214,16 +220,16 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		count++
-		expected := map[string]string{"durable_snapshots": snapshotSQL, "durable_heads": headSQL, "durable_batches": batchSQL}[name]
-		if version != 2 || kind != "table" || expected == "" || strings.Join(strings.Fields(definition.String), " ") != strings.Join(strings.Fields(expected), " ") {
+		expected := map[string]string{"durable_snapshots": snapshotSQL, "durable_heads": headSQL, "durable_batches": batchSQL, "durable_manifests": manifestSQL}[name]
+		if version != 3 || kind != "table" || expected == "" || strings.Join(strings.Fields(definition.String), " ") != strings.Join(strings.Fields(expected), " ") {
 			return errors.New("sqlitestore: incompatible or unrelated database schema")
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if version == 2 && count != 3 {
-		return errors.New("sqlitestore: missing v2 schema")
+	if version == 3 && count != 4 {
+		return errors.New("sqlitestore: missing v3 schema")
 	}
 	return nil
 }

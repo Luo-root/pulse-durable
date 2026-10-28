@@ -35,7 +35,7 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 	if e != nil {
 		t.Fatal("invalid test DSN")
 	}
-	for _, version := range []int{1, 2} {
+	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			name := "pulse_old_reject_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			quoted := pgx.Identifier{name}.Sanitize()

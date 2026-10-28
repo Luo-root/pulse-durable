@@ -15,7 +15,7 @@ go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
 - [安装与版本](../site/guide/installation.md)：三 tag 命名、发布前开发 pin 备选。
 - [贡献指南](../CONTRIBUTING.md)：独立模块与临时源码工作区验证。根 `./...` 不包含本模块。
 
-仅支持有 OS 文件锁的本机文件系统；不支持 SQLite URI、`:memory:`、网络共享、分布式 lease/fencing、迁移或 exactly-once 外部副作用。使用专用数据库；构造严格校验 schema，设置并读回 WAL、FULL、5000ms busy timeout。保留 `.init.lock`、`.runlocks/` 与运行中的 WAL/SHM 文件，不删锁解锁。schema 2 使用首快照、不可变批和小 head；schema 1 明确拒绝，不修改或删除旧数据，也不自动迁移。逻辑 RecordFormat 仍为 2。普通提交仅用 Apply，不重写快照；新会话首次 Load 在单一事务中校验并重放链，此后 Apply 只校验 head 和受影响对象。链上限为 100000 批 / 256 MiB canonical wire，达到后明确停止；显式 compaction 尚未提供。Initialize/Apply 报错后须等待原调用结束和所有权释放，重新 Acquire/Load 权威状态，不盲目重试。投影更新后的写入失败或未知提交会封闭原会话。关闭前先停止并等待业务运行。备份不能只复制运行中的主数据库；断电、备份恢复与迁移未完成单独验收。
+仅支持有 OS 文件锁的本机文件系统；不支持 SQLite URI、`:memory:`、网络共享、分布式 lease/fencing、迁移或 exactly-once 外部副作用。使用专用数据库；构造严格校验 schema，设置并读回 WAL、FULL、5000ms busy timeout。保留 `.init.lock`、`.runlocks/` 与运行中的 WAL/SHM 文件，不删锁解锁。schema 3 使用按 revision 的 lossless snapshot、不可变批、head 和 generation manifest；旧 schema 1/2 明确拒绝，不修改或删除旧数据，也不自动迁移。逻辑 RecordFormat 仍为 2。普通提交仅用 Apply，不重写快照；新会话首次 Load 在单一事务中校验并重放链，此后 Apply 只校验 head 和受影响对象。链上限为 100000 批 / 256 MiB canonical wire，达到后明确停止；显式 compaction 尚未提供。Initialize/Apply 报错后须等待原调用结束和所有权释放，重新 Acquire/Load 权威状态，不盲目重试。投影更新后的写入失败或未知提交会封闭原会话。关闭前先停止并等待业务运行。备份不能只复制运行中的主数据库；断电、备份恢复与迁移未完成单独验收。
 
 ## English
 

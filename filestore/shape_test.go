@@ -40,6 +40,9 @@ func TestLoadAndReplayPreserveEmptyDataPreconditions(t *testing.T) {
 		t.Fatal("Load normalized empty Data")
 	}
 	ss.Close()
+	if _, err = st.CompactStorage(t.Context(), durable.CompactStorageRequest{RunID: "shape", ThroughRevision: 2, ExpectedGeneration: 1}); err != nil {
+		t.Fatal(err)
+	}
 	ss = acquireTestSession(t, st, "shape")
 	r, err = ss.Load(t.Context())
 	if err != nil {
