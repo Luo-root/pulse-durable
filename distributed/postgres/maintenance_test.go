@@ -129,7 +129,7 @@ func TestMaintenanceBuildVerifiesChainAndCancellation(t *testing.T) {
 	}
 }
 func TestMaintenanceSQLBoundaryContract(t *testing.T) {
-	for _, s := range []string{"CHECK(version=4)", "'maintain','retain','replay'", "maintenance_receipts", "maintenance_guards", "build_pins", "storage_snapshots", "active_snapshot", "RETURN storage_image(r,r.revision,true)"} {
+	for _, s := range []string{"CHECK(version=5)", "'maintain','retain','replay'", "maintenance_receipts", "maintenance_guards", "build_pins", "storage_snapshots", "active_snapshot", "RETURN storage_image(r,r.revision,true)"} {
 		if !strings.Contains(schemaSQL, s) {
 			t.Fatal("missing schema contract", s)
 		}

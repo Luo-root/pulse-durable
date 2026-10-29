@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -27,6 +28,9 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 		t.Fatal(e)
 	}
 	owner := claimOne(t, c, task, "maintenance-suffix", time.Minute)
+	if _, err := c.LoadOwned(ctx, owner.Token); !errors.Is(err, d.ErrNotFound) {
+		t.Fatalf("fresh owned run must allow initialization: %v", err)
+	}
 	if e := c.InitializeOwned(ctx, d.InitializeRequest{Token: owner.Token, Record: record(task, 1), Mutation: mut("maintenance-init")}); e != nil {
 		t.Fatal(e)
 	}
