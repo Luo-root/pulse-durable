@@ -4,6 +4,8 @@ github.com/Luo-root/pulse-durable v0.0.0-20261023040750-1b397e91c878 h1:APQqTQ0Q
 github.com/Luo-root/pulse-durable v0.0.0-20261023040750-1b397e91c878/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
 github.com/Luo-root/pulse-durable v0.1.1-0.20261028063114-a0a4a7fb9e83 h1:L+s1HPmx4mJjPl9JzRrOTfZb/h1XNltiMR6SVhHVeXI=
 github.com/Luo-root/pulse-durable v0.1.1-0.20261028063114-a0a4a7fb9e83/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639 h1:DzEhlTOJbqpzVVKNiTFWsvxeGjH94zHdD7h06QsjU8U=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

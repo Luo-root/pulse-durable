@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Luo-root/pulse v0.5.0
-	github.com/Luo-root/pulse-durable v0.1.1-0.20261028063114-a0a4a7fb9e83
+	github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639
 	modernc.org/sqlite v1.60.1
 )
 
