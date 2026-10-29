@@ -19,7 +19,7 @@ import (
 
 const mutationOwnerPredicate = "r.epoch IS DISTINCT FROM (a->>'epoch')::bigint OR r.lease_id IS DISTINCT FROM a->>'lease_id' OR r.worker_id IS DISTINCT FROM a->>'worker_id' OR r.boot_id IS DISTINCT FROM a->>'boot_id' OR "
 const mutationExpiryPredicate = " OR r.lease_until<=t"
-const mutationClockStatement = " t:=clock_timestamp();\n IF t<r.updated_at THEN"
+const mutationClockStatement = " t:=clock_timestamp();\n IF t<r.updated_at OR t<r.receipt_observed_through THEN"
 const mutationRevisionCAS = "IF r.revision<>rev THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='revision conflict'; END IF;"
 
 // Exact, unique replacements are intentional: schema changes must fail closed,
@@ -62,6 +62,9 @@ func mutationAPI(kind string) (string, error) {
 }
 
 func TestMutationTargetsFailClosed(t *testing.T) {
+	if strings.Count(schemaSQL, "IF FOUND AND (t<r.updated_at OR t<r.receipt_observed_through) THEN") != 1 {
+		t.Fatal("resolve clock regression guard changed or missing")
+	}
 	for _, kind := range []string{"owner", "expiry", "frozen-clock"} {
 		if _, e := mutationAPI(kind); e != nil {
 			t.Fatal(e)

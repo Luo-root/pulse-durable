@@ -254,7 +254,7 @@ func TestPostgresAtomicStateDeleteAndTwoOutputs(t *testing.T) {
 		t.Fatal("failed atomic batch advanced", e)
 	}
 	var badReceipts int
-	if e = admin.QueryRow(ctx, `SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND run_id=$2 AND mutation_id='bad-output'`, ns, "atomic").Scan(&badReceipts); e != nil || badReceipts != 0 {
+	if e = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2 AND mutation_id='bad-output')+(SELECT count(*) FROM pulse_durable_distributed.mutation_guards WHERE namespace=$1 AND run_id=$2 AND mutation_id='bad-output')`, ns, "atomic").Scan(&badReceipts); e != nil || badReceipts != 0 {
 		t.Fatal("failed batch has receipt", e)
 	}
 	if e = apply(good, "good-output"); e != nil {

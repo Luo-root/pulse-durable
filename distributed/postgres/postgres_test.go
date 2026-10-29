@@ -114,7 +114,7 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 	}
 	t.Logf("migrate ok ns=%s role=%s", ns, role)
 	var schemaVersion int
-	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 5 {
+	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 6 {
 		t.Fatalf("migration version=%d err=%v", schemaVersion, e)
 	}
 	cfg, e := pgxpool.ParseConfig(dsn)
@@ -281,8 +281,8 @@ func TestPostgresProtocol(t *testing.T) {
 		if e != nil || len(found) != 1 {
 			t.Fatal(e)
 		}
-		receipts, e := c.FindMutation(ctx, task.Identity(), mut("save-a"))
-		if e != nil || len(receipts) != 1 || receipts[0].Revision != "1" {
+		receipts, e := c.FindMutation(ctx, receiptQuery(t, admin, task.Identity(), mut("save-a"), "initialize", &a.Token.Epoch, uint64ptr(1)))
+		if e != nil || receipts.State != d.Found || receipts.Receipt.Revision != 1 {
 			t.Fatal("mutation receipt", e)
 		}
 		if _, e = c.Cancel(ctx, task.Identity(), mut("cancel")); e != nil {

@@ -110,7 +110,7 @@ func TestPostgresClockRegressionRejectsWithoutPublication(t *testing.T) {
 	read := func() authority {
 		t.Helper()
 		var state authority
-		e := admin.QueryRow(ctx, `SELECT revision::text,head_chain,record,(SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND run_id=$2 AND mutation_id IS NOT NULL) FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&state.revision, &state.chain, &state.record, &state.batches, &state.receipts)
+		e := admin.QueryRow(ctx, `SELECT revision::text,head_chain,record,(SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2) FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&state.revision, &state.chain, &state.record, &state.batches, &state.receipts)
 		if e != nil {
 			t.Fatal(scrub(e, false))
 		}
@@ -157,12 +157,16 @@ func TestPostgresClockRegressionRejectsWithoutPublication(t *testing.T) {
 	if before.revision != after.revision || before.chain != after.chain || !bytes.Equal(before.record, after.record) || before.batches != after.batches || before.receipts != after.receipts {
 		t.Fatal("PD007 published revision, chain, snapshot bytes, batch or receipt")
 	}
-	receipts, e := c.FindMutation(ctx, task.Identity(), mutation)
-	if e != nil || len(receipts) != 0 {
-		t.Fatal("rejected mutation has receipt", e)
+	q := receiptQuery(t, admin, task.Identity(), mutation, "apply", &claim.Token.Epoch, uint64ptr(2))
+	if _, e = c.FindMutation(ctx, q); !errors.Is(e, d.ErrClockRegression) {
+		t.Fatal("receipt read ignored future authority", e)
 	}
 	if e = restore(); e != nil {
 		t.Fatal(scrub(e, false))
+	}
+	receipts, e := c.FindMutation(ctx, q)
+	if e != nil || receipts.State != d.AbsentWithinWindow {
+		t.Fatal("rejected mutation has receipt", e)
 	}
 	c.DropOwnedProjection(claim.Token)
 	loaded, e := c.LoadOwned(ctx, claim.Token)

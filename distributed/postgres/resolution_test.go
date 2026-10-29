@@ -43,6 +43,58 @@ func txCall(t *testing.T, tx pgx.Tx, op string, a map[string]any) []byte {
 	return out
 }
 
+// A prior receipt read is a durable lower bound for all later lease observations.
+// An administrator fixture simulates a future authoritative observation without
+// changing the host or database clock; ResolveClaim must fail before claim/closure.
+func TestResolveClaimReceiptClockRegression(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	task := taskFixture(t, ns, "resolve-receipt-regression")
+	if _, err := c.Submit(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	claim := claimOne(t, c, task, "resolve-regression", time.Minute)
+	m := mut("resolve-clock-receipt")
+	q := receiptQuery(t, admin, task.Identity(), m, "cancel", nil, nil)
+	if r, err := c.FindMutation(ctx, q); err != nil || r.State != d.AbsentWithinWindow {
+		t.Fatal(r, err)
+	}
+	if _, err := admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET receipt_observed_through=clock_timestamp()+interval '10 minutes', lease_until=clock_timestamp()+interval '20 minutes' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); err != nil {
+		t.Fatal(err)
+	}
+	before := func() (bool, int) {
+		t.Helper()
+		var closed bool
+		var events int
+		if err := admin.QueryRow(ctx, `SELECT l.closed,(SELECT count(*) FROM pulse_durable_distributed.events e WHERE e.namespace=$1 AND e.run_id=$2 AND e.operation='resolve') FROM pulse_durable_distributed.leases l WHERE l.namespace=$1 AND l.lease_id=$3`, ns, task.Identity().RunID, claim.Token.LeaseID).Scan(&closed, &events); err != nil {
+			t.Fatal(err)
+		}
+		return closed, events
+	}
+	closed, events := before()
+	if closed {
+		t.Fatal("fixture lease already closed")
+	}
+	if r, err := c.ResolveClaim(ctx, ns, claim.Token.Worker, claim.Token.LeaseID); !errors.Is(err, d.ErrClockRegression) || r.Claim != nil {
+		t.Fatalf("regressed resolve returned claim: %+v %v", r, err)
+	}
+	afterClosed, afterEvents := before()
+	if afterClosed != closed || afterEvents != events {
+		t.Fatal("regressed resolve published closure/event")
+	}
+	// The same regression must not publish a permanent closure either.
+	if _, err := admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := c.ResolveClaim(ctx, ns, claim.Token.Worker, claim.Token.LeaseID); !errors.Is(err, d.ErrClockRegression) || r.Claim != nil || r.Closed {
+		t.Fatalf("regressed resolve returned closure: %+v %v", r, err)
+	}
+	afterClosed, afterEvents = before()
+	if afterClosed != closed || afterEvents != events {
+		t.Fatal("regressed expired resolve published closure/event")
+	}
+}
+
 func TestResolveClaimBarriers(t *testing.T) {
 	c, admin, ns := integration(t)
 	ctx := context.Background()
