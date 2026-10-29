@@ -162,7 +162,15 @@ BEGIN
  t:=clock_timestamp();
  IF t<r.updated_at OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_first;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text; END IF;
  first_sample:=t;
- IF op IN ('initialize','apply','finish','release','block','cancel') AND EXISTS(SELECT 1 FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='mutation reused'; END IF;
+ IF op IN ('initialize','apply','finish','release','block','cancel') AND EXISTS(SELECT 1 FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id') THEN
+  IF EXISTS(SELECT 1 FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id' AND (digest IS DISTINCT FROM a->>'mutation_digest' OR operation IS DISTINCT FROM op)) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='mutation identity conflict'; END IF;
+  -- Cancel is idempotent after commit, including a lost response. The guard
+  -- authenticates the retry even if its optional receipt was later collected.
+  IF op='cancel' AND r.status IN ('succeeded','failed','canceled') THEN RETURN snapshot(r); END IF;
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='mutation reused';
+ END IF;
+ -- A fresh Cancel on an already terminal run is a no-op, not a committed
+ -- mutation: return the terminal state without manufacturing a guard/receipt.
  IF op='cancel' AND r.status IN ('succeeded','failed','canceled') THEN RETURN snapshot(r); END IF;
  IF op<>'cancel' THEN
   IF r.status IN ('succeeded','failed','canceled') THEN RAISE EXCEPTION USING ERRCODE='PD006',MESSAGE='terminal'; END IF;

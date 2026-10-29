@@ -140,6 +140,101 @@ func TestReceiptRejectsMalformedWire(t *testing.T) {
 	}
 }
 
+func TestPostgresCancelExactRetryAndTerminalNoOp(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	task := taskFixture(t, ns, "cancel-retry")
+	if _, err := c.Submit(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	claim := claimOne(t, c, task, "cancel-retry", time.Minute)
+	init := mut("cancel-init")
+	if err := c.InitializeOwned(ctx, d.InitializeRequest{Token: claim.Token, Record: record(task, 1), Mutation: init}); err != nil {
+		t.Fatal(err)
+	}
+	m := mut("cancel-committed")
+	// The actual database commits; discard its response to simulate transport loss.
+	if _, err := c.Cancel(ctx, task.Identity(), m); err != nil {
+		t.Fatal(err)
+	}
+	observe := func() string {
+		t.Helper()
+		var state string
+		if err := admin.QueryRow(ctx, `SELECT jsonb_build_object('run',to_jsonb(r),'guards',(SELECT jsonb_agg(to_jsonb(g) ORDER BY mutation_id) FROM pulse_durable_distributed.mutation_guards g WHERE namespace=$1 AND run_id=$2),'receipts',(SELECT jsonb_agg(to_jsonb(m) ORDER BY mutation_id) FROM pulse_durable_distributed.mutation_receipts m WHERE namespace=$1 AND run_id=$2),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY event_seq) FROM pulse_durable_distributed.events e WHERE namespace=$1 AND run_id=$2))::text FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := observe()
+	for range 2 {
+		if s, err := c.Cancel(ctx, task.Identity(), m); err != nil || s.Status != d.Canceled || s.Epoch != claim.Token.Epoch || s.Revision != 1 {
+			t.Fatal("exact retry", s, err)
+		}
+	}
+	for _, bad := range []d.Mutation{{ID: m.ID, Digest: digest([]byte("different"))}, init} {
+		if _, err := c.Cancel(ctx, task.Identity(), bad); !errors.Is(err, d.ErrRevisionConflict) {
+			t.Fatal("terminal identity conflict accepted", err)
+		}
+	}
+	// Both exact retry and fresh terminal no-op must serialize without writes.
+	done := make(chan error, 8)
+	for n := 0; n < 8; n++ {
+		retry := m
+		if n%2 == 1 {
+			retry = mut("terminal-noop")
+		}
+		go func(m d.Mutation) {
+			s, err := c.Cancel(ctx, task.Identity(), m)
+			if err == nil && s.Status != d.Canceled {
+				err = d.ErrInvalid
+			}
+			done <- err
+		}(retry)
+	}
+	for range 8 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := observe(); after != before {
+		t.Fatal("terminal retries/no-ops changed run,guard,receipt,event")
+	}
+	q := receiptQuery(t, admin, task.Identity(), mut("terminal-noop"), "cancel", nil, nil)
+	if result, err := c.FindMutation(ctx, q); err != nil || result.State != d.AbsentWithinWindow {
+		t.Fatal("terminal no-op manufactured receipt", result, err)
+	}
+	// Race two fresh mutations across the terminal transition. Exactly one
+	// commits; the loser observes terminal state without acquiring a guard.
+	raced := taskFixture(t, ns, "cancel-terminal-race")
+	if _, err := c.Submit(ctx, raced); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	for _, mutation := range []d.Mutation{mut("race-a"), mut("race-b")} {
+		go func(m d.Mutation) {
+			<-start
+			s, err := c.Cancel(ctx, raced.Identity(), m)
+			if err == nil && s.Status != d.Canceled {
+				err = d.ErrInvalid
+			}
+			done <- err
+		}(mutation)
+	}
+	close(start)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var guards, receipts, events int
+	if err := admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.mutation_guards WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.events WHERE namespace=$1 AND run_id=$2 AND operation='cancel')`, ns, raced.Identity().RunID).Scan(&guards, &receipts, &events); err != nil {
+		t.Fatal(err)
+	}
+	if guards != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("terminal race duplicated publication guards=%d receipts=%d events=%d", guards, receipts, events)
+	}
+}
+
 func TestPostgresIndependentReceiptsAndCoverage(t *testing.T) {
 	c, admin, ns := integration(t)
 	ctx := context.Background()
@@ -159,7 +254,7 @@ func TestPostgresIndependentReceiptsAndCoverage(t *testing.T) {
 	if r, e := c.FindMutation(ctx, q); e != nil || r.State != d.Found {
 		t.Fatal(r, e)
 	}
-	if e := c.Release(ctx, claim.Token, m); !errors.Is(e, d.ErrInvalid) {
+	if e := c.Release(ctx, claim.Token, m); !errors.Is(e, d.ErrRevisionConflict) {
 		t.Fatal("reused mid after events deletion", e)
 	}
 	for _, bad := range []d.MutationQuery{func() d.MutationQuery { v := q; v.Mutation.Digest = digest([]byte("other")); return v }(), func() d.MutationQuery { v := q; v.Operation = "apply"; return v }()} {
