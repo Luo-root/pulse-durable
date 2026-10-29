@@ -338,9 +338,6 @@ func buildMaintenanceImage(ctx context.Context, q CompactStorageRequest, b []byt
 		return durable.RunRecord{}, "", e
 	}
 	chain := log.BaseChain
-	if base == 1 && chain != chainText(durable.SeedChain(sha256.Sum256(snapshot))) {
-		return durable.RunRecord{}, "", d.ErrInvalidRecord
-	}
 	for _, entry := range log.Batches {
 		if e = ctx.Err(); e != nil {
 			return durable.RunRecord{}, "", e

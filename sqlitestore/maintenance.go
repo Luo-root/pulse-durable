@@ -293,15 +293,34 @@ func (s *Store) CompactStorage(ctx context.Context, req durable.CompactStorageRe
 	if err != nil {
 		return result, err
 	}
-	data, err := recordio.EncodeSnapshot(image.Record)
-	if err != nil {
-		return result, err
+	// A valid prefix is not enough: never publish maintenance over a corrupt
+	// suffix, even when the requested base precedes the business head.
+	if req.ThroughRevision != st.HeadRevision {
+		if _, _, _, err = loadRevisionTx(ctx, tx, req.RunID, st.HeadRevision, st); err != nil {
+			return result, err
+		}
 	}
-	digest := sha256.Sum256(data)
+	// Existing snapshots are immutable anchors. A same-base request validates
+	// the stored snapshot above but must not normalize or replace its bytes.
+	if req.ThroughRevision != st.BaseRevision {
+		data, err := recordio.EncodeSnapshot(image.Record)
+		if err != nil {
+			return result, err
+		}
+		digest := sha256.Sum256(data)
+		res, err := tx.ExecContext(ctx, `INSERT INTO durable_snapshots (run_id,revision,record,digest,chain) VALUES (?,?,?,?,?) ON CONFLICT(run_id,revision) DO NOTHING`, req.RunID, strconv.FormatUint(req.ThroughRevision, 10), data, digest[:], image.Chain[:])
+		if err != nil {
+			return result, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return result, err
+		}
+		if n != 1 {
+			return result, durable.ErrConflict
+		}
+	}
 	if err = ctx.Err(); err != nil {
-		return result, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_snapshots (run_id,revision,record,digest,chain) VALUES (?,?,?,?,?) ON CONFLICT(run_id,revision) DO UPDATE SET record=excluded.record,digest=excluded.digest,chain=excluded.chain`, req.RunID, strconv.FormatUint(req.ThroughRevision, 10), data, digest[:], image.Chain[:]); err != nil {
 		return result, err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE durable_manifests SET generation=?,base_revision=?,base_chain=? WHERE run_id=? AND generation=?`, strconv.FormatUint(st.Generation+1, 10), strconv.FormatUint(req.ThroughRevision, 10), image.Chain[:], req.RunID, strconv.FormatUint(st.Generation, 10))

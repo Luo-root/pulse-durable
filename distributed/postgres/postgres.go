@@ -28,6 +28,7 @@ const OperationTimeout = 5 * time.Second
 
 var (
 	ErrInvalidRecordSnapshot   = errors.New("postgres: invalid record snapshot")
+	ErrInvalidRecordStatus     = errors.New("postgres: invalid record status")
 	ErrInvalidRecordIdentity   = errors.New("postgres: invalid record identity")
 	ErrInvalidRecordRevision   = errors.New("postgres: invalid record revision")
 	ErrInvalidRecordFormat     = errors.New("postgres: invalid record format")
@@ -36,6 +37,10 @@ var (
 	ErrInvalidRecordInputs     = errors.New("postgres: invalid record inputs")
 	ErrInvalidRecordRoot       = errors.New("postgres: invalid record root")
 	ErrInvalidRecordShapes     = errors.New("postgres: invalid record shapes")
+	ErrInvalidRecordLog        = errors.New("postgres: invalid record log")
+	ErrInvalidRecordDigest     = errors.New("postgres: invalid record digest")
+	ErrInvalidRecordChain      = errors.New("postgres: invalid record chain")
+	ErrInvalidRecordBatch      = errors.New("postgres: invalid record batch")
 )
 
 func invalidRecord(kind error) error { return errors.Join(kind, d.ErrInvalid) }

@@ -79,6 +79,26 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil || loaded.Revision != 2 {
 		t.Fatal(loaded.Revision, e)
 	}
+	// A fresh owner projection must append against the preserved business chain.
+	post := nextBatch(t, loaded)
+	postDigest, err := d.DeltaMutationDigest(owner.Token, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.ApplyOwned(ctx, owner.Token, d.Mutation{ID: "post-maintenance-apply", Digest: postDigest}, post); err != nil {
+		t.Fatal("append after publication", err)
+	}
+	second := CompactStorageRequest{Identity: task.Identity(), ExpectedGeneration: 2, ThroughRevision: 2, Mutation: d.Mutation{ID: "maintenance-second"}}
+	second.Mutation.Digest = CompactStorageDigest(second)
+	secondResult, err := c.CompactStorage(ctx, second)
+	if err != nil || secondResult.Status != "published" || secondResult.Result.State.BaseRevision != "2" || secondResult.Result.State.HeadRevision != "3" {
+		t.Fatal("repeat synthesis", secondResult, err)
+	}
+	c.DropOwnedProjection(owner.Token)
+	loaded, e = c.LoadOwned(ctx, owner.Token)
+	if e != nil || loaded.Revision != 3 {
+		t.Fatal("reload after repeat synthesis", loaded.Revision, e)
+	}
 	// Diagnostic deletion must have no effect on maintenance receipts or guards.
 	if _, e = admin.Exec(ctx, "DELETE FROM pulse_durable_distributed.events WHERE namespace=$1", ns); e != nil {
 		t.Fatal(e)

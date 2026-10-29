@@ -85,7 +85,7 @@ func TestDecodeRecordInvalidCategories(t *testing.T) {
 		mutate func(*durable.RunRecord)
 		wire   func(durable.RunRecord) []byte
 	}{
-		{name: "snapshot", want: ErrInvalidRecordSnapshot, wire: func(durable.RunRecord) []byte { return []byte(`{}`) }},
+		{name: "snapshot", want: ErrInvalidRecordSnapshot, wire: func(durable.RunRecord) []byte { return []byte(`{"version":`) }},
 		{name: "identity", want: ErrInvalidRecordIdentity, mutate: func(r *durable.RunRecord) { r.RunID = "other" }},
 		{name: "revision", want: ErrInvalidRecordRevision, mutate: func(r *durable.RunRecord) { r.Revision = 2 }},
 		{name: "format", want: ErrInvalidRecordFormat, mutate: func(r *durable.RunRecord) { r.Format++ }},

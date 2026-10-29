@@ -73,8 +73,7 @@ func (s *Store) initialize(ctx context.Context) (resultErr error) {
 		return scrubPGError(err)
 	}
 	if _, err = c.Exec(ctx, `SELECT pg_advisory_lock($1)`, initAdvisoryKey); err != nil {
-		discardConn(c)
-		return scrubPGError(err)
+		return errors.Join(scrubPGError(err), discardConn(c))
 	}
 	defer func() {
 		resultErr = errors.Join(resultErr, unlockConn(c, initAdvisoryKey))
@@ -254,8 +253,7 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	var locked bool
 	if err = conn.QueryRow(acquireCtx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
 		// The server may have acquired the lock before the response was lost.
-		discardConn(conn)
-		return nil, s.acquireError(err)
+		return nil, errors.Join(s.acquireError(err), discardConn(conn))
 	}
 	if !locked {
 		conn.Release()
@@ -376,11 +374,24 @@ func (s *Store) acquireError(err error) error {
 	return scrubPGError(err)
 }
 
-func discardConn(c *pgxpool.Conn) {
+func discardConn(c *pgxpool.Conn) error {
 	conn := c.Hijack()
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	_ = conn.Close(ctx)
+	err := conn.Close(ctx)
+	// Cancellation can mark pgx closed before its asynchronous cancel/Terminate
+	// finishes. Close is then a no-op; wait for cleanup before releasing the
+	// local run reservation so a new session cannot race the old backend lock.
+	return errors.Join(scrubPGError(err), waitConnCleanup(ctx, conn.PgConn().CleanupDone()))
+}
+
+func waitConnCleanup(ctx context.Context, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("postgresstore: connection cleanup incomplete: %w", ctx.Err())
+	}
 }
 
 func unlockConn(c *pgxpool.Conn, key int64) error {
@@ -389,11 +400,11 @@ func unlockConn(c *pgxpool.Conn, key int64) error {
 	var unlocked bool
 	err := c.QueryRow(ctx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked)
 	if err != nil || !unlocked {
-		discardConn(c)
+		cleanupErr := discardConn(c)
 		if err != nil {
-			return scrubPGError(err)
+			return errors.Join(scrubPGError(err), cleanupErr)
 		}
-		return errors.New("postgresstore: advisory lock state uncertain")
+		return errors.Join(errors.New("postgresstore: advisory lock state uncertain"), cleanupErr)
 	}
 	c.Release()
 	return nil
