@@ -167,7 +167,11 @@ fmt.Println("run:", record.RunID, "revision:", record.Revision)
 
 数据库后端保存首快照和增量批，Load 返回完整投影；它不编码业务类型。`durable.NewCodecs()` 支持本例 int；自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不作为普通值保存。检查点包含业务数据，不是加密容器。
 
-distributed PostgreSQL 是另一套后端，使用专用 `pulse_durable_distributed` schema **v5**，不与上述独立后端共用 schema；旧 v1–v4 或不匹配 schema 拒绝，不自动修改或迁移数据。其 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance） 用 Namespace/RunID 定位，要求数据库 `maintain` 权限，不接受 worker ownership/token 代替维护授权。合成先建立 build pin，在发布锁外重建，再校验 generation 并 CAS 发布；并行业务追加的 suffix 必须保留。mutation guard 与发布 receipt 用于核对结果，未知提交通过 `FindMaintenance` 查询，不盲重试；pin 不隐式续期。当前无对外 `LoadRevision`，不能冒称已满足 root `durable.Maintenance` 接口；也无语义压缩、retention、ReplayCreateDerived 或 GC。本页不声明本轮 distributed 实库验收全部完成，suffix budget 修复仍待验证收口。
+distributed PostgreSQL 是另一套后端，使用专用 `pulse_durable_distributed` schema **v6**，不与上述独立后端共用 schema；旧 v1–v5 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，需使用新库。逻辑记录 format 2、协调 protocol 1 不变，与物理 schema 版本独立。其 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance） 用 Namespace/RunID 定位，要求数据库 `maintain` 权限，不接受 worker ownership/token 代替维护授权。合成先建立 build pin，在发布锁外重建，再校验 generation 并 CAS 发布；并行业务追加的 suffix 必须保留。mutation guard 与发布 receipt 用于核对结果，未知提交通过 `FindMaintenance` 查询，不盲重试；pin 不隐式续期。当前无对外 `LoadRevision`，不能冒称已满足 root `durable.Maintenance` 接口；也无语义压缩、retention、ReplayCreateDerived 或 GC。本页不声明本轮 distributed 整包实库验收通过；本机 strict-clock 检查仍有风险，需独立验证收口。
+
+业务 mutation 回执与上述维护 receipt 分离：`mutation_receipts` 保存回执，永久 `mutation_guards` 防止身份复用，`events` 仅供诊断。`Coordinator.FindMutation(ctx, MutationQuery)` 按 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow 查询；ExpectedEpoch/ExpectedRevision 为可选指针，nil 表示未知，非 nil（含 0）精确匹配，不能从后来的 Get 猜测。返回 `Found`（精确 mutation 已提交）、`AbsentWithinWindow`（请求完全在覆盖内但无匹配回执）或 `Expired`（请求下界早于覆盖，观察已达到请求上界）。未来请求上界被拒绝，不当作 Expired。
+
+Coverage.From 是数据库持久 `receipt_coverage_floor`；Coverage.Through 是持运行锁采样的数据库观察上界，并持久为 `receipt_observed_through`，不由客户端时钟推算。保留回执可早于 floor；覆盖内应有却缺失的回执报错。该 query 会写 watermark，需可读写主库，不能走副本或只读事务；仍只需 namespace `query` 权限，不授予应用直接表 DML。缺回执、AbsentWithinWindow 或 Expired 不证明从未提交，也不授权业务重放；Found 仅裁决精确协调 mutation，不证明外部副作用或授予 lease/执行权限。RetentionPolicy 的 TTL 校验/CAS 请求契约不等于已实现策略落库、实际 retention 删除或 GC；replay 和语义压缩仍未完成。
 
 ## 6. 实库测试只能使用可丢弃测试库
 
