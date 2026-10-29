@@ -8,7 +8,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distr
 DECLARE actual text; expected text; n integer; v integer;
 BEGIN
  SELECT count(*),min(version),min(signature) INTO n,v,expected FROM pulse_durable_distributed.meta;
- IF n<>1 OR v<>5 THEN RETURN false; END IF;
+ IF n<>1 OR v<>6 THEN RETURN false; END IF;
  SELECT encode(sha256(convert_to(s,'UTF8')),'hex') INTO actual FROM (` + catalogSQL + `) AS catalog(s);
  IF actual IS DISTINCT FROM expected THEN RETURN false; END IF;
  IF pg_is_in_recovery() OR current_setting('transaction_isolation')<>'read committed' THEN RETURN false; END IF;

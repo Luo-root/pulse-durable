@@ -11,6 +11,87 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
+func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); err != nil {
+		t.Fatal(err)
+	}
+	task := taskFixture(t, ns, "maintenance-receipt-clock")
+	if _, err := c.Submit(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	claim := claimOne(t, c, task, "maintenance-clock", time.Minute)
+	if err := c.InitializeOwned(ctx, d.InitializeRequest{Token: claim.Token, Record: record(task, 1), Mutation: mut("maintenance-clock-init")}); err != nil {
+		t.Fatal(err)
+	}
+	q := CompactStorageRequest{Identity: task.Identity(), ExpectedGeneration: 1, ThroughRevision: 1, Mutation: d.Mutation{ID: "clock-build"}}
+	q.Mutation.Digest = CompactStorageDigest(q)
+	a, err := maintenanceArgs(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := c.maintenanceCall(ctx, "begin", a, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var begin struct {
+		Image json.RawMessage `json:"image"`
+	}
+	if err = json.Unmarshal(b, &begin); err != nil {
+		t.Fatal(err)
+	}
+	r, chain, err := buildMaintenanceImage(ctx, q, begin.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := encodeMaintenanceRecord(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a["record"] = wire
+	a["snapshot_digest"] = digest(wire)
+	a["chain"] = chain
+	// The pin expires before the prior receipt observation, although it still
+	// looks live to the regressed current clock. Never adjust the host clock.
+	if _, err = admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET receipt_observed_through=clock_timestamp()+interval '1 hour' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); err != nil {
+		t.Fatal(err)
+	}
+	observe := func() string {
+		t.Helper()
+		var state string
+		if err := admin.QueryRow(ctx, `SELECT jsonb_build_object('run',to_jsonb(r),'pins',(SELECT jsonb_agg(to_jsonb(p) ORDER BY mutation_id) FROM pulse_durable_distributed.build_pins p WHERE namespace=$1 AND run_id=$2),'guards',(SELECT jsonb_agg(to_jsonb(g) ORDER BY mutation_id) FROM pulse_durable_distributed.maintenance_guards g WHERE namespace=$1 AND run_id=$2),'receipts',(SELECT jsonb_agg(to_jsonb(m) ORDER BY mutation_id) FROM pulse_durable_distributed.maintenance_receipts m WHERE namespace=$1 AND run_id=$2),'snapshots',(SELECT jsonb_agg(to_jsonb(s) ORDER BY generation) FROM pulse_durable_distributed.storage_snapshots s WHERE namespace=$1 AND run_id=$2),'events',(SELECT jsonb_agg(to_jsonb(e) ORDER BY event_seq) FROM pulse_durable_distributed.events e WHERE namespace=$1 AND run_id=$2))::text FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	before := observe()
+	for _, op := range []string{"inspect", "find", "abort", "publish", "begin"} {
+		t.Run(op, func(t *testing.T) {
+			request := a
+			if op == "begin" {
+				fresh := q
+				fresh.Mutation.ID = "clock-fresh-build"
+				var err error
+				request, err = maintenanceArgs(fresh)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := c.maintenanceCall(ctx, op, request, op != "inspect" && op != "find"); !errors.Is(err, d.ErrClockRegression) {
+				t.Fatal("regressed maintenance not PD007", op, err)
+			}
+			if after := observe(); after != before {
+				t.Fatal("regressed maintenance changed head/snapshot/pin/guard/receipt/event")
+			}
+		})
+	}
+}
+
 // Not run by offline validation. Requires the same explicit disposable-DB opt-in
 // as all existing integration tests. The helper's role remains a restricted login.
 func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {

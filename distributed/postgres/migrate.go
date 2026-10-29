@@ -30,8 +30,8 @@ type Grant struct {
 
 // Migrate installs a new physical schema or verifies the exact installed one.
 // Older schemas are rejected without changing their data or DDL. Logical records
-// remain format 2; physical schema version 5 is not a logical record upgrade.
-// Versions 1–4 are rejected; this release never rewrites installed schemas.
+// remain format 2; physical schema version 6 is not a logical record upgrade.
+// Versions 1–5 are rejected; this release never rewrites installed schemas.
 // This explicit administrator entry point may grant API execution and namespace
 // permissions, but never grants table access. Run using dedicated owner credentials.
 func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
@@ -87,7 +87,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		if e = tx.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&installed); e != nil {
 			return scrub(e, false)
 		}
-		if installed != 5 {
+		if installed != 6 {
 			return errors.New("distributed postgres: unsupported physical schema; use a new database (old data unchanged)")
 		}
 		if e = validate(ctx, tx, false); e != nil {
@@ -171,7 +171,7 @@ func validate(ctx context.Context, q querier, worker bool) error {
 		}
 		return scrub(e, false)
 	}
-	if n != 1 || v != 5 {
+	if n != 1 || v != 6 {
 		return errors.New("distributed postgres: incompatible schema version")
 	}
 	current, e := signature(ctx, q)

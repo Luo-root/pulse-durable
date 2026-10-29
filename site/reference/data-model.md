@@ -176,7 +176,11 @@ MemoryStore 的零值可用，Initialize 复制初始记录，Apply 校验后仅
 
 FileStore 必须通过 `filestore.New` 创建。它使用每个 RunID 的 OS 文件锁，锁在 Close 或进程退出时释放，锁文件保留。提供 Windows，以及 Linux、macOS、FreeBSD、OpenBSD、NetBSD、DragonFly 的锁实现；其他平台拒绝取得会话，不退化为无锁运行。仍须使用支持所需锁与同目录原子替换的文件系统。
 
-FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `2`，旧 manifest `1` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。SQLite 与独立 PostgreSQL 为物理 schema `3`，distributed PostgreSQL 为独立 schema `5`，旧版或不匹配 schema 同样拒绝并保留原数据，不提供迁移。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
+FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `2`，旧 manifest `1` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。SQLite 与独立 PostgreSQL 为物理 schema `3`，distributed PostgreSQL 为独立 schema `6`，旧 v1–v5 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，新版使用新库。逻辑记录 format `2` 与协调 protocol `1` 不因此改变。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
+
+distributed mutation 的身份、结果凭据与诊断分开保存：永久 `mutation_guards`、独立 `mutation_receipts` 与诊断 `events`。`Coordinator.FindMutation(ctx, MutationQuery)` 匹配 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow；ExpectedEpoch/ExpectedRevision 可选指针 nil 表示未知，非 nil（含 0）精确匹配。`Found` 只裁决精确协调 mutation，不证明外部副作用或授予 lease/执行权限；`AbsentWithinWindow` 要求完整覆盖请求窗口；`Expired` 要求请求下界早于覆盖且观察已达到请求上界，未来上界会被拒绝。缺回执、缺席或过期均不证明从未提交，也不授权业务重放。
+
+Coverage.From 来自数据库持久 `receipt_coverage_floor`；Coverage.Through 是持运行锁采样的数据库观察上界，并持久为 `receipt_observed_through`，不使用客户端时钟。保留回执可早于 floor，覆盖内应有却缺失的回执报错。该 query 需可读写主库，不可用只读事务或副本；权限仍为 namespace `query`，不授予应用直接表 DML。RetentionPolicy 仅提供可选 TTL 校验/CAS 请求契约，不代表已实现策略落库、实际 retention 删除或 GC；replay 与语义压缩仍未完成。
 
 所有元数据字符串及 map 键必须有效 UTF-8。写前拒绝非法元数据，保留旧文件与 Revision；读时拒绝非法原始 UTF-8 和未配对 JSON Unicode 代理项。合法 Unicode 保留，Data 字节不受元数据 UTF-8 限制。
 

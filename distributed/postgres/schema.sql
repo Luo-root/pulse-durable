@@ -1,12 +1,13 @@
 CREATE SCHEMA pulse_durable_distributed;
 REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
-CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=5), signature text NOT NULL);
+CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=6), signature text NOT NULL);
 CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel','maintain','retain','replay')), PRIMARY KEY(role_name,namespace,permission));
 CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','blocked','succeeded','failed','canceled')),
  epoch bigint NOT NULL DEFAULT 0 CHECK(epoch>=0), revision numeric(20,0) NOT NULL DEFAULT 0 CHECK(revision>=0 AND revision<=18446744073709551615),
  record bytea, snapshot_digest text, head_chain text, root_scope text, active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ receipt_coverage_floor timestamptz NOT NULL DEFAULT statement_timestamp(), receipt_observed_through timestamptz,
  representation_generation bigint NOT NULL DEFAULT 1 CHECK(representation_generation>0), active_snapshot bigint, maintenance_watermark timestamptz,
  last_mutation_id text, last_mutation_digest text, reason text NOT NULL DEFAULT '',
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), finished_at timestamptz,
@@ -27,7 +28,9 @@ CREATE INDEX queued_route ON pulse_durable_distributed.runs(namespace,route,run_
 CREATE INDEX expired_runs ON pulse_durable_distributed.runs(namespace,lease_until,run_id) WHERE status='running';
 CREATE TABLE pulse_durable_distributed.leases(namespace text NOT NULL, lease_id text NOT NULL, worker_id text NOT NULL, boot_id text NOT NULL, run_id text, epoch bigint, closed boolean NOT NULL DEFAULT true, claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(namespace,lease_id), CHECK((run_id IS NULL AND epoch IS NULL AND closed) OR (run_id IS NOT NULL AND epoch>0)));
 CREATE TABLE pulse_durable_distributed.events(namespace text NOT NULL, run_id text NOT NULL, event_seq bigint GENERATED ALWAYS AS IDENTITY, operation text NOT NULL, epoch bigint NOT NULL, revision numeric(20,0) NOT NULL, lease_id text, mutation_id text, mutation_digest text, occurred_at timestamptz NOT NULL, PRIMARY KEY(namespace,run_id,event_seq));
-CREATE UNIQUE INDEX mutation_guard ON pulse_durable_distributed.events(namespace,run_id,mutation_id) WHERE mutation_id IS NOT NULL;
+-- Permanent identity guards are never collected with events or receipts.
+CREATE TABLE pulse_durable_distributed.mutation_guards(namespace text NOT NULL, run_id text NOT NULL, mutation_id text NOT NULL, digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), operation text NOT NULL CHECK(operation IN ('initialize','apply','finish','release','block','cancel')), epoch bigint NOT NULL CHECK(epoch>=0), revision numeric(20,0) NOT NULL CHECK(revision BETWEEN 0 AND 18446744073709551615), occurred_at timestamptz NOT NULL, PRIMARY KEY(namespace,run_id,mutation_id), FOREIGN KEY(namespace,run_id) REFERENCES pulse_durable_distributed.runs(namespace,run_id));
+CREATE TABLE pulse_durable_distributed.mutation_receipts(namespace text NOT NULL, run_id text NOT NULL, mutation_id text NOT NULL, occurred_at timestamptz NOT NULL, result jsonb NOT NULL, PRIMARY KEY(namespace,run_id,mutation_id), FOREIGN KEY(namespace,run_id,mutation_id) REFERENCES pulse_durable_distributed.mutation_guards(namespace,run_id,mutation_id));
 REVOKE ALL ON ALL TABLES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 CREATE FUNCTION pulse_durable_distributed.snapshot(r pulse_durable_distributed.runs) RETURNS jsonb LANGUAGE sql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
@@ -65,14 +68,34 @@ BEGIN
    OR encode(sha256(b),'hex') IS DISTINCT FROM a->>'digest'
    OR jsonb_typeof(d->'codec_manifest') IS DISTINCT FROM 'array' OR jsonb_array_length(d->'codec_manifest')>4096
   THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid'; END IF;
-  INSERT INTO runs(namespace,run_id,task,digest,route) VALUES(ns,rid,b,a->>'digest',d->'route') ON CONFLICT DO NOTHING;
+  t:=clock_timestamp();
+  INSERT INTO runs(namespace,run_id,task,digest,route,created_at,updated_at,receipt_coverage_floor) VALUES(ns,rid,b,a->>'digest',d->'route',t,t,t) ON CONFLICT DO NOTHING;
   changed:=FOUND;
   SELECT * INTO STRICT r FROM runs WHERE namespace=ns AND run_id=rid FOR UPDATE;
   IF r.task<>b OR r.digest<>a->>'digest' THEN RAISE EXCEPTION USING ERRCODE='PD002',MESSAGE='submission conflict'; END IF;
   RETURN jsonb_build_object('snapshot',snapshot(r),'deduplicated',NOT changed);
  ELSIF op='receipt' THEN
-  SELECT coalesce(jsonb_agg(jsonb_build_object('operation',operation,'epoch',epoch,'revision',revision::text,'mutation_id',mutation_id,'mutation_digest',mutation_digest,'occurred_at',occurred_at) ORDER BY event_seq),'[]'::jsonb) INTO result FROM events WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id' AND mutation_digest=a->>'mutation_digest';
-  RETURN result;
+  -- The run lock serializes writes and future receipt GC/floor advancement.
+  SELECT * INTO r FROM runs WHERE namespace=ns AND run_id=rid FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION USING ERRCODE='PD003',MESSAGE='not found'; END IF;
+  t:=clock_timestamp();
+  IF t<r.created_at OR t<r.updated_at OR t<r.receipt_coverage_floor OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+  IF (a->>'window_from')::timestamptz IS NULL OR (a->>'window_through')::timestamptz IS NULL OR (a->>'window_from')::timestamptz>(a->>'window_through')::timestamptz OR (a->>'window_through')::timestamptz>t THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid receipt window'; END IF;
+  IF coalesce(octet_length(a->>'mutation_id'),0) NOT BETWEEN 1 AND 256 OR coalesce(a->>'mutation_digest','') !~ '^[0-9a-f]{64}$' OR a->>'operation' NOT IN ('initialize','apply','finish','release','block','cancel') OR a->>'operation' IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid receipt query'; END IF;
+  SELECT jsonb_build_object('operation',g.operation,'epoch',g.epoch,'revision',g.revision::text,'mutation_id',g.mutation_id,'mutation_digest',g.digest,'occurred_at',m.occurred_at) INTO result
+   FROM mutation_guards g LEFT JOIN mutation_receipts m USING(namespace,run_id,mutation_id) WHERE g.namespace=ns AND g.run_id=rid AND g.mutation_id=a->>'mutation_id';
+  IF result IS NOT NULL THEN
+   IF result->>'mutation_digest' IS DISTINCT FROM a->>'mutation_digest' OR result->>'operation' IS DISTINCT FROM a->>'operation' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='mutation identity conflict'; END IF;
+   IF (a ? 'expected_epoch' AND (result->>'epoch')::bigint IS DISTINCT FROM (a->>'expected_epoch')::bigint) OR (a ? 'expected_revision' AND (result->>'revision')::numeric IS DISTINCT FROM (a->>'expected_revision')::numeric) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='mutation result conflict'; END IF;
+   IF result->>'occurred_at' IS NULL THEN
+    IF (SELECT occurred_at FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id')>=r.receipt_coverage_floor THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='receipt missing inside coverage'; END IF;
+    result:=NULL;
+   ELSIF EXISTS(SELECT 1 FROM mutation_receipts m JOIN mutation_guards g USING(namespace,run_id,mutation_id) WHERE m.namespace=ns AND m.run_id=rid AND m.mutation_id=a->>'mutation_id' AND (m.occurred_at IS DISTINCT FROM g.occurred_at OR m.result->>'epoch' IS DISTINCT FROM g.epoch::text OR m.result->>'revision' IS DISTINCT FROM g.revision::text)) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='receipt result corrupt';
+   ELSIF (result->>'occurred_at')::timestamptz>t THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='receipt in future';
+   ELSIF (result->>'occurred_at')::timestamptz<(a->>'window_from')::timestamptz OR (result->>'occurred_at')::timestamptz>(a->>'window_through')::timestamptz THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='receipt outside requested window'; END IF;
+  END IF;
+  UPDATE runs SET receipt_observed_through=t WHERE namespace=ns AND run_id=rid;
+  RETURN jsonb_build_object('state',CASE WHEN result IS NOT NULL THEN 'found' WHEN (a->>'window_from')::timestamptz<r.receipt_coverage_floor THEN 'expired' ELSE 'absent_within_window' END,'coverage_from',r.receipt_coverage_floor,'coverage_through',t,'receipt',result);
  ELSIF op IN ('get','list','find') THEN
   IF op='get' THEN
    SELECT * INTO r FROM runs WHERE namespace=ns AND run_id=rid;
@@ -97,7 +120,7 @@ BEGIN
   IF NOT l.closed THEN
    SELECT * INTO r FROM runs WHERE namespace=ns AND run_id=l.run_id FOR UPDATE;
    t:=clock_timestamp();
-   IF FOUND AND t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+   IF FOUND AND (t<r.updated_at OR t<r.receipt_observed_through) THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
    IF FOUND AND r.status='running' AND r.lease_id=lid AND r.epoch=l.epoch AND r.worker_id=l.worker_id AND r.boot_id=l.boot_id AND r.lease_until>t THEN
     RETURN jsonb_build_object('claim',snapshot(r),'closed',false);
    END IF;
@@ -117,7 +140,7 @@ BEGIN
   END LOOP;
   FOR r IN SELECT * FROM runs WHERE namespace=ns AND route IN(SELECT value FROM jsonb_array_elements(a->'capabilities')) AND (status='queued' OR (status='running' AND lease_until<=clock_timestamp())) ORDER BY created_at,run_id COLLATE "C" LIMIT (a->>'limit')::integer FOR UPDATE SKIP LOCKED LOOP
    t:=clock_timestamp();
-   IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+   IF t<r.updated_at OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
    IF r.status<>'queued' AND NOT(r.status='running' AND r.lease_until<=t) THEN CONTINUE; END IF;
    IF r.epoch=9223372036854775807 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='epoch exhausted'; END IF;
    lid:=a->'lease_ids'->>slot; slot:=slot+1;
@@ -137,8 +160,17 @@ BEGIN
  SELECT * INTO r FROM runs WHERE namespace=ns AND run_id=rid FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION USING ERRCODE='PD003',MESSAGE='not found'; END IF;
  t:=clock_timestamp();
- IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_first;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text; END IF;
+ IF t<r.updated_at OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_first;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text; END IF;
  first_sample:=t;
+ IF op IN ('initialize','apply','finish','release','block','cancel') AND EXISTS(SELECT 1 FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id') THEN
+  IF EXISTS(SELECT 1 FROM mutation_guards WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id' AND (digest IS DISTINCT FROM a->>'mutation_digest' OR operation IS DISTINCT FROM op)) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='mutation identity conflict'; END IF;
+  -- Cancel is idempotent after commit, including a lost response. The guard
+  -- authenticates the retry even if its optional receipt was later collected.
+  IF op='cancel' AND r.status IN ('succeeded','failed','canceled') THEN RETURN snapshot(r); END IF;
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='mutation reused';
+ END IF;
+ -- A fresh Cancel on an already terminal run is a no-op, not a committed
+ -- mutation: return the terminal state without manufacturing a guard/receipt.
  IF op='cancel' AND r.status IN ('succeeded','failed','canceled') THEN RETURN snapshot(r); END IF;
  IF op<>'cancel' THEN
   IF r.status IN ('succeeded','failed','canceled') THEN RAISE EXCEPTION USING ERRCODE='PD006',MESSAGE='terminal'; END IF;
@@ -160,7 +192,7 @@ BEGIN
   RETURN snapshot(r);
  END IF;
  IF coalesce(octet_length(a->>'mutation_id'),0) NOT BETWEEN 1 AND 256 OR coalesce(a->>'mutation_digest','') !~ '^[0-9a-f]{64}$' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid mutation'; END IF;
- IF EXISTS(SELECT 1 FROM events WHERE namespace=ns AND run_id=rid AND mutation_id=a->>'mutation_id') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='mutation reused'; END IF;
+ -- All successful business mutations publish guard, receipt and event below.
  IF op IN ('initialize','apply','finish') THEN
   rev:=(a->>'expected')::numeric;
   IF rev IS NULL OR rev<0 OR rev>18446744073709551615 OR trunc(rev)<>rev THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid revision'; END IF;
@@ -209,12 +241,14 @@ BEGIN
  -- Re-sample the database clock after validation and immutable batch insertion.
  -- The row lock still holds; an expired owner cannot publish a head/receipt.
  t := clock_timestamp();
- IF t<r.updated_at THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_final;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text||';step_us='||trunc(extract(epoch FROM (t-first_sample))*1000000)::text; END IF;
+ IF t<r.updated_at OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression',DETAIL='phase=owned_final;delta_us='||trunc(extract(epoch FROM (t-r.updated_at))*1000000)::text||';step_us='||trunc(extract(epoch FROM (t-first_sample))*1000000)::text; END IF;
  IF op<>'cancel' AND r.lease_until<=t THEN RAISE EXCEPTION USING ERRCODE='PD004',MESSAGE='lease lost'; END IF;
  UPDATE runs SET reason=CASE WHEN status='blocked' THEN reason ELSE '' END,lease_id=CASE WHEN status='running' THEN lease_id END,worker_id=CASE WHEN status='running' THEN worker_id END,boot_id=CASE WHEN status='running' THEN boot_id END,lease_until=CASE WHEN status='running' THEN lease_until END,last_mutation_id=a->>'mutation_id',last_mutation_digest=a->>'mutation_digest',updated_at=t WHERE namespace=ns AND run_id=rid RETURNING * INTO r;
+ INSERT INTO mutation_guards VALUES(ns,rid,a->>'mutation_id',a->>'mutation_digest',op,r.epoch,r.revision,t);
+ INSERT INTO mutation_receipts VALUES(ns,rid,a->>'mutation_id',t,jsonb_build_object('status',r.status,'epoch',r.epoch,'revision',r.revision::text));
  INSERT INTO events(namespace,run_id,operation,epoch,revision,lease_id,mutation_id,mutation_digest,occurred_at) VALUES(ns,rid,op,r.epoch,r.revision,a->>'lease_id',a->>'mutation_id',a->>'mutation_digest',t);
  IF op='apply' THEN RETURN '{}'::jsonb; END IF;
  RETURN snapshot(r);
 END $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pulse_durable_distributed FROM PUBLIC;
-INSERT INTO pulse_durable_distributed.meta VALUES(5,'');
+INSERT INTO pulse_durable_distributed.meta VALUES(6,'');

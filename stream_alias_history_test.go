@@ -20,6 +20,23 @@ type activeAliasSignals struct {
 	appendOnce, readOnce, saveOnce sync.Once
 	sourceCalls, mountCalls, reads atomic.Int32
 	terminal                       atomic.Value
+	storeMu                        sync.Mutex
+	storeErr                       error
+}
+
+func (s *activeAliasSignals) recordStoreError(op string, ctx context.Context, err error) {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+	if s.storeErr == nil {
+		// Keep the original cause and context state, never the batch or record payload.
+		s.storeErr = fmt.Errorf("%s: %w (context: %v)", op, err, ctx.Err())
+	}
+}
+
+func (s *activeAliasSignals) storeError() error {
+	s.storeMu.Lock()
+	defer s.storeMu.Unlock()
+	return s.storeErr
 }
 
 func newActiveAliasSignals() *activeAliasSignals {
@@ -140,10 +157,12 @@ func (s *activeAliasStore) Acquire(ctx context.Context, id string) (durable.Sess
 func (s *activeAliasSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
 	ack, err := s.Session.Apply(ctx, batch)
 	if err != nil {
+		s.signals.recordStoreError("Apply", ctx, err)
 		return durable.CommitAck{}, err
 	}
 	record, err := s.Session.Load(ctx)
 	if err != nil {
+		s.signals.recordStoreError("Load after Apply", ctx, err)
 		return durable.CommitAck{}, err
 	}
 	if _, ok := record.Scopes[record.RootScope].Nodes["mount"]; ok {
@@ -169,17 +188,23 @@ func TestActiveAliasCanCommitBeforeSourceFinishes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				timeout := 4 * time.Second
+				if backend == "filestore" {
+					// Channels enforce ordering; this bounds deadlocks, not storage speed.
+					// Allow race-instrumented file syncs and the wrapper's full Load after each Apply.
+					timeout = 10 * time.Second
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
 				opts := durable.RunOptions{RunID: "active-alias", Version: "1"}
 				if _, err := runtime.Run(ctx, activeAliasGraph(t, signals, resumable), pulse.Inputs{}, opts); err != nil {
-					t.Fatalf("legal alias while source is active: %v", err)
+					t.Fatalf("legal alias while source is active: %v; context: %v; store: %v", err, ctx.Err(), signals.storeError())
 				}
 				if signals.terminal.Load() != pulse.StreamTerminal("") || signals.sourceCalls.Load() != 1 || signals.mountCalls.Load() != 1 || signals.reads.Load() != 1 {
 					t.Fatalf("source was not active at the alias commit: terminal=%v source=%d mount=%d reads=%d", signals.terminal.Load(), signals.sourceCalls.Load(), signals.mountCalls.Load(), signals.reads.Load())
 				}
 				if _, err := runtime.Resume(ctx, activeAliasGraph(t, signals, resumable), pulse.Inputs{}, opts); err != nil {
-					t.Fatal(err)
+					t.Fatalf("Resume: %v; context: %v; store: %v", err, ctx.Err(), signals.storeError())
 				}
 				if signals.sourceCalls.Load() != 1 || signals.mountCalls.Load() != 1 || signals.reads.Load() != 1 {
 					t.Fatal("completed source or saved alias reran on Resume")

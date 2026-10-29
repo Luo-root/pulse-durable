@@ -25,6 +25,11 @@ import (
 //go:embed testdata/schema4/*.sql
 var schema4Fixture embed.FS
 
+// Frozen minimal real schema5 business receipt layout; never regenerate from schemaSQL.
+//
+//go:embed testdata/schema5/schema.sql
+var schema5Fixture string
+
 // Each legacy fixture is created in its own new database. Migrate must reject
 // before grants/DDL/data changes; the production schema is never downgraded.
 func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
@@ -42,7 +47,7 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 	if e != nil {
 		t.Fatal("invalid test DSN")
 	}
-	for _, version := range []int{1, 2, 3, 4} {
+	for _, version := range []int{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			name := "pulse_old_reject_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			quoted := pgx.Identifier{name}.Sanitize()
@@ -64,7 +69,11 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 			}
 			defer isolated.Close()
 			workerDSN := ""
-			if version == 4 {
+			if version == 5 {
+				if _, err := isolated.Exec(ctx, schema5Fixture); err != nil {
+					t.Fatal(scrub(err, false))
+				}
+			} else if version == 4 {
 				for _, file := range []string{"schema.sql", "maintenance.sql", "check.sql"} {
 					b, err := schema4Fixture.ReadFile("testdata/schema4/" + file)
 					if err != nil {

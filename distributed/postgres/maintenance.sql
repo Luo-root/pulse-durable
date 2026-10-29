@@ -29,7 +29,7 @@ BEGIN
  SELECT * INTO r FROM pulse_durable_distributed.runs WHERE namespace=ns AND run_id=rid FOR UPDATE;
  IF NOT FOUND THEN RAISE EXCEPTION USING ERRCODE='PD003',MESSAGE='not found'; END IF;
  t:=clock_timestamp(); first_sample:=t;
- IF t<r.updated_at OR t<r.maintenance_watermark THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+ IF t<r.updated_at OR t<r.maintenance_watermark OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
  IF op='inspect' THEN
   IF r.revision=0 THEN RAISE EXCEPTION USING ERRCODE='PD003',MESSAGE='no checkpoint'; END IF;
   RETURN storage_state(r);
@@ -75,7 +75,7 @@ BEGIN
  -- All historical batches remain retained; business head/revision/lease/events do not change.
  SELECT coalesce(sum(octet_length(wire)),0),count(*) INTO suffix_bytes,suffix_count FROM pulse_durable_distributed.batches WHERE namespace=ns AND run_id=rid AND revision>p.through_revision AND revision<=r.revision;
  t:=clock_timestamp();
- IF t<first_sample OR t<r.updated_at OR t<r.maintenance_watermark THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
+ IF t<first_sample OR t<r.updated_at OR t<r.maintenance_watermark OR t<r.receipt_observed_through THEN RAISE EXCEPTION USING ERRCODE='PD007',MESSAGE='clock regression'; END IF;
  IF p.expires_at<=t THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='build pin expired'; END IF;
  UPDATE pulse_durable_distributed.runs SET active_snapshot=p.generation+1,representation_generation=p.generation+1,active_log_bytes=suffix_bytes,active_log_count=suffix_count,maintenance_watermark=t WHERE namespace=ns AND run_id=rid RETURNING * INTO r;
  answer:=jsonb_build_object('mutation_id',mid,'mutation_digest',md,'operation','compact_storage','state',storage_state(r),'occurred_at',t);

@@ -179,7 +179,7 @@ go build -o demo .
 
 在另一终端执行 `./demo query`，完成后应为 `succeeded`；worker 持续轮询，按 Ctrl+C 排空后退出。Windows 使用 `demo.exe`。在新任务领取前执行 `./demo cancel` 可观察 `canceled`；取消已完成任务只返回已有终态。重新演示请改用新的 RunID。
 
-`Migrate` 显式安装或验证全新物理格式 3 的 `pulse_durable_distributed` schema；旧格式拒绝且原数据不改，需使用新库。逻辑记录仍为 format 2。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`Migrate` 同时执行 namespace 授权；`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
+`Migrate` 显式安装或验证当前物理 schema 6 的 `pulse_durable_distributed` schema；旧 v1–v5 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，需使用新库。逻辑记录仍为 format 2，协调 protocol 仍为 1，与物理 schema 版本独立。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`Migrate` 同时执行 namespace 授权；`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
 
 ## 路由与升级
 
@@ -208,10 +208,20 @@ worker 为每次启动生成 BootID，领取分配新 LeaseID 与递增 Epoch。
 
 写入返回 `ErrUnknown` 表示提交结果不确定，不是业务失败。Submit 可用完全相同的任务重试；Cancel 保留原 Mutation ID/Digest 并查询状态或使用 PostgreSQL receipt API 裁决。worker 自行处理未决 Claim 和受保护写入，不要另起领取循环重放，也不要因网络失败将任务标为 failed。
 
+PostgreSQL 的 `Coordinator.FindMutation(ctx, MutationQuery)` 使用独立 `mutation_receipts`；永久 `mutation_guards` 防止身份复用，`events` 仅用于诊断，不能代替回执。查询提供 Identity、Mutation ID/Digest、Operation 和闭区间 RequestedWindow；ExpectedEpoch/ExpectedRevision 为可选指针，nil 表示未知，非 nil（包括 0）要求精确匹配。已知值应显式传入；Cancel 可留 nil 并读取已提交值，不从后来的 Get 猜测。
+
+- `Found`：找到请求窗口内的精确 mutation 回执，仅证明该协调 mutation 已提交，不证明外部副作用，也不授予 lease/执行权限。
+- `AbsentWithinWindow`：请求窗口完全被权威 Coverage 覆盖，未找到匹配回执；不是从未提交的证明。
+- `Expired`：请求下界早于连续覆盖下界，且本次观察已达到请求上界；不是业务重放授权。请求上界晚于观察时间会被拒绝，而不是判为 Expired。
+
+Coverage.From 来自数据库持久 `receipt_coverage_floor`，Coverage.Through 是持运行锁后采样的数据库观察上界，并持久到 `receipt_observed_through`，不使用客户端时间。仍保留的回执可早于 coverage floor；覆盖内应有却缺失的回执会报错，不冒充正常缺席。该查询会写 observation watermark，必须连接可读写主库，不能使用只读事务或副本；权限仍是 namespace `query`，应用无直接表 DML 权限。缺回执、缺席或 Expired 均不授权业务重放。
+
+RetentionPolicy 目前仅有可选 TTL 与校验/CAS 请求契约：nil TTL 表示无限保留，guard/运行身份不受 TTL 回收；不代表已实现策略落库、实际 retention 删除或 GC。业务 replay、语义历史压缩仍未完成。
+
 ## 部署前提
 
 协调操作在单个权威 PostgreSQL 写主库上执行，持行锁后采样数据库时间，并用有效租约、BootID、LeaseID、Epoch 和 Revision 拒绝旧 owner 写入。数据库时钟须避免回拨；实现检测到行时间倒退会拒绝操作，不能据此推导任意时钟回拨仍安全。备份回退、丢失已确认事务或双主写入会破坏所有权历史，恢复时应隔离旧 worker 并使用新的 namespace；本模块不负责数据库 HA。fencing 保护协调状态和检查点，不会终止失联进程的业务代码：外部副作用必须以稳定 `(Namespace, RunID, 业务操作身份)` 做幂等，不能用每次改变的 LeaseID；外部系统支持 fencing 时再校验 Epoch。
 
 ## 验证入口
 
-示例可以 `go test -run '^$' .` 只编译而不连接数据库。本模块的 [systemtest](systemtest)、[networktest](networktest)、[crossmachine](crossmachine) 与 [soaktest](soaktest) 包提供真实数据库、故障及跨进程验证入口；运行条件和观测结果应按对应测试配置核对。性能与验收数据统一见[规模与性能](../site/guide/performance.md)，本文不将单次示例或编译检查视为部署验收。
+示例可以 `go test -run '^$' .` 只编译而不连接数据库。本模块的 [systemtest](systemtest)、[networktest](networktest)、[crossmachine](crossmachine) 与 [soaktest](soaktest) 包提供真实数据库、故障及跨进程验证入口；运行条件和观测结果应按对应测试配置核对。性能与验收数据统一见[规模与性能](../site/guide/performance.md)，本文不将单次示例或编译检查视为部署验收，也不声明本轮 distributed 整包实库通过；本机 strict-clock 检查仍有风险，需独立验证收口。
