@@ -9,9 +9,9 @@ import (
 
 func equalValue(a, b ValueRecord) bool { return reflect.DeepEqual(a, b) }
 
-// Message values constrain only their exact complete-node root while the whole
-// processing ancestry is valid. Failed Retry and graph histories remain decodable
-// but cannot constrain a later successful owner's outputs.
+// 仅当整条处理祖先链有效时，消息值才约束其精确完整节点根。
+// 失败的 Retry 和图历史仍可解码，
+// 但不能约束后续成功所有者的输出。
 func (s *runState) checkManagedValues(scope string, node NodeRecord, managed ManagedRecord) error {
 	if managed.Scope != scope || managed.NodeID != node.NodeID {
 		return nil
@@ -150,7 +150,7 @@ func (s *runState) validateStreams() error {
 			if pending {
 				return fmt.Errorf("durable: confirmed message still has its input pending")
 			}
-			// CommitMessage always saves this container, even with no state or values.
+			// CommitMessage 始终保存此容器，即使没有状态或值。
 			managed, ok := r.Managed[managedKey(message.Scope, message.Parent, message.NodeID)]
 			if !ok || managed.Scope != message.Scope || managed.Parent != message.Parent || managed.NodeID != message.NodeID {
 				return fmt.Errorf("durable: confirmed message has no matching managed state")

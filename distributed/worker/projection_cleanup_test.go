@@ -39,7 +39,7 @@ func TestSessionCloseDropsProjectionAfterLocalLeaseFailure(t *testing.T) {
 					t.Fatal("lease timer did not seal")
 				}
 			} else {
-				// DB Renew can succeed after the conservative request-start budget elapsed.
+				// 即使保守的请求开始时间预算已耗尽，数据库 Renew 仍可能成功。
 				if s.confirmed(time.Now().Add(-time.Second), 100*time.Millisecond, 0) {
 					t.Fatal("late renewal accepted")
 				}

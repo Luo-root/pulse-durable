@@ -70,7 +70,7 @@ func requireBusy(t *testing.T, s *Store, id string) {
 	}
 }
 
-// Complete metadata fixture is for recordio validation, not Initialize import.
+// 完整元数据夹具用于 recordio 验证，而非 Initialize 导入。
 func testRecord(id string) durable.RunRecord {
 	return durable.RunRecord{Format: durable.RecordFormat, RunID: id, Revision: 1, Version: "业务版本/α", Definition: strings.Repeat("a", 64), Inputs: strings.Repeat("b", 64), RootScope: "scope", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "图", Inputs: strings.Repeat("b", 64), Nodes: map[string]durable.NodeRecord{"node": {NodeID: "node", Attempt: "attempt", Reason: "opaque", Outputs: []durable.ValueRecord{{Name: "结果", TypeID: "binary", Version: "v1", State: "opaque", Data: []byte{0, 1, 255}}}}}}}, Attempts: map[string]durable.AttemptRecord{"attempt": {Parent: "scope", NodeID: "node", Index: 2, Limit: 5, State: durable.AttemptActive}}}
 }
@@ -357,8 +357,8 @@ func TestSessionConcurrentCAS(t *testing.T) {
 	}
 }
 
-// Real process publication and lock-release coverage lives in
-// TestIncrementalProcessPublication, including before-batch/before-head/after-head.
+// 真实进程发布及锁释放由 TestIncrementalProcessPublication 覆盖，
+// 包括批次前、头发布前和头发布后场景。
 func TestStoredJSONIsComplete(t *testing.T) {
 	s := newTestStore(t)
 	ss := acquireTestSession(t, s, "run")

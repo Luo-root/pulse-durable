@@ -1,5 +1,5 @@
-// Package sqlitestore implements a local, single-host durable Store using SQLite.
-// Sessions hold nonblocking OS run locks, never long-lived SQLite transactions.
+// sqlitestore 包使用 SQLite 实现本地单主机持久化 Store。
+// 会话持有非阻塞操作系统运行锁，绝不持有长期 SQLite 事务。
 package sqlitestore
 
 import (
@@ -21,8 +21,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Store owns a file database and its active sessions. Create it with New.
-// Close releases all sessions and the database; it is safe to call repeatedly.
+// Store 拥有文件数据库及其活跃会话。通过 New 创建。
+// Close 释放所有会话及数据库；可安全重复调用。
 type Store struct {
 	mu       sync.Mutex
 	db       *sql.DB
@@ -34,15 +34,15 @@ type Store struct {
 
 var _ durable.Store = (*Store)(nil)
 
-// New opens an independent file database, creating its parent directory if needed.
-// path is a filename, not a SQLite URI; in-memory databases are not supported.
-// Schema version 3 is initialized atomically; old and unknown versions are rejected.
+// New 打开独立文件数据库，必要时创建其父目录。
+// path 是文件名，不是 SQLite URI；不支持内存数据库。
+// 原子初始化模式版本 3；拒绝旧版本及未知版本。
 func New(path string) (*Store, error) {
 	return NewContext(context.Background(), path)
 }
 
-// NewContext is New with cancellable database initialization. Filesystem calls
-// remain subject to the operating system's normal blocking behavior.
+// NewContext 是支持取消数据库初始化的 New。文件系统调用
+// 仍遵循操作系统正常阻塞行为。
 func NewContext(ctx context.Context, path string) (*Store, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
@@ -75,7 +75,7 @@ func NewContext(ctx context.Context, path string) (*Store, error) {
 	u := url.URL{Scheme: "file", Path: uriPath}
 	q := u.Query()
 	q.Add("_pragma", "synchronous(FULL)")
-	// Wait only for short SQLite operations on other runs, never run ownership.
+	// 仅等待其他运行的短 SQLite 操作，绝不等待运行所有权。
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Set("_txlock", "immediate")
 	u.RawQuery = q.Encode()
@@ -83,8 +83,8 @@ func NewContext(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A single connection serializes this Store's short database operations,
-	// not session ownership or business execution.
+	// 单连接串行化此 Store 的短数据库操作，
+	// 而非会话所有权或业务执行。
 	db.SetMaxOpenConns(1)
 	if err = initialize(ctx, db, absolute+".init.lock"); err != nil {
 		return nil, errors.Join(err, db.Close())
@@ -129,8 +129,8 @@ const manifestSQL = `CREATE TABLE durable_manifests (
 const maxChainBatches = 100000
 const maxChainBytes = 256 << 20
 
-// Serialize initialization (including journal-mode transitions) across processes.
-// Unlike run ownership, constructors wait up to five seconds, or ctx cancellation.
+// 跨进程串行化初始化（包括日志模式转换）。
+// 与运行所有权不同，构造函数最多等待五秒，或直到 ctx 取消。
 func initialize(ctx context.Context, db *sql.DB, lockPath string) (resultErr error) {
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -153,7 +153,7 @@ func initialize(ctx context.Context, db *sql.DB, lockPath string) (resultErr err
 		}
 	}
 	defer func() { resultErr = errors.Join(resultErr, lock.Close()) }()
-	// Reject unrelated databases before any persistent PRAGMA or schema change.
+	// 在任何持久化 PRAGMA 或模式修改前拒绝无关数据库。
 	if err := validateSchema(ctx, db); err != nil {
 		return err
 	}
@@ -241,9 +241,9 @@ func checkContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// Acquire immediately returns durable.ErrBusy if this run is already owned,
-// including by another process using this same database pathname.
-// RunIDs are nonempty UTF-8 strings; their SHA-256 determines the lock filename.
+// 若此运行已被拥有，Acquire 立即返回 durable.ErrBusy，
+// 包括另一进程使用相同数据库路径名持有的情况。
+// RunID 是非空 UTF-8 字符串；其 SHA-256 决定锁文件名。
 func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
@@ -269,7 +269,7 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	return session, nil
 }
 
-// Close waits for in-flight operations, releases run locks, and closes SQLite.
+// Close 等待进行中的操作、释放运行锁并关闭 SQLite。
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -308,9 +308,9 @@ type session struct {
 
 var _ durable.Session = (*session)(nil)
 
-// saveContextError preserves the driver's error unless cancellation is known to
-// have happened before the transaction could commit. Commit errors remain opaque:
-// a successful commit followed by an error is an uncertain checkpoint outcome.
+// saveContextError 保留驱动错误，除非已知取消发生在
+// 事务可能提交之前。提交错误仍不作解析：
+// 成功提交后又返回错误意味着检查点结果不确定。
 func saveContextError(ctx context.Context, err error) error {
 	if err != nil && ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
@@ -327,7 +327,7 @@ func (s *session) closeLocked() error {
 }
 
 func (s *session) Close() error {
-	// Always take Store before session, matching Store.Close and Acquire.
+	// 始终先获取 Store 再获取 session，与 Store.Close 和 Acquire 一致。
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	s.mu.Lock()

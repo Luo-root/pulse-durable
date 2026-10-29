@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// Process helpers already have individual CommandContext deadlines. Also bound
-// pipe draining after exit/cancellation so inherited output handles cannot keep
-// CombinedOutput waiting indefinitely. This does not extend any fault deadline.
+// 进程辅助函数已有各自的 CommandContext 截止时间。另行限制
+// 退出或取消后的管道排空时间，避免继承的输出句柄让
+// CombinedOutput 无限等待。这不会延长任何故障截止时间。
 func boundedProcessOutput(cmd *exec.Cmd) ([]byte, error) {
 	cmd.WaitDelay = time.Second
 	return cmd.CombinedOutput()

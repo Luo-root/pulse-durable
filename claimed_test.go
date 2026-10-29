@@ -81,8 +81,8 @@ func TestClaimedOwnershipAndCompletedRestore(t *testing.T) {
 		if s.acquires.Load() != 1 || s.closes.Load() != 0 {
 			t.Fatal("runtime acquired/closed caller session")
 		}
-		// Simulate the coordinator's Finish boundary: authority is still accessible
-		// and a competing owner cannot enter until the caller explicitly closes.
+		// 模拟协调器的 Finish 边界：此时权威状态仍可访问，
+		// 且竞争所有者只有在调用方显式关闭后才能进入。
 		if _, err := session.Load(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +186,7 @@ func TestClaimedUncertainFinalSave(t *testing.T) {
 			rt := testRuntime(t, s, NewCodecs())
 			session := claimForTest(t, s, "run")
 			defer session.Close()
-			session.uncertainAt = 3 // initialize, open root attempt, then commit/fail
+			session.uncertainAt = 3 // 初始化，开启根尝试，再提交或失败
 			g := testGraph(t, "graph")
 			var calls atomic.Int32
 			testAdd(t, g, pulse.NewNode("work", "", nil, nil, func(*pulse.RunCtx) error {

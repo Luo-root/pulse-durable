@@ -190,8 +190,8 @@ func TestPGMaintenanceHistorySynthesis(t *testing.T) {
 	if _, err = s.CompactStorage(ctx, durable.CompactStorageRequest{RunID: r.RunID, ThroughRevision: 2, ExpectedGeneration: 2}); !errors.Is(err, durable.ErrConflict) {
 		t.Fatal(err)
 	}
-	// Two independently pooled compactors: either lock contention or the stale
-	// generation prevents a second publication of the same proposal.
+	// 两个使用独立连接池的压缩器：锁竞争或过期代际
+	// 应阻止同一提案的第二次发布。
 	other, err := New(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestPGMaintenanceHistorySynthesis(t *testing.T) {
 	if err != nil || state.Generation != 3 || state.HeadChain != after.HeadChain {
 		t.Fatalf("two compactors: %+v %v", state, err)
 	}
-	// Generation overflow is rejected before any synthesis or business change.
+	// 代际溢出在任何合成或业务修改前被拒绝。
 	if _, err = s.pool.Exec(ctx, `UPDATE pulse_durable.heads SET generation=$2 WHERE run_id=$1`, r.RunID, "18446744073709551615"); err != nil {
 		t.Fatal(err)
 	}

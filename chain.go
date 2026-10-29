@@ -11,10 +11,9 @@ const (
 	chainBatchDomain = "pulse-durable/chain/batch/v1\x00"
 )
 
-// SeedChain returns the revision-1 chain anchor for a new checkpoint.
-// snapshotDigest must be SHA-256 of the actual persisted snapshot bytes, computed
-// by the caller, not a re-encoding of a RunRecord. Snapshot synthesis must retain
-// the existing committed chain anchor, rather than seed a new business chain.
+// SeedChain 返回新检查点的 revision-1 链锚点。
+// snapshotDigest 必须是实际持久化快照字节的 SHA-256，由调用方计算，不能通过重新编码 RunRecord 得到。
+// 快照合成必须保留已有的已提交链锚点，而不是创建新的业务链。
 func SeedChain(snapshotDigest [32]byte) [32]byte {
 	var input [len(chainSeedDomain) + 32 + 8]byte
 	n := copy(input[:], chainSeedDomain)
@@ -23,11 +22,9 @@ func SeedChain(snapshotDigest [32]byte) [32]byte {
 	return sha256.Sum256(input[:])
 }
 
-// NextChain returns the chain anchor after appending a canonical batch digest.
-// parent is the previous committed chain anchor; batchDigest is SHA-256 of the
-// canonical batch wire (as returned by ChangeBatchDigest). revision must exceed
-// 1. The caller must separately validate consecutive revisions, identity and
-// ownership; a digest proves integrity, not authority.
+// NextChain 返回追加规范批次摘要后的链锚点。
+// parent 是前一个已提交的链锚点；batchDigest 是规范批次线格式的 SHA-256（由 ChangeBatchDigest 返回）。
+// revision 必须大于 1。调用方必须单独校验连续 revision、身份和所有权；摘要只能证明完整性，不能证明权威性。
 func NextChain(parent, batchDigest [32]byte, revision uint64) ([32]byte, error) {
 	if revision <= 1 {
 		return [32]byte{}, fmt.Errorf("durable: chain batch revision must exceed 1: %d", revision)

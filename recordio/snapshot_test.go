@@ -34,7 +34,7 @@ func snapshotRoundTrip(t *testing.T, want durable.RunRecord) []byte {
 
 func TestSnapshotNilEmptyCombinations(t *testing.T) {
 	snapshotRoundTrip(t, durable.RunRecord{})
-	// Exercise all top-level maps independently, not just all-nil/all-empty.
+	// 独立测试所有顶层映射，而非仅测试全 nil 或全空。
 	for mask := 0; mask < 32; mask++ {
 		r := durable.RunRecord{Revision: 987}
 		if mask&1 != 0 {
@@ -104,8 +104,8 @@ func TestSnapshotNilEmptyCombinations(t *testing.T) {
 	}
 }
 
-// Populate every current field, including scalars and nested stream descriptors.
-// New unsupported field kinds fail this test rather than going untested.
+// 填充当前每个字段，包括标量和嵌套流描述符。
+// 新的不支持字段种类会使此测试失败，而非漏测。
 func populateSnapshotValue(t *testing.T, v reflect.Value) {
 	t.Helper()
 	switch v.Kind() {
@@ -149,7 +149,7 @@ func TestSnapshotAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Decoding allocates independent Data and descriptor pointers.
+	// 解码为 Data 和描述符指针分配独立空间。
 	for _, scope := range got.Scopes {
 		for _, node := range scope.Nodes {
 			node.Outputs[0].Data[0] = 0
@@ -188,7 +188,7 @@ func TestSnapshotRejectsCorruption(t *testing.T) {
 		strings.Replace(base, `"scopes":null`, `"scopes":{"x":{},"\u0078":{}}`, 1),
 		strings.Replace(base, `"revision":0,`, "", 1),
 	}
-	// Inject attacks at every nested struct/map/slice/pointer level.
+	// 在每个嵌套结构体、映射、切片及指针层注入攻击。
 	var record durable.RunRecord
 	populateSnapshotValue(t, reflect.ValueOf(&record).Elem())
 	full := string(snapshotRoundTrip(t, record))
@@ -222,7 +222,7 @@ func TestSnapshotRejectsCorruption(t *testing.T) {
 			t.Fatalf("case %d accepted corrupt snapshot or leaked data: %v", i, err)
 		}
 	}
-	// Every proper truncation of a valid snapshot must fail without panicking.
+	// 有效快照的每种真前缀截断都必须失败，且不触发 panic。
 	for i := 0; i < len(base); i++ {
 		if _, err := recordio.DecodeSnapshot([]byte(base[:i])); err == nil {
 			t.Fatalf("accepted truncation %d", i)
@@ -243,7 +243,7 @@ func TestSnapshotMetadataValidation(t *testing.T) {
 			t.Fatalf("accepted bad metadata or leaked data: %v", err)
 		}
 	}
-	// Existing Encode/Decode retain their legacy wire representation.
+	// 现有 Encode/Decode 保留其旧线格式表示。
 	record := durable.RunRecord{Streams: map[string]durable.StreamRecord{}}
 	legacy, err := recordio.Encode(record)
 	want, marshalErr := json.Marshal(record)

@@ -29,8 +29,8 @@ type Event struct {
 	Epoch     int64     `json:"epoch,omitempty"`
 }
 
-// Child reads only the worker DSN; EOF seals admission and drains before cancellation.
-// No DSN is an argument.
+// Child 仅读取工作进程 DSN；EOF 会封闭准入，先排空再取消。
+// 不将任何 DSN 放入参数。
 func Child(ctx context.Context, c Config, id string, in io.Reader, out io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -97,7 +97,7 @@ func launch(c Config, id string, observe func(Event)) (*child, error) {
 	}
 	b, _ := json.Marshal(c)
 	cmd := exec.Command(exe, "worker", "-config", string(b), "-id", id)
-	// Do not inherit administrator credentials or unrelated secret environment variables.
+	// 不继承管理员凭据或无关的秘密环境变量。
 	for _, key := range []string{"PATH", "SystemRoot", "WINDIR", "HOME", "USERPROFILE", "TMP", "TEMP", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if v, ok := os.LookupEnv(key); ok {
 			cmd.Env = append(cmd.Env, key+"="+v)

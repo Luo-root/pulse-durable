@@ -302,7 +302,7 @@ func TestManagedHistoryValidationAcceptsLegitimateRecords(t *testing.T) {
 	}
 }
 
-// Complete the same root whose message has already contributed a plain value.
+// 完成已由其消息贡献普通值的同一个根。
 func completeManagedValueNode(p streamProtocol, skipped bool) pulse.CheckpointCommit {
 	descriptor := p.output.Stream
 	descriptor.Terminal = pulse.StreamCompleted
@@ -367,7 +367,7 @@ func TestConfirmedManagedValuesMustMatchCompleteNode(t *testing.T) {
 		"managed-skipped": mutateManaged(skip),
 		"node-payload":    mutateNode(payload("43")),
 		"managed-payload": mutateManaged(payload("43")),
-		// Even two spellings that decode to 42 must obey the existing encoded-value contract.
+		// 即使两种编码均解码为 42，也必须遵守现有编码值契约。
 		"encoded-bytes": mutateManaged(payload("42 ")),
 		"node-missing": func(r *RunRecord) {
 			scope := r.Scopes[r.RootScope]
@@ -405,7 +405,7 @@ func TestConfirmedManagedValuesMustMatchCompleteNode(t *testing.T) {
 				mutateManaged(skip)(&record)
 			case "empty-managed-values":
 				managed := record.Managed[managedID]
-				managed.Values = nil // A message is allowed to contribute no plain values.
+				managed.Values = nil // 消息允许不贡献任何普通值。
 				record.Managed[managedID] = managed
 			case "ordinary-only":
 				record.Messages, record.Managed = nil, nil
@@ -413,7 +413,7 @@ func TestConfirmedManagedValuesMustMatchCompleteNode(t *testing.T) {
 				key := streamKey(streamID(p.input.Stream.ID))
 				stream := record.Streams[key]
 				stream.Stream.ID.Generation++
-				record.Streams[key] = stream // The confirmed message keeps its old generation.
+				record.Streams[key] = stream // 已确认消息保留其旧代际。
 			case "active":
 				record = cloneRecord(committedAttemptValues(t, false).s.record)
 			}
@@ -467,7 +467,7 @@ func TestManagedValuesFollowEffectiveRetryOwner(t *testing.T) {
 				}
 			}
 			p.processor = root
-			// Failed Retry values are historical; a later successful attempt may skip.
+			// 失败 Retry 的值属于历史；后续成功尝试可以跳过。
 			if err := p.s.commit(ctx, completeManagedValueNode(p, scenario != "active-retry")); err != nil {
 				t.Fatalf("complete node compared an ineffective Retry value: %v", err)
 			}
@@ -475,7 +475,7 @@ func TestManagedValuesFollowEffectiveRetryOwner(t *testing.T) {
 				t.Fatalf("legitimate Retry history rejected: %v", err)
 			}
 			if scenario == "active-retry" {
-				// A live Retry is not another root: its confirmed contribution must match.
+				// 活跃 Retry 不是另一个根：其已确认贡献必须匹配。
 				for key, managed := range p.s.record.Managed {
 					managed.Values[0].State, managed.Values[0].Data, managed.Values[0].Digest = "skipped", nil, ""
 					p.s.record.Managed[key] = managed
@@ -552,7 +552,7 @@ func TestManagedValuesStayWithinValidGraphOwner(t *testing.T) {
 				managed.Values[0].State, managed.Values[0].Data, managed.Values[0].Digest = "skipped", nil, ""
 				copy.Managed[key] = managed
 				if scenario == "failed-graph-ancestor" {
-					// The complete child node remains in history after its mount fails.
+					// 挂载失败后，完整子节点仍保留在历史中。
 					ancestor := copy.Attempts[managed.Scope]
 					ancestor.State = AttemptFailed
 					copy.Attempts[managed.Scope] = ancestor

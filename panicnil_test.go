@@ -16,8 +16,8 @@ import (
 
 const panicNilModeEnv = "PULSE_DURABLE_PANICNIL_MODE"
 
-// Each helper inherits the race-instrumented test binary, with its own timeout
-// and GODEBUG. Never mutate process-wide GODEBUG while other tests may run.
+// 每个辅助进程继承带竞态检测的测试二进制，并有独立超时
+// 和 GODEBUG。其他测试可能运行时，绝不修改进程级 GODEBUG。
 func TestPanicNilModes(t *testing.T) {
 	if os.Getenv(panicNilModeEnv) != "" {
 		return
@@ -169,7 +169,7 @@ func TestPanicNilBeforeStart(t *testing.T) {
 			if failure == "skip" && !errors.Is(err, pulse.ErrSkipped) {
 				t.Fatal("callback panic lost its error cause")
 			}
-			// A fresh runtime must be able to acquire and continue the initialized run.
+			// 新运行时必须能获取并继续已初始化的运行。
 			if _, err := testRuntime(t, store, NewCodecs()).Resume(context.Background(), g, pulse.Inputs{}, testOptions("run")); err != nil || body.Load() != 1 {
 				t.Fatalf("BeforeStart panic leaked ownership or changed the record: body=%d err=%v", body.Load(), err)
 			}

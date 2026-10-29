@@ -7,8 +7,7 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// Inspection is safe during node failure handling, then becomes hostile only
-// after the core has joined work and published its final graph observation.
+// 节点失败处理期间的检查是安全的；只有在核心汇合工作并发布最终图观察结果后，检查才会变得具有攻击性。
 type claimedInspectionError struct {
 	method    string
 	armed     bool
@@ -32,8 +31,8 @@ func (e *claimedInspectionError) Unwrap() error { e.inspect("Unwrap"); return ni
 func TestClaimedGuardedCheckpointInspection(t *testing.T) {
 	for _, method := range []string{"As", "Unwrap"} {
 		cause := &claimedInspectionError{method: method, armed: true}
-		// Use a real pending Execution so hostile methods can synchronously reenter
-		// public inspection, just as they can from a Start error path.
+		// 使用真实的 pending Execution，使具有攻击性的方法可以同步重入公共检查，
+		// 就像它们能从 Start 错误路径重入一样。
 		g := testGraph(t, "pending")
 		e, err := g.NewExecution(context.Background(), pulse.Inputs{})
 		if err != nil {

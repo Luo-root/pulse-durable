@@ -1,7 +1,7 @@
-// Package filestore provides exclusive local checkpoint sessions backed by an
-// immutable snapshot and batches, published by an atomic small head replacement.
-// It requires local OS locks and same-directory atomic rename; it does not claim
-// power-loss durability, network-filesystem support, or distributed fencing.
+// filestore 包提供独占本地检查点会话，基于不可变快照及批次，
+// 通过原子替换小型头文件发布。
+// 它要求本地操作系统锁及同目录原子重命名；不承诺
+// 断电持久性、网络文件系统支持或分布式栅栏。
 package filestore
 
 import (
@@ -23,8 +23,8 @@ import (
 	"github.com/Luo-root/pulse-durable/recordio"
 )
 
-// Store holds local checkpoints. New directories use 0700, files use 0600;
-// existing permissions and Windows ACLs remain the caller's responsibility.
+// Store 保存本地检查点。新目录使用 0700，文件使用 0600；
+// 现有权限和 Windows ACL 仍由调用方负责。
 type Store struct{ dir string }
 
 var _ durable.Store = (*Store)(nil)
@@ -59,8 +59,8 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 		return nil, err
 	}
 	ss := &session{dir: s.dir, path: filepath.Join(s.dir, base+".head"), runID: runID, lock: lock}
-	// Never mutate unsupported/corrupt layouts, even by cleaning temporaries.
-	// Load/Initialize report the format error without adopting immutable orphans.
+	// 绝不修改不支持或损坏的布局，甚至不清理临时文件。
+	// Load/Initialize 报告格式错误，不采纳不可变孤立对象。
 	if _, headErr := ss.readHead(); headErr == nil || errors.Is(headErr, durable.ErrNotFound) {
 		if err = removeStaleTemporaries(s.dir, base); err != nil {
 			return nil, errors.Join(err, lock.Close())
@@ -106,9 +106,9 @@ func removeStaleTemporaries(dir, base string) error {
 	return nil
 }
 
-// Explicit bounded replay budget. No implicit compaction or history deletion is
-// performed. Once exhausted, writes stop until an explicit maintenance facility
-// is available. Both count and bytes are authoritative fields checked on Load.
+// 显式有界重放预算。不执行隐式压缩或历史删除。
+// 一旦耗尽，停止写入，直至有显式维护设施可用。
+// 数量和字节数均为权威字段，在 Load 时检查。
 const maxChainBatches uint64 = 100000
 const maxChainBytes uint64 = 256 << 20
 
@@ -144,7 +144,7 @@ type session struct {
 	closeErr         error
 	poisoned         bool
 	loaded           bool
-	publicationSync  func(string) error // nil uses the platform directory sync
+	publicationSync  func(string) error // nil 使用平台目录同步实现
 	head             manifest
 	record           durable.RunRecord
 }
@@ -211,7 +211,7 @@ func (s *session) batchPath(id string) string {
 	return filepath.Join(s.dir, fileBase(s.runID)+".batch-"+id)
 }
 
-// load validates only the files selected by head, never sorted directory entries.
+// load 仅验证头选中的文件，绝不使用排序后的目录条目。
 func (s *session) load() (durable.RunRecord, error) {
 	h, err := s.readHead()
 	if err != nil {
@@ -236,7 +236,7 @@ func (s *session) load() (durable.RunRecord, error) {
 			return r, err
 		}
 	}
-	// Follow authenticated parent pointers backwards, then replay consecutively.
+	// 沿经过认证的父指针反向遍历，再连续重放。
 	batches := make([]durable.ChangeBatch, int(h.HeadRevision-h.BaseRevision))
 	chain := h.HeadChain
 	id := h.HeadID
@@ -300,7 +300,7 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if err := s.ready(ctx); err != nil {
 		return durable.RunRecord{}, err
 	}
-	// A public Load is authoritative even if this session already has a projection.
+	// 即使此会话已有投影，公开 Load 仍从权威状态读取。
 	r, err := s.load()
 	if err != nil {
 		s.loaded = false
@@ -330,7 +330,7 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if err != nil {
 		return err
 	}
-	// Decode once to detach the caller's input maps and byte slices.
+	// 解码一次，脱离调用方输入映射和字节切片。
 	private, err := recordio.DecodeSnapshot(data)
 	if err != nil {
 		return err
@@ -357,8 +357,8 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	if err = s.ready(ctx); err != nil {
 		return ack, err
 	}
-	// Any failure after touching the private projection fences this session. This
-	// avoids a whole-record clone/rollback on every successful checkpoint.
+	// 触及私有投影后的任何失败都会封锁此会话。由此
+	// 避免每次成功检查点都克隆或回滚完整记录。
 	touched := false
 	defer func() {
 		if p := recover(); p != nil {
@@ -401,7 +401,7 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	if uint64(len(data)) > maxChainBytes-h.BatchBytes {
 		return ack, errors.New("filestore: chain byte budget exceeded; explicit compaction required")
 	}
-	// ApplyTo validates exact typed preconditions before mutating any object.
+	// ApplyTo 在修改任何对象前验证精确的类型化前置条件。
 	ack, err = b.ApplyTo(&s.record)
 	if err != nil {
 		return durable.CommitAck{}, err
@@ -427,8 +427,8 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	return ack, nil
 }
 
-// PublicationUnknownError means replacement succeeded but subsequent directory
-// synchronization failed. Inspect from a new session before retrying the write.
+// PublicationUnknownError 表示替换成功，但后续目录
+// 同步失败。重试写入前，使用新会话检查。
 type PublicationUnknownError struct{ Err error }
 
 func (e *PublicationUnknownError) Error() string {
@@ -436,7 +436,7 @@ func (e *PublicationUnknownError) Error() string {
 }
 func (e *PublicationUnknownError) Unwrap() error { return e.Err }
 
-// writeImmutable never overwrites or adopts an orphan, even at the same digest.
+// writeImmutable 绝不覆盖或采纳孤立对象，即使摘要相同。
 func (s *session) writeImmutable(ctx context.Context, path string, data []byte) error {
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -481,7 +481,7 @@ func (s *session) publish(ctx context.Context, h manifest) error {
 	if err = replaceFile(f.Name(), s.path); err != nil {
 		return err
 	}
-	// Once published, later errors are unknown outcomes. No continued writes.
+	// 一旦发布，后续错误均属于结果未知。不得继续写入。
 	syncPublished := s.publicationSync
 	if syncPublished == nil {
 		syncPublished = syncDirectory

@@ -16,8 +16,8 @@ func TestApplyFailureInvalidatesProjection(t *testing.T) {
 	if e := ss.Initialize(ctx, r); e != nil {
 		t.Fatal(e)
 	}
-	// Force failure after the typed private projection has changed, before the
-	// transaction commits. No tentative projection may be observed or reused.
+	// 在类型化私有投影改变后、事务提交前强制失败。
+	// 任何暂定投影都不得被观察或复用。
 	if _, e := s.db.Exec(`CREATE TRIGGER fail_batch BEFORE INSERT ON durable_batches BEGIN SELECT RAISE(ABORT,'injected batch failure'); END`); e != nil {
 		t.Fatal(e)
 	}

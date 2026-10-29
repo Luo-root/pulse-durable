@@ -40,7 +40,7 @@ func maintenanceArgs(ctx context.Context, s *Store, id string) error {
 func corrupt(err error) error       { return fmt.Errorf("%w: %w", durable.ErrInvalidRecord, err) }
 func toChain(b []byte) (x [32]byte) { copy(x[:], b); return }
 
-// anchorTx reads the original immutable history, never a synthesized snapshot.
+// anchorTx 读取原始不可变历史，绝不读取合成快照。
 func anchorTx(ctx context.Context, tx *sql.Tx, id string, n uint64) ([32]byte, error) {
 	var chain []byte
 	if n == 1 {
@@ -143,7 +143,7 @@ func readSnapshotTx(ctx context.Context, tx *sql.Tx, id string, n uint64) (durab
 }
 func loadRevisionTx(ctx context.Context, tx *sql.Tx, id string, target uint64, st durable.StorageState) (durable.RevisionImage, int, int, error) {
 	var rev string
-	// Decimal strings are compared by length and then lexically, preserving uint64.
+	// 十进制字符串先按长度、再按字典序比较，保留 uint64 精度。
 	ts := strconv.FormatUint(target, 10)
 	snapshotTarget := target
 	if snapshotTarget > st.BaseRevision {
@@ -293,15 +293,15 @@ func (s *Store) CompactStorage(ctx context.Context, req durable.CompactStorageRe
 	if err != nil {
 		return result, err
 	}
-	// A valid prefix is not enough: never publish maintenance over a corrupt
-	// suffix, even when the requested base precedes the business head.
+	// 只有有效前缀还不够：绝不在损坏后缀上发布维护结果，
+	// 即使请求的基线早于业务头。
 	if req.ThroughRevision != st.HeadRevision {
 		if _, _, _, err = loadRevisionTx(ctx, tx, req.RunID, st.HeadRevision, st); err != nil {
 			return result, err
 		}
 	}
-	// Existing snapshots are immutable anchors. A same-base request validates
-	// the stored snapshot above but must not normalize or replace its bytes.
+	// 已有快照是不可变锚点。同基线请求验证上方存储的快照，
+	// 但不得归一化或替换其字节。
 	if req.ThroughRevision != st.BaseRevision {
 		data, err := recordio.EncodeSnapshot(image.Record)
 		if err != nil {

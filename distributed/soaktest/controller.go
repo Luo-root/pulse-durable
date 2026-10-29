@@ -103,7 +103,7 @@ type Report struct {
 	P99NS                  int64                   `json:"all_phases_p99_upper_ns"`
 }
 
-// Prepare is the only DDL/permission-changing entrypoint. Existing roles are never modified.
+// Prepare 是唯一可更改 DDL 或权限的入口。绝不修改已有角色。
 func Prepare(ctx context.Context, c Config) error {
 	if e := c.Validate(); e != nil {
 		return e
@@ -133,7 +133,7 @@ func Prepare(ctx context.Context, c Config) error {
 	if _, e = tx.Exec(ctx, "SET LOCAL standard_conforming_strings=on"); e != nil {
 		return errors.New("prepare quoting failed")
 	}
-	// Quote password as a SQL literal without emitting SQL or backend errors.
+	// 将密码作为 SQL 字面量加引号，不输出 SQL 或后端错误。
 	password := "'"
 	for _, r := range w.Password {
 		if r == '\'' {
@@ -154,8 +154,8 @@ func Prepare(ctx context.Context, c Config) error {
 	return nil
 }
 
-// Run exclusively creates raw and summary files; existing evidence is never overwritten.
-// The caller executable must route its worker subcommand to Child.
+// Run 以独占创建方式生成原始及汇总文件；绝不覆盖已有证据。
+// 调用方可执行程序必须将其 worker 子命令路由至 Child。
 func Run(ctx context.Context, c Config, prefix string) (report Report, err error) {
 	if e := c.Validate(); e != nil {
 		return report, e
@@ -320,15 +320,15 @@ func Run(ctx context.Context, c Config, prefix string) (report Report, err error
 			break
 		}
 	}
-	// Admission is already exhausted by drive; now stop workers. child.stop waits
-	// for the process and its event scanner, and Child's lifecycle waits for Drain
-	// (including all in-flight Finish/Save calls) before exiting.
+	// drive 已耗尽准入，此时停止工作进程。child.stop 等待
+	// 进程及事件扫描器结束，Child 的生命周期等待 Drain
+	// （包括所有进行中的 Finish/Save 调用）完成后才退出。
 	if e := stopChildren(); e != nil {
 		err = errors.Join(err, e)
 	}
-	// A single query can race a committed Finish becoming visible to the admin
-	// snapshot. Require a bounded stable reconciliation after all workers/events
-	// have stopped, rather than treating sleep as synchronization.
+	// 单次查询可能与已提交 Finish 对管理员快照可见的时刻竞争。
+	// 所有工作进程和事件停止后，要求在有界时间内稳定核对一致，
+	// 而不是把休眠当作同步。
 	auditCtx, cancel := context.WithTimeout(ctx, c.auditTimeout())
 	defer cancel()
 	snap, e := stableAudit(auditCtx, report.Accepted, func(queryCtx context.Context) (auditSnapshot, error) {
@@ -355,7 +355,7 @@ func Run(ctx context.Context, c Config, prefix string) (report Report, err error
 	return report, err
 }
 
-// finalizeReport compares finish events only against a fully verified audit.
+// finalizeReport 仅将完成事件与完整验证的审计比较。
 func finalizeReport(report *Report, err error) error {
 	if !report.AuditComplete {
 		err = errors.Join(err, errors.New("final audit incomplete"))
@@ -490,7 +490,7 @@ func drive(ctx context.Context, c Config, backend *postgres.Coordinator, admin *
 		if time.Now().After(drainEnd) {
 			return p, errors.New("phase drain exceeded 60 seconds")
 		}
-		// Bounded batches allow observations between submission bursts.
+		// 有界批次允许在多轮突发提交之间进行观测。
 		for batch := 0; batch < 32 && len(pending) < c.MaxOutstanding && time.Now().Before(end); batch++ {
 			*seq++
 			id := fmt.Sprintf("task-%012d", *seq)

@@ -8,7 +8,7 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// streamHeader deliberately excludes Pending: messages have independent keys.
+// streamHeader 有意排除 Pending：消息使用独立键。
 type streamHeader struct {
 	Stream                     StreamDescriptorRecord
 	LastSequence, AckedThrough uint64
@@ -64,7 +64,7 @@ func (tx *recordTransaction) putStream(key string, expected *streamHeader, value
 	return nil
 }
 
-// A nil expected message is Absent; nil value removes precisely that sequence.
+// expected 消息为 nil 表示 Absent；value 为 nil 仅删除该序号。
 func (tx *recordTransaction) putPending(stream string, sequence uint64, expected, value *StreamMessageRecord) error {
 	if tx.err != nil {
 		return tx.err
@@ -118,7 +118,7 @@ func (tx *recordTransaction) checkStreams(record RunRecord) error {
 	return nil
 }
 
-// applyStreams is only used on an isolated legacy proposal, never live state.
+// applyStreams 仅用于隔离的旧版提案，绝不用于活跃状态。
 func (tx *recordTransaction) applyStreams(record *RunRecord) {
 	if len(tx.streams) > 0 && record.Streams == nil {
 		record.Streams = make(map[string]StreamRecord)
@@ -150,8 +150,8 @@ func (tx *recordTransaction) applyStreams(record *RunRecord) {
 	}
 }
 
-// streamView exposes headers and individual pending messages without cloning a
-// RunRecord or Pending slice. All writes keep their original base precondition.
+// streamView 暴露头和单条待处理消息，不克隆 RunRecord
+// 或 Pending 切片。所有写入保留原始基线前置条件。
 type streamView struct {
 	tx   *recordTransaction
 	base RunRecord
@@ -196,7 +196,7 @@ func (v streamView) putPending(sequence uint64, value *StreamMessageRecord) erro
 	if i < len(pending) && pending[i].Sequence == sequence {
 		expected = &pending[i]
 	}
-	// An append followed by removal cancels the new object entirely.
+	// 追加后又删除会完全抵消新对象。
 	if expected == nil && value == nil {
 		delete(v.tx.pending, pendingKey{v.key, sequence})
 		return nil

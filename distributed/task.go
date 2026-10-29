@@ -1,5 +1,5 @@
-// Package distributed defines experimental portable task and coordination contracts.
-// It contains no database backend and does not start worker loops.
+// distributed 包定义实验性的可移植任务与协调契约。
+// 不包含数据库后端，也不启动工作循环。
 package distributed
 
 import (
@@ -27,8 +27,8 @@ const (
 
 var (
 	ErrInvalid = errors.New("distributed: invalid task")
-	// ErrInvalidRecord is deterministic corruption observed by LoadOwned after
-	// authoritative ownership and clock checks. It remains an ErrInvalid.
+	// ErrInvalidRecord 表示 LoadOwned 在权威所有权和时钟检查后
+	// 观察到的确定性损坏。它仍属于 ErrInvalid。
 	ErrInvalidRecord    = fmt.Errorf("distributed: invalid owned record: %w", ErrInvalid)
 	ErrMismatch         = errors.New("distributed: incompatible task")
 	ErrDuplicate        = errors.New("distributed: duplicate registration")
@@ -46,8 +46,8 @@ type Identity struct {
 	RunID     string `json:"run_id"`
 }
 
-// Route is an exact capability, not a version range. ManifestDigest covers the
-// complete ordered graph-key manifest, including internal and stream keys.
+// Route 是精确能力，不是版本范围。ManifestDigest 覆盖
+// 完整有序的图键清单，包括内部键和流键。
 type Route struct {
 	TaskType        string `json:"task_type"`
 	BusinessVersion string `json:"business_version"`
@@ -67,11 +67,11 @@ type descriptor struct {
 	PayloadDigest string                 `json:"payload_digest"`
 }
 
-// Task owns a canonical immutable snapshot. Accessors return copies; zero is invalid.
-// Wire: encoding/json fixed-field-order structs, no whitespace, sorted manifest
-// by each binding's canonical JSON bytes, base64 payload, lowercase SHA-256 hex.
-// Unknown/duplicate fields, alternate whitespace/escaping and trailing data are
-// rejected by decode-and-byte-compare. Codec bytes themselves must be deterministic.
+// Task 持有规范化的不可变快照。访问器返回副本；零值无效。
+// 线格式：encoding/json 固定字段顺序结构体、无空白；清单按各绑定的
+// 规范 JSON 字节排序；载荷为 base64；SHA-256 为小写十六进制。
+// 通过解码后逐字节比较，拒绝未知或重复字段、不同空白或转义以及尾随数据。
+// 编解码器字节本身必须具有确定性。
 type Task struct {
 	wire   string
 	digest string
@@ -84,7 +84,7 @@ func fingerprint(s string) bool {
 	return e == nil && len(b) == 32 && hex.EncodeToString(b) == s
 }
 
-// NewTask prepares actual inputs without Run, store calls or business execution.
+// NewTask 准备实际输入，不调用 Run、存储或执行业务。
 func NewTask(ctx context.Context, id Identity, taskType, version string, g *pulse.Graph, in pulse.Inputs, codecs *durable.Codecs) (Task, error) {
 	if !text(id.Namespace) || !text(id.RunID) || !text(taskType) || !text(version) {
 		return Task{}, ErrInvalid
@@ -102,9 +102,9 @@ func NewTask(ctx context.Context, id Identity, taskType, version string, g *puls
 	return ParseTask(wire)
 }
 
-// ParseTask bounds and validates the envelope before any constructor or codec.
-// It checks structure and checksums, not local graph/codec compatibility: Registry
-// validates those before returning graph/inputs for an execution bridge.
+// ParseTask 在任何构造函数或编解码器运行前限制并验证封装。
+// 它检查结构和校验和，不检查本地图与编解码器兼容性：Registry
+// 在向执行桥返回图和输入前验证后者。
 func ParseTask(wire []byte) (Task, error) {
 	if len(wire) == 0 || len(wire) > MaxEnvelopeBytes || !utf8.Valid(wire) {
 		return Task{}, ErrInvalid
@@ -152,9 +152,9 @@ func (t Task) Payload() []byte                       { return t.data().Payload }
 func (t Task) InputsFingerprint() string             { return t.data().Inputs }
 func (t Task) CodecManifest() []durable.CodecBinding { return t.data().Manifest }
 
-// CompareSubmission requires digest AND exact canonical fields (wire) equality.
-// Backends must call this against the authoritative existing row under the identity
-// unique constraint, never replace it or reset status/checkpoints on duplication.
+// CompareSubmission 同时要求摘要和精确规范字段（线格式）相等。
+// 后端必须在身份唯一约束保护下，与已有权威行调用此函数比较；
+// 遇到重复项绝不替换该行或重置状态及检查点。
 func CompareSubmission(existing, submitted Task) (bool, error) {
 	a, e := ParseTask(existing.Bytes())
 	if e != nil {

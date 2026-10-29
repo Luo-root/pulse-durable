@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// A real wrapper exits while a living descendant keeps its stdout handle open.
+// 真实包装进程退出时，存活的后代进程仍保持其标准输出句柄打开。
 func TestInheritedStdoutEntry(t *testing.T) {
 	mode := os.Getenv("CM_STDOUT_PROBE")
 	if mode == "" {
@@ -24,7 +24,7 @@ func TestInheritedStdoutEntry(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestInheritedStdoutEntry$")
-	// Replace instead of duplicate environment keys.
+	// 替换环境变量键，而非添加重复键。
 	cmd.Env = nil
 	for _, kv := range os.Environ() {
 		if len(kv) < 16 || kv[:16] != "CM_STDOUT_PROBE=" {

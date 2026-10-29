@@ -29,11 +29,11 @@ func (p clockPhase) String() string {
 type clockDiagnostic struct {
 	Phase   clockPhase
 	DeltaUS int64
-	StepUS  int64 // Only owned_final has a second sample.
+	StepUS  int64 // 只有 owned_final 含第二次采样。
 }
 
-// Accept exactly the fixed schema-generated grammar, not arbitrary error text.
-// Canonical integers reject whitespace, plus signs, leading zeroes and overflow.
+// 仅接受模式生成的固定语法，不接受任意错误文本。
+// 规范整数拒绝空白、加号、前导零和溢出。
 func parseClockDiagnostic(detail string) (clockDiagnostic, bool) {
 	var result clockDiagnostic
 	if len(detail) > 160 || strings.ContainsAny(detail, "\r\n") {
@@ -91,7 +91,7 @@ func (c *Coordinator) observeClockDiagnostic(err error) {
 	if !ok {
 		return
 	}
-	// Diagnostics cannot turn a definite rejection into a panic or unknown commit.
+	// 诊断不能把明确拒绝转成 panic 或提交结果未知。
 	defer func() { _ = recover() }()
 	c.clockDiagnostic(value)
 }

@@ -13,9 +13,9 @@ import (
 
 var _ durable.Maintenance = (*Store)(nil)
 
-// All local maintenance operations acquire the same exclusive OS RunID lock as
-// business sessions. An active Session causes ErrBusy; local synthesis does not
-// run concurrently with business writes. No history or orphan is reclaimed.
+// 所有本地维护操作获取与业务会话相同的独占操作系统 RunID 锁。
+// 活跃 Session 导致 ErrBusy；本地合成不与
+// 业务写入并行。不回收任何历史或孤立对象。
 func (s *Store) maintenanceSession(ctx context.Context, id string) (*session, error) {
 	ss, err := s.Acquire(ctx, id)
 	if err != nil {
@@ -55,9 +55,9 @@ func (s *Store) LoadRevision(ctx context.Context, id string, revision uint64) (i
 	return image, err
 }
 
-// history authenticates the complete retained original chain against the current
-// head, including the current synthesized base anchor. It never selects files by
-// directory ordering, and missing retained components are corruption, not expiry.
+// history 对照当前头验证完整保留的原始链，
+// 包括当前合成基线锚点。它绝不按目录顺序选择文件，
+// 缺少保留组件属于损坏，而非过期。
 func (s *session) history(ctx context.Context, h manifest, target uint64) (image durable.RevisionImage, targetID string, suffixBytes uint64, err error) {
 	if target == 0 || target > h.HeadRevision {
 		return image, "", 0, durable.ErrConflict

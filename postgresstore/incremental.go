@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// These hard limits bound replay and the active suffix after snapshot synthesis.
-// They are not a promise of unlimited stream retention.
+// 这些硬限制约束重放及快照合成后的活跃后缀。
+// 不承诺无限流保留。
 const MaxChainBatches = 100000
 const MaxChainBytes = 256 << 20
 
@@ -25,8 +25,8 @@ const schemaDDL = `CREATE TABLE pulse_durable.snapshots (run_id text NOT NULL, r
 CREATE TABLE pulse_durable.heads (run_id text PRIMARY KEY NOT NULL, revision text NOT NULL, chain bytea NOT NULL, base_revision text NOT NULL, generation text NOT NULL);
 CREATE TABLE pulse_durable.batches (run_id text NOT NULL, revision text NOT NULL, parent_revision text NOT NULL, parent_chain bytea NOT NULL, digest bytea NOT NULL, chain bytea NOT NULL, wire bytea NOT NULL, PRIMARY KEY(run_id,revision));`
 
-// An existing schema is read-only until its exact layout and version pass. In
-// particular, a v1 database is never completed, upgraded or cleared by New.
+// 已有模式在精确布局及版本通过检查前仅可读。特别是，
+// New 绝不补全、升级或清空 v1 数据库。
 func validateSchemaV3(ctx context.Context, q txQuerier) error {
 	var count int
 	err := q.QueryRow(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pulse_durable' AND c.relkind IN ('r','p','v','m','f','S')`).Scan(&count)
@@ -122,7 +122,7 @@ func rollback(tx pgx.Tx) {
 	_ = tx.Rollback(ctx)
 }
 
-// rebuild uses one repeatable-read snapshot, including absence/orphan checks.
+// rebuild 使用单个可重复读快照，包括不存在及孤立对象检查。
 func (x *session) rebuild(ctx context.Context) error {
 	tx, err := x.conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -151,7 +151,7 @@ func (x *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if err := x.ready(ctx); err != nil {
 		return durable.RunRecord{}, err
 	}
-	// Explicit Load always reads authoritative storage, not a stale cached head.
+	// 显式 Load 始终读取权威存储，而非过期缓存头。
 	x.cache = nil
 	if err := x.rebuild(ctx); err != nil {
 		return durable.RunRecord{}, err
@@ -253,7 +253,7 @@ func (x *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 		x.invalidate()
 		return ack, durable.ErrConflict
 	}
-	// No proposal clone: after mutation all failures/panics invalidate the cache.
+	// 不克隆提案：修改后的所有失败或 panic 均使缓存失效。
 	completed := false
 	defer func() {
 		if !completed {
@@ -285,8 +285,8 @@ func (x *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	return ack, nil
 }
 
-// Usage reports retained chain cost for this session's last validated head.
-// It never loads storage or permits further writes on an invalidated session.
+// Usage 报告此会话最后验证的头所对应的保留链开销。
+// 它绝不加载存储，也不允许失效会话继续写入。
 type Usage struct{ Batches, WireBytes, BatchLimit, ByteLimit int }
 
 func (x *session) Usage() Usage {

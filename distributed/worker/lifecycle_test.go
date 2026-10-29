@@ -40,10 +40,10 @@ func TestFailedRuntimeOnlyUsesFailedFinish(t *testing.T) {
 	}
 }
 
-// This example only illustrates lifecycle configuration; it does not connect to
-// a database. A real host supplies a fenced Coordinator and a dedicated Renewer.
+// 此示例仅展示生命周期配置，不连接
+// 数据库。真实宿主提供受栅栏保护的 Coordinator 及专用 Renewer。
 func ExampleWorker_Pause() {
-	var w *Worker // obtained with New(Config{Coordinator: ..., Renewer: ...})
+	var w *Worker // 通过 New(Config{Coordinator: ..., Renewer: ...}) 获取
 	if w != nil {
 		w.Pause()
 		w.Resume()

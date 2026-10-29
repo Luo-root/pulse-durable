@@ -43,7 +43,7 @@ func TestRecordGrowthHistorySurvivesDrainAndResume(t *testing.T) {
 			t.Fatalf("stream did not drain: %+v", stream)
 		}
 	}
-	// A new Store and Runtime must read the file, rather than a MemoryStore copy.
+	// 新 Store 和 Runtime 必须读取文件，而非 MemoryStore 副本。
 	reopened, err := filestore.New(store.dir)
 	if err != nil {
 		t.Fatal(err)
@@ -67,8 +67,8 @@ func TestRecordGrowthHistorySurvivesDrainAndResume(t *testing.T) {
 	t.Logf("pending=0 confirmed=%d revision=%d resumed-revision=%d initial-saves=%d initial-written-B=%d", count, before.Revision, after.Revision, store.saves, store.bytes)
 }
 
-// Each fixture starts with a real, completed eight-message run. Larger history
-// and backlog records are constructed for component costs, not resumed as runs.
+// 每份夹具从真实完成的八消息运行开始。更大的历史
+// 和积压记录用于测量组件开销，不作为运行恢复。
 func BenchmarkRecordGrowth(b *testing.B) {
 	for _, payloadBytes := range []int{32, 4096} {
 		g, _, _ := growthGraph(b, 8, payloadBytes)
@@ -162,8 +162,8 @@ func BenchmarkRecordGrowth(b *testing.B) {
 							b.Fatal(err)
 						}
 						b.StopTimer()
-						// Count actual newly persisted batch envelope plus the replaced head. The
-						// head's old bytes were overwritten, so directory size delta is insufficient.
+						// 统计实际新持久化批次封装及被替换头的大小。
+						// 头的旧字节已被覆盖，因此目录大小差值不足以衡量。
 						wire, err := durable.MarshalChangeBatch(batch)
 						if err != nil {
 							b.Fatal(err)
@@ -200,10 +200,10 @@ func BenchmarkRecordGrowth(b *testing.B) {
 	}
 }
 
-// Keep real runs bounded: 1024-message costs are component fixtures above.
-// Each successful Apply counts its immutable envelope and replaced head bytes;
-// initialization counts its new snapshot and head. Measurement overhead is
-// included in this instrumented pipeline benchmark only (not FileApply).
+// 限制真实运行规模：1024 消息的开销使用上方组件夹具测量。
+// 每次成功 Apply 统计其不可变封装及被替换头的字节数；
+// 初始化统计新快照和头。测量开销仅计入此插桩流水线
+// 基准测试（不计入 FileApply）。
 func BenchmarkRecordGrowthPipeline(b *testing.B) {
 	for _, count := range []int{8, 128} {
 		for _, payloadBytes := range []int{32, 4096} {
@@ -397,9 +397,9 @@ func growthJSON(tb testing.TB, record durable.RunRecord) []byte {
 	return data
 }
 
-// Runtime serializes Save calls for this one-run-at-a-time measurement.
-// Count only successful saves, reading the real file size after replacement.
-// These are logical JSON bytes, not device writes, reads, or filesystem overhead.
+// Runtime 为此一次仅测一个运行的场景串行化 Save 调用。
+// 仅统计成功保存，并在替换后读取真实文件大小。
+// 这些是逻辑 JSON 字节，而非设备写入、读取或文件系统开销。
 type growthCountingStore struct {
 	durable.Store
 	dir   string
@@ -482,8 +482,8 @@ func growthDiskBytes(dir string) (int64, error) {
 	return total, nil
 }
 
-// growthCommitBytes counts both files written by one successful Apply, not
-// cumulative directory size (which omits the replaced head's write cost).
+// growthCommitBytes 统计一次成功 Apply 写入的两个文件，
+// 而非累积目录大小（后者遗漏被替换头的写入开销）。
 func growthCommitBytes(dir, runID string, revision uint64) (int64, error) {
 	sum := sha256.Sum256([]byte(runID))
 	base := hex.EncodeToString(sum[:])

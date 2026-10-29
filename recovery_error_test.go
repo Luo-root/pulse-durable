@@ -321,7 +321,7 @@ func TestRuntimeStoreOperationsAreCheckpointFailures(t *testing.T) {
 				case "panic-nil":
 					store.panicNil, wantCause = true, nil
 				case "panic-error":
-					store.panicValue, wantCause = cause, nil // Store panics retain no business cause.
+					store.panicValue, wantCause = cause, nil // Store panic 不保留业务原因。
 				}
 				g := recoveryGraph(t, "store-failure")
 				var body atomic.Int32
@@ -511,8 +511,8 @@ func (e *inspectionPanicError) Is(error) bool { e.inspect("Is"); return false }
 func (e *inspectionPanicError) As(any) bool   { e.inspect("As"); return false }
 func (e *inspectionPanicError) Unwrap() error { e.inspect("Unwrap"); return nil }
 
-// A hostile diagnostic object must fail one node, not terminate the host.
-// Is/As/Unwrap reenter inspection synchronously; no recursive Wait is involved.
+// 恶意诊断对象应使一个节点失败，而非终止宿主。
+// Is/As/Unwrap 同步重入检查，不涉及递归 Wait。
 func TestRuntimeErrorInspectionPanicIsContained(t *testing.T) {
 	if method := os.Getenv("PULSE_DURABLE_INSPECT_METHOD"); method != "" {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)

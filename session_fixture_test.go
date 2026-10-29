@@ -2,8 +2,8 @@ package durable
 
 import "fmt"
 
-// GrowthSeedBatchesForTest prepares component history in bounded 16-operation
-// batches. Setup may inspect all history; normal benchmark commits never do.
+// GrowthSeedBatchesForTest 以每批最多 16 个操作准备组件历史。
+// 准备阶段可检查全部历史；普通基准提交绝不如此。
 func GrowthSeedBatchesForTest(base, target RunRecord) ([]ChangeBatch, error) {
 	full := GrowthBatchForTest(base, target).tx
 	for id, m := range target.Managed {
@@ -45,7 +45,7 @@ func GrowthSeedBatchesForTest(base, target RunRecord) ([]ChangeBatch, error) {
 		}
 		return nil
 	}
-	// Dependency headers precede their entries even across batch boundaries.
+	// 依赖头先于其条目，即使跨批次也如此。
 	for k, v := range full.scopes {
 		if err := push(func() {
 			if tx.scopes == nil {
@@ -132,8 +132,8 @@ func GrowthSeedBatchesForTest(base, target RunRecord) ([]ChangeBatch, error) {
 	return batches, nil
 }
 
-// GrowthUpdateForTest changes exactly one existing message retry budget. It
-// constructs one typed operation without copying or traversing background data.
+// GrowthUpdateForTest 精确修改一条已有消息的重试预算。它
+// 构造一个类型化操作，不复制或遍历背景数据。
 func GrowthUpdateForTest(base RunRecord, id string) (ChangeBatch, error) {
 	old, ok := base.Messages[id]
 	if !ok {
@@ -148,8 +148,8 @@ func GrowthUpdateForTest(base RunRecord, id string) (ChangeBatch, error) {
 	return ChangeBatch{changeHeader(base), tx}, nil
 }
 
-// OverrideAttemptForTest reproduces historical partial checkpoints through a
-// real Apply. Exported only in the test binary for external-package fixtures.
+// OverrideAttemptForTest 通过真实 Apply 复现历史部分检查点。
+// 仅在测试二进制中导出，供外部包夹具使用。
 func OverrideAttemptForTest(batch ChangeBatch, id string, value AttemptRecord) ChangeBatch {
 	batch.tx = batch.tx.copy()
 	op := batch.tx.attempts[id]
@@ -158,8 +158,8 @@ func OverrideAttemptForTest(batch ChangeBatch, id string, value AttemptRecord) C
 	return batch
 }
 
-// GrowthBatchForTest stages retained history as typed absent operations for
-// component benchmarks; it is not a public import/full-save API.
+// GrowthBatchForTest 将保留历史暂存为类型化不存在操作，
+// 用于组件基准测试；它不是公开导入或完整保存 API。
 func GrowthBatchForTest(base, target RunRecord) ChangeBatch {
 	tx := newRecordTransaction(base.Revision)
 	for id, a := range target.Attempts {
@@ -216,8 +216,8 @@ func GrowthBatchForTest(base, target RunRecord) ChangeBatch {
 	return ChangeBatch{changeHeader(base), tx.copy()}
 }
 
-// replaceMemoryFixture deliberately injects an authoritative test fixture. It is
-// not a Session write path and must never be used for fault/commit assertions.
+// replaceMemoryFixture 有意注入权威测试夹具。它不是
+// Session 写入路径，绝不能用于故障或提交断言。
 func replaceMemoryFixture(session Session, r RunRecord) {
 	s := session.(*memorySession)
 	s.store.mu.Lock()
@@ -226,8 +226,8 @@ func replaceMemoryFixture(session Session, r RunRecord) {
 	s.revision, s.chain, s.loaded = r.Revision, s.store.chains[s.runID], true
 }
 
-// installMemoryFixtureLocked starts explicitly at the supplied fixture revision;
-// it does not invent revisions preceding that checkpoint. Caller holds store.mu.
+// installMemoryFixtureLocked 显式从给定夹具修订号开始；
+// 不虚构该检查点之前的修订。调用方持有 store.mu。
 func installMemoryFixtureLocked(store *MemoryStore, r RunRecord) {
 	chain := SeedChain(memorySeedDigest(r))
 	if store.records == nil {

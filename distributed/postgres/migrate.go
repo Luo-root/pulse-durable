@@ -17,23 +17,23 @@ var schemaSQL string
 //go:embed maintenance.sql
 var maintenanceSQL string
 
-// Grant authorizes an existing database role for exactly one namespace. Rights
-// are query, submit, worker, cancel, maintain, retain, replay. Maintain alone
-// authorizes physical synthesis; retain/replay are reserved and grant no API yet.
-// Grant query as well for ordinary worker recovery queries.
-// The caller must provision separate non-owner, non-superuser login roles.
+// Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
+// 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
+// 授权物理合成；retain/replay 为预留权限，尚不授予任何 API。
+// 普通工作进程的恢复查询还需授予 query。
+// 调用方必须配置独立的非所有者、非超级用户登录角色。
 type Grant struct {
 	Role        string
 	Namespace   string
 	Permissions []string
 }
 
-// Migrate installs a new physical schema or verifies the exact installed one.
-// Older schemas are rejected without changing their data or DDL. Logical records
-// remain format 2; physical schema version 6 is not a logical record upgrade.
-// Versions 1–5 are rejected; this release never rewrites installed schemas.
-// This explicit administrator entry point may grant API execution and namespace
-// permissions, but never grants table access. Run using dedicated owner credentials.
+// Migrate 安装新的物理模式，或精确验证已安装的模式。
+// 拒绝旧模式，不修改其数据或 DDL。逻辑记录
+// 仍为格式 2；物理模式版本 6 并非逻辑记录升级。
+// 拒绝版本 1–5；此版本绝不重写已安装模式。
+// 此显式管理员入口可授予 API 执行与命名空间
+// 权限，但绝不授予表访问权限。须使用专用所有者凭据运行。
 func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 	if ctx == nil {
 		return errors.New("distributed postgres: nil context")
@@ -121,8 +121,8 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			}
 		}
 	}
-	// Grants change ACLs but not the schema signature, which intentionally excludes
-	// role-specific ACL contents. PUBLIC and effective worker privileges are checked.
+	// 授权改变 ACL，但不改变模式签名；签名有意排除
+	// 角色特定的 ACL 内容。另行检查 PUBLIC 及工作进程有效权限。
 	if e = tx.Commit(ctx); e != nil {
 		return scrub(e, true)
 	}
@@ -133,9 +133,9 @@ type querier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-// The signature covers exact columns, defaults, constraints, indexes, functions
-// (including SECURITY DEFINER and fixed search_path), triggers, policies, and
-// object counts. ACL checks are separate so explicit role grants remain possible.
+// 签名覆盖精确的列、默认值、约束、索引、函数
+// （包括 SECURITY DEFINER 及固定 search_path）、触发器、策略和
+// 对象数量。ACL 单独检查，以允许显式角色授权。
 const catalogSQL = `SELECT coalesce(string_agg(x,E'\n' ORDER BY x),'') FROM (
  SELECT 'relation:'||c.relname||':'||c.relkind::text||':'||c.relrowsecurity::text||':'||c.relforcerowsecurity::text AS x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pulse_durable_distributed'
  UNION ALL SELECT 'column:'||c.relname||':'||a.attname||':'||a.attnum||':'||format_type(a.atttypid,a.atttypmod)||':'||a.attnotnull||':'||a.attidentity::text||':'||a.attgenerated::text||':'||coalesce(pg_get_expr(ad.adbin,ad.adrelid),'') FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef ad ON ad.adrelid=c.oid AND ad.adnum=a.attnum WHERE n.nspname='pulse_durable_distributed' AND a.attnum>0 AND NOT a.attisdropped
@@ -164,8 +164,8 @@ func validate(ctx context.Context, q querier, worker bool) error {
 	var n, v int
 	var sig string
 	if e := q.QueryRow(ctx, "SELECT count(*),coalesce(min(version),0),coalesce(min(signature),'') FROM pulse_durable_distributed.meta").Scan(&n, &v, &sig); e != nil {
-		// Worker roles deliberately cannot SELECT meta. Use a definer validation
-		// function rather than granting even incidental table reads.
+		// 工作进程角色有意不能 SELECT meta。使用定义者身份的验证
+		// 函数，避免授予哪怕附带的表读取权限。
 		if worker {
 			return validateWorker(ctx, q)
 		}
@@ -187,9 +187,9 @@ func validate(ctx context.Context, q querier, worker bool) error {
 	return nil
 }
 func validateWorker(ctx context.Context, q querier) error {
-	// An old self-consistent schema can return true from its own old checker.
-	// pg_proc is readable without granting workers SELECT on meta. Pin the
-	// checker body before trusting it to validate the catalog and privileges.
+	// 自洽的旧模式可能由其自身旧检查器返回 true。
+	// 无须授予工作进程对 meta 的 SELECT 即可读取 pg_proc。先固定
+	// 检查器函数体，再信任其对目录及权限的验证。
 	var current bool
 	body := strings.Split(checkSQL, "$check$")[1]
 	if e := q.QueryRow(ctx, `SELECT prosrc=$1 FROM pg_proc WHERE oid='pulse_durable_distributed.check_schema()'::regprocedure`, body).Scan(&current); e != nil {

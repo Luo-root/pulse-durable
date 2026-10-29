@@ -108,7 +108,7 @@ func TestCanonicalCorruptionAndLimits(t *testing.T) {
 			d := task.data()
 			mutate(&d)
 			b, _ := json.Marshal(d)
-			if name == "utf8" { // encoding/json replaces invalid UTF-8: reject at submission before JSON.
+			if name == "utf8" { // encoding/json 会替换非法 UTF-8：提交时须在 JSON 编码前拒绝。
 				a, in := fixture(t)
 				if _, err := NewTask(context.Background(), d.Identity, "test", "v1", a.Graph, in, a.Codecs); err == nil {
 					t.Fatal("invalid UTF-8 accepted")
@@ -217,9 +217,9 @@ func TestPullCapacity(t *testing.T) {
 	}
 }
 
-// Real fresh OS process decodes the base64 wire argument, assembles independent
-// typed keys/codecs and recomputes identical actual inputs. No database/worker is
-// involved, and this is NOT cross-machine or persistence acceptance.
+// 全新的真实操作系统进程解码 base64 线格式参数，独立组装
+// 类型化键与编解码器，并重新计算出完全相同的实际输入。不涉及数据库
+// 或工作进程；这不是跨机器或持久化验收。
 func TestFreshProcessDecode(t *testing.T) {
 	if os.Getenv("PULSE_DISTRIBUTED_DECODE_CHILD") == "1" {
 		var wire []byte

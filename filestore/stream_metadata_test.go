@@ -35,8 +35,8 @@ func TestIncrementalMetadataRejectsEveryStringAndMapKey(t *testing.T) {
 			}
 		})
 	}
-	// Runtime backend publication is covered by TestRuntimeRejectsInvalidFileMetadata;
-	// completed records cannot be imported through Initialize.
+	// Runtime 后端发布由 TestRuntimeRejectsInvalidFileMetadata 覆盖；
+	// 已完成记录不能通过 Initialize 导入。
 }
 
 type metadataMutation struct {

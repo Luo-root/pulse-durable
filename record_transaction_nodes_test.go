@@ -29,7 +29,7 @@ func TestRecordTransactionScopeAndNodeBatch(t *testing.T) {
 		if !nodeFirst {
 			stageNode()
 		}
-		// A header cannot retain the caller's map, even when it was empty.
+		// 头不能保留调用方映射，即使它原本为空。
 		header.Nodes["injected"] = node
 		if err := tx.createScope("child", ScopeRecord{Graph: "child", Path: "mount", Inputs: "hash", Bindings: true}); err != nil {
 			t.Fatal(err)
@@ -145,7 +145,7 @@ func TestRecordTransactionNodePreconditionsAreExact(t *testing.T) {
 			if err != nil && !errors.Is(err, ErrConflict) {
 				t.Fatal(err)
 			}
-			// An unrelated valid op must never land when any precondition fails.
+			// 任何前置条件失败时，无关的有效操作也绝不能落地。
 			_ = tx.putAttempt("new", nil, AttemptRecord{})
 			before := cloneRecord(s.record)
 			if err := s.commitRecordTransaction(t.Context(), tx); !errors.Is(err, ErrConflict) {
@@ -235,8 +235,8 @@ func TestRecordTransactionScopeNodeSaveFailure(t *testing.T) {
 	}
 }
 
-// Use real Runtime execution and retained Save arguments to check every
-// checkpoint, not manually fabricated graph semantics.
+// 使用真实 Runtime 执行及保留的 Save 参数检查每个
+// 检查点，而非手工捏造图语义。
 func TestRecordTransactionRuntimeNodeConfirmationAtomic(t *testing.T) {
 	for _, mode := range []string{"success", "error", "panic"} {
 		t.Run(mode, func(t *testing.T) {

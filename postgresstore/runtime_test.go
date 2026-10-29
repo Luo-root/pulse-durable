@@ -47,7 +47,7 @@ func (c *captureSession) Apply(ctx context.Context, b durable.ChangeBatch) (dura
 	return a, e
 }
 
-// Real Runtime produces all identities, headers, ACKs, and two-output batches.
+// 真实 Runtime 生成所有身份、头、ACK 及双输出批次。
 func atomicFixture(t *testing.T) (durable.RunRecord, []durable.ChangeBatch, int) {
 	t.Helper()
 	g, e := pulse.New("atomic", "")

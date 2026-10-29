@@ -34,8 +34,8 @@ func (s *session) ready(ctx context.Context) error {
 	return checkContext(ctx)
 }
 
-// rebuild reads every physical component in one SQLite transaction. No cache is
-// published until both integrity checks and the read transaction have succeeded.
+// rebuild 在一个 SQLite 事务中读取所有物理组件。完整性检查
+// 和读取事务均成功前，不发布任何缓存。
 func (s *session) rebuild(ctx context.Context) error {
 	tx, err := s.store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -71,7 +71,7 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 			return durable.RunRecord{}, err
 		}
 	}
-	// Only an explicit Load makes a full isolated copy, never ordinary Apply.
+	// 只有显式 Load 创建完整隔离副本，普通 Apply 绝不如此。
 	return durable.CloneRecord(*s.cache), nil
 }
 
@@ -166,9 +166,9 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 		s.cache = nil
 		return ack, durable.ErrConflict
 	}
-	// ApplyTo checks every typed precondition before changing the private projection.
-	// Once mutated, any failure (including panic) invalidates this session. No
-	// history clone or rollback projection is needed and no tentative data escapes.
+	// ApplyTo 在修改私有投影前检查每个类型化前置条件。
+	// 一旦修改，任何失败（包括 panic）均使此会话失效。无须
+	// 历史克隆或回滚投影，且不泄露任何暂定数据。
 	mutated := false
 	defer func() {
 		if p := recover(); p != nil {

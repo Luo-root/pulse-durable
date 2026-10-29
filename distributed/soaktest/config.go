@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Config has no credentials. Separate explicit DSN environment variable names are mandatory.
+// Config 不含凭据。必须显式提供不同的 DSN 环境变量名。
 type Config struct {
 	Namespace      string        `json:"namespace"`
 	Workers        int           `json:"workers"`
@@ -27,7 +27,7 @@ type Config struct {
 
 const defaultAuditTimeout = 10 * time.Minute
 
-// Zero preserves compatibility with callers constructing Config directly.
+// 零值保持与直接构造 Config 的调用方兼容。
 func (c Config) auditTimeout() time.Duration {
 	if c.AuditTimeout == 0 {
 		return defaultAuditTimeout
@@ -60,8 +60,8 @@ func (c Config) Validate() error {
 		if h != "localhost" && h != "127.0.0.1" && h != "::1" && h != "/var/run/postgresql" {
 			return errors.New("soak refuses non-local database host")
 		}
-		// pgx expands multi-host and TLS fallback combinations. Every candidate
-		// must target the exact same endpoint, not merely another local server.
+		// pgx 会展开多主机和 TLS 回退组合。每个候选项
+		// 必须指向完全相同的端点，而非仅仅另一个本地服务器。
 		if cfg.TLSConfig != nil && cfg.TLSConfig.ServerName != "" && cfg.TLSConfig.ServerName != h {
 			return errors.New("TLS server name does not match local endpoint")
 		}
