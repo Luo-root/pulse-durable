@@ -1,12 +1,13 @@
 CREATE SCHEMA pulse_durable_distributed;
 REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
-CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=3), signature text NOT NULL);
-CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel')), PRIMARY KEY(role_name,namespace,permission));
+CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=5), signature text NOT NULL);
+CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel','maintain','retain','replay')), PRIMARY KEY(role_name,namespace,permission));
 CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','blocked','succeeded','failed','canceled')),
  epoch bigint NOT NULL DEFAULT 0 CHECK(epoch>=0), revision numeric(20,0) NOT NULL DEFAULT 0 CHECK(revision>=0 AND revision<=18446744073709551615),
- record bytea, snapshot_digest text, head_chain text, root_scope text, log_bytes bigint NOT NULL DEFAULT 0 CHECK(log_bytes BETWEEN 0 AND 268435456), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ record bytea, snapshot_digest text, head_chain text, root_scope text, active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ representation_generation bigint NOT NULL DEFAULT 1 CHECK(representation_generation>0), active_snapshot bigint, maintenance_watermark timestamptz,
  last_mutation_id text, last_mutation_digest text, reason text NOT NULL DEFAULT '',
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), finished_at timestamptz,
  PRIMARY KEY(namespace,run_id),
@@ -16,6 +17,12 @@ CREATE TABLE pulse_durable_distributed.runs(
  CHECK(octet_length(task)<=8388608 AND octet_length(record)<=16777216)
 );
 CREATE TABLE pulse_durable_distributed.batches(namespace text NOT NULL, run_id text NOT NULL, revision numeric(20,0) NOT NULL, wire bytea NOT NULL CHECK(octet_length(wire) BETWEEN 1 AND 16777216), digest text NOT NULL, parent_chain text NOT NULL, next_chain text NOT NULL, PRIMARY KEY(namespace,run_id,revision), FOREIGN KEY(namespace,run_id) REFERENCES pulse_durable_distributed.runs(namespace,run_id));
+-- Immutable synthesized bases; the original runs.record and all batches remain retained.
+CREATE TABLE pulse_durable_distributed.storage_snapshots(namespace text NOT NULL, run_id text NOT NULL, generation bigint NOT NULL CHECK(generation>1), revision numeric(20,0) NOT NULL CHECK(revision BETWEEN 1 AND 18446744073709551615), chain text NOT NULL CHECK(chain ~ '^[0-9a-f]{64}$'), digest text NOT NULL CHECK(digest ~ '^[0-9a-f]{64}$'), record bytea NOT NULL CHECK(octet_length(record) BETWEEN 1 AND 16777216), PRIMARY KEY(namespace,run_id,generation), FOREIGN KEY(namespace,run_id) REFERENCES pulse_durable_distributed.runs(namespace,run_id));
+ALTER TABLE pulse_durable_distributed.runs ADD FOREIGN KEY(namespace,run_id,active_snapshot) REFERENCES pulse_durable_distributed.storage_snapshots(namespace,run_id,generation);
+CREATE TABLE pulse_durable_distributed.maintenance_guards(namespace text NOT NULL, run_id text NOT NULL, mutation_id text NOT NULL, digest text NOT NULL, operation text NOT NULL CHECK(operation='compact_storage'), PRIMARY KEY(namespace,run_id,mutation_id), FOREIGN KEY(namespace,run_id) REFERENCES pulse_durable_distributed.runs(namespace,run_id));
+CREATE TABLE pulse_durable_distributed.build_pins(namespace text NOT NULL, run_id text NOT NULL, mutation_id text NOT NULL, holder name NOT NULL, generation bigint NOT NULL, source_revision numeric(20,0) NOT NULL, source_chain text NOT NULL, through_revision numeric(20,0) NOT NULL, through_chain text NOT NULL, expires_at timestamptz NOT NULL, closed boolean NOT NULL DEFAULT false, PRIMARY KEY(namespace,run_id,mutation_id), FOREIGN KEY(namespace,run_id,mutation_id) REFERENCES pulse_durable_distributed.maintenance_guards(namespace,run_id,mutation_id));
+CREATE TABLE pulse_durable_distributed.maintenance_receipts(namespace text NOT NULL, run_id text NOT NULL, mutation_id text NOT NULL, result jsonb NOT NULL, PRIMARY KEY(namespace,run_id,mutation_id), FOREIGN KEY(namespace,run_id,mutation_id) REFERENCES pulse_durable_distributed.maintenance_guards(namespace,run_id,mutation_id));
 CREATE INDEX queued_route ON pulse_durable_distributed.runs(namespace,route,run_id) WHERE status='queued';
 CREATE INDEX expired_runs ON pulse_durable_distributed.runs(namespace,lease_until,run_id) WHERE status='running';
 CREATE TABLE pulse_durable_distributed.leases(namespace text NOT NULL, lease_id text NOT NULL, worker_id text NOT NULL, boot_id text NOT NULL, run_id text, epoch bigint, closed boolean NOT NULL DEFAULT true, claimed_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(namespace,lease_id), CHECK((run_id IS NULL AND epoch IS NULL AND closed) OR (run_id IS NOT NULL AND epoch>0)));
@@ -32,7 +39,8 @@ DECLARE
  first_sample timestamptz; needed text; b bytea; d jsonb; j jsonb; rev numeric; result jsonb:='[]'::jsonb; slot integer:=0; ttl bigint; lid text; changed boolean:=false;
 BEGIN
  IF NOT check_schema() THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unsafe schema or credentials'; END IF;
- needed:=CASE WHEN op IN ('get','list','find','receipt') THEN 'query' WHEN op='resolve' THEN 'worker' WHEN op='submit' THEN 'submit' WHEN op='cancel' THEN 'cancel' ELSE 'worker' END;
+ needed:=CASE WHEN op IN ('get','list','find','receipt') THEN 'query' WHEN op IN ('resolve','claim','reject','load','renew','initialize','apply','finish','release','block') THEN 'worker' WHEN op='submit' THEN 'submit' WHEN op='cancel' THEN 'cancel' END;
+ IF needed IS NULL THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unknown operation'; END IF;
  IF ns IS NULL OR octet_length(ns) NOT BETWEEN 1 AND 256 OR NOT EXISTS(SELECT 1 FROM pulse_durable_distributed.access x WHERE x.namespace=ns AND x.permission=needed AND pg_has_role(session_user,x.role_name,'MEMBER')) THEN
   RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='distributed access denied';
  END IF;
@@ -137,7 +145,13 @@ BEGIN
   IF r.status<>'running' OR r.epoch IS DISTINCT FROM (a->>'epoch')::bigint OR r.lease_id IS DISTINCT FROM a->>'lease_id' OR r.worker_id IS DISTINCT FROM a->>'worker_id' OR r.boot_id IS DISTINCT FROM a->>'boot_id' OR r.lease_until<=t THEN RAISE EXCEPTION USING ERRCODE='PD004',MESSAGE='lease lost'; END IF;
  END IF;
  IF op='load' THEN
-  RETURN snapshot(r)||jsonb_build_object('snapshot_digest',r.snapshot_digest,'head_chain',r.head_chain,'batches',coalesce((SELECT jsonb_agg(jsonb_build_object('revision',revision::text,'wire',encode(wire,'base64'),'digest',digest,'parent_chain',parent_chain,'next_chain',next_chain) ORDER BY revision) FROM batches WHERE namespace=ns AND run_id=rid),'[]'::jsonb));
+  -- Ownership has already been checked. An uninitialized run has no history
+  -- path yet; missing integrity metadata on an existing run is corruption,
+  -- not a requested-revision conflict. Let the verified client classify it.
+  IF r.revision=0 OR r.head_chain IS NULL OR r.snapshot_digest IS NULL THEN
+   RETURN snapshot(r);
+  END IF;
+  RETURN storage_image(r,r.revision,true);
  END IF;
  IF op='renew' THEN
   ttl:=(a->>'ttl_us')::bigint;
@@ -156,7 +170,8 @@ BEGIN
   b:=decode(a->>'wire','base64');
   IF rev=0 OR rev=18446744073709551615 OR r.head_chain IS DISTINCT FROM a->>'parent_chain' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='head conflict'; END IF;
   IF b IS NULL OR octet_length(b) NOT BETWEEN 1 AND 16777216 OR encode(sha256(b),'hex') IS DISTINCT FROM a->>'batch_digest' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid batch'; END IF;
-  IF r.log_bytes+octet_length(b)>268435456 OR rev>=100000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='checkpoint log budget exhausted'; END IF;
+  -- Only batches after the active base consume budget; retained history is unbounded.
+  IF r.active_log_bytes+octet_length(b)>268435456 OR r.active_log_count>=100000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='checkpoint log budget exhausted'; END IF;
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid batch JSON'; END IF;
   j:=convert_from(b,'UTF8')::jsonb; d:=convert_from(r.task,'UTF8')::jsonb;
   IF j->>'version' IS DISTINCT FROM '1' OR j->'header'->>'batch_format' IS DISTINCT FROM '1' OR j->'header'->>'logical_format' IS DISTINCT FROM '2'
@@ -164,7 +179,7 @@ BEGIN
    OR j->'header'->>'expected_revision' IS DISTINCT FROM rev::text OR j->'header'->>'revision' IS DISTINCT FROM (rev+1)::text
    OR a->>'next_chain' IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(r.head_chain,'hex')||sha256(b)||decode(lpad(to_hex(trunc((rev+1)/4294967296)::bigint),8,'0')||lpad(to_hex(mod(rev+1,4294967296)::bigint),8,'0'),'hex')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='batch identity'; END IF;
   INSERT INTO batches(namespace,run_id,revision,wire,digest,parent_chain,next_chain) VALUES(ns,rid,rev+1,b,a->>'batch_digest',r.head_chain,a->>'next_chain');
-  UPDATE runs SET revision=rev+1,head_chain=a->>'next_chain',log_bytes=log_bytes+octet_length(b) WHERE namespace=ns AND run_id=rid;
+  UPDATE runs SET revision=rev+1,head_chain=a->>'next_chain',active_log_bytes=active_log_bytes+octet_length(b),active_log_count=active_log_count+1 WHERE namespace=ns AND run_id=rid;
  ELSIF op='initialize' THEN
   IF rev<>0 OR r.record IS NOT NULL THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='already initialized'; END IF;
   b:=decode(a->>'record','base64');
@@ -202,4 +217,4 @@ BEGIN
  RETURN snapshot(r);
 END $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pulse_durable_distributed FROM PUBLIC;
-INSERT INTO pulse_durable_distributed.meta VALUES(3,'');
+INSERT INTO pulse_durable_distributed.meta VALUES(5,'');

@@ -58,11 +58,15 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	if err != nil {
 		return nil, err
 	}
-	// Never remove legacy data or adopt unreferenced immutable files.
-	if err = removeStaleTemporaries(s.dir, base); err != nil {
-		return nil, errors.Join(err, lock.Close())
+	ss := &session{dir: s.dir, path: filepath.Join(s.dir, base+".head"), runID: runID, lock: lock}
+	// Never mutate unsupported/corrupt layouts, even by cleaning temporaries.
+	// Load/Initialize report the format error without adopting immutable orphans.
+	if _, headErr := ss.readHead(); headErr == nil || errors.Is(headErr, durable.ErrNotFound) {
+		if err = removeStaleTemporaries(s.dir, base); err != nil {
+			return nil, errors.Join(err, lock.Close())
+		}
 	}
-	return &session{dir: s.dir, path: filepath.Join(s.dir, base+".head"), runID: runID, lock: lock}, nil
+	return ss, nil
 }
 func checkContext(ctx context.Context) error {
 	if ctx == nil {
@@ -110,6 +114,11 @@ const maxChainBytes uint64 = 256 << 20
 
 type manifest struct {
 	Format         int      `json:"format"`
+	Generation     uint64   `json:"generation"`
+	BaseID         string   `json:"base_id"`
+	OriginID       string   `json:"origin_id"`
+	OriginDigest   [32]byte `json:"origin_digest"`
+	HistoryBytes   uint64   `json:"history_bytes"`
 	BaseRevision   uint64   `json:"base_revision"`
 	SnapshotDigest [32]byte `json:"snapshot_digest"`
 	ChainAnchor    [32]byte `json:"chain_anchor"`
@@ -135,6 +144,7 @@ type session struct {
 	closeErr         error
 	poisoned         bool
 	loaded           bool
+	publicationSync  func(string) error // nil uses the platform directory sync
 	head             manifest
 	record           durable.RunRecord
 }
@@ -175,10 +185,10 @@ func (s *session) readHead() (manifest, error) {
 	if err = json.Unmarshal(data, &h); err != nil {
 		return h, err
 	}
-	if !validID(h.SnapshotID) || (h.HeadRevision > 1 && !validID(h.HeadID)) || (h.HeadRevision == 1 && h.HeadID != "") || h.Format != 1 || h.BaseRevision != 1 || h.HeadRevision < h.BaseRevision || h.HeadRevision-h.BaseRevision > maxChainBatches || h.BatchBytes > maxChainBytes {
+	if !validID(h.SnapshotID) || !validID(h.OriginID) || h.Generation == 0 || (h.BaseRevision > 1 && !validID(h.BaseID)) || (h.BaseRevision == 1 && h.BaseID != "") || (h.HeadRevision > 1 && !validID(h.HeadID)) || (h.HeadRevision == 1 && h.HeadID != "") || h.Format != 2 || h.BaseRevision == 0 || h.HeadRevision < h.BaseRevision || h.HeadRevision-h.BaseRevision > maxChainBatches || h.BatchBytes > maxChainBytes || h.HistoryBytes < h.BatchBytes {
 		return h, errors.New("filestore: invalid or unsupported manifest")
 	}
-	if h.ChainAnchor != durable.SeedChain(h.SnapshotDigest) {
+	if h.BaseRevision == 1 && (h.ChainAnchor != durable.SeedChain(h.SnapshotDigest) || h.SnapshotID != h.OriginID || h.SnapshotDigest != h.OriginDigest) {
 		return h, errors.New("filestore: invalid snapshot chain anchor")
 	}
 	return h, nil
@@ -214,15 +224,17 @@ func (s *session) load() (durable.RunRecord, error) {
 	if sha256.Sum256(data) != h.SnapshotDigest {
 		return durable.RunRecord{}, errors.New("filestore: snapshot digest mismatch")
 	}
-	r, err := recordio.Decode(data)
+	r, err := recordio.DecodeSnapshot(data)
 	if err != nil {
 		return r, err
 	}
 	if r.RunID != s.runID || r.Revision != h.BaseRevision || r.Format != durable.RecordFormat {
 		return r, errors.New("filestore: snapshot identity mismatch")
 	}
-	if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
-		return r, err
+	if h.BaseRevision == 1 {
+		if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
+			return r, err
+		}
 	}
 	// Follow authenticated parent pointers backwards, then replay consecutively.
 	batches := make([]durable.ChangeBatch, int(h.HeadRevision-h.BaseRevision))
@@ -268,7 +280,7 @@ func (s *session) load() (durable.RunRecord, error) {
 		chain = e.ParentChain
 		id = e.ParentID
 	}
-	if id != "" || chain != h.ChainAnchor || total != h.BatchBytes {
+	if id != h.BaseID || chain != h.ChainAnchor || total != h.BatchBytes {
 		return r, errors.New("filestore: incomplete chain")
 	}
 	for _, b := range batches {
@@ -314,12 +326,12 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if err := durable.ValidateInitialRecord(r, s.runID); err != nil {
 		return err
 	}
-	data, err := recordio.Encode(r)
+	data, err := recordio.EncodeSnapshot(r)
 	if err != nil {
 		return err
 	}
 	// Decode once to detach the caller's input maps and byte slices.
-	private, err := recordio.Decode(data)
+	private, err := recordio.DecodeSnapshot(data)
 	if err != nil {
 		return err
 	}
@@ -329,7 +341,7 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if err != nil {
 		return err
 	}
-	h := manifest{Format: 1, BaseRevision: 1, SnapshotDigest: digest, ChainAnchor: anchor, HeadRevision: 1, HeadChain: anchor, SnapshotID: id}
+	h := manifest{Format: 2, Generation: 1, OriginID: id, OriginDigest: digest, BaseRevision: 1, SnapshotDigest: digest, ChainAnchor: anchor, HeadRevision: 1, HeadChain: anchor, SnapshotID: id}
 	if err = s.writeImmutable(ctx, s.snapshotPath(id), data); err != nil {
 		return err
 	}
@@ -403,13 +415,26 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 		return durable.CommitAck{}, err
 	}
 	h.HeadRevision, h.HeadChain, h.HeadID = b.Header().Revision, next, id
+	if uint64(len(data)) > ^uint64(0)-h.HistoryBytes {
+		return durable.CommitAck{}, durable.ErrLimitExceeded
+	}
 	h.BatchBytes += uint64(len(data))
+	h.HistoryBytes += uint64(len(data))
 	if err = s.publish(ctx, h); err != nil {
 		return durable.CommitAck{}, err
 	}
 	s.head = h
 	return ack, nil
 }
+
+// PublicationUnknownError means replacement succeeded but subsequent directory
+// synchronization failed. Inspect from a new session before retrying the write.
+type PublicationUnknownError struct{ Err error }
+
+func (e *PublicationUnknownError) Error() string {
+	return "filestore: publication outcome uncertain: " + e.Err.Error()
+}
+func (e *PublicationUnknownError) Unwrap() error { return e.Err }
 
 // writeImmutable never overwrites or adopts an orphan, even at the same digest.
 func (s *session) writeImmutable(ctx context.Context, path string, data []byte) error {
@@ -457,9 +482,13 @@ func (s *session) publish(ctx context.Context, h manifest) error {
 		return err
 	}
 	// Once published, later errors are unknown outcomes. No continued writes.
-	if err = syncDirectory(s.dir); err != nil {
+	syncPublished := s.publicationSync
+	if syncPublished == nil {
+		syncPublished = syncDirectory
+	}
+	if err = syncPublished(s.dir); err != nil {
 		s.poisoned = true
-		return err
+		return &PublicationUnknownError{Err: err}
 	}
 	return nil
 }

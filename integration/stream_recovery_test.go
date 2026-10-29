@@ -132,6 +132,11 @@ func TestManagedHistoryRecoveryAcrossProcessExit(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				t.Cleanup(func() {
+					if err := session.Close(); err != nil {
+						t.Error(err)
+					}
+				})
 				// Deliberately persist an incomplete record; a healthy filestore did not lose data.
 				for key, managed := range before.Managed {
 					if scenario == "managed-missing" {
@@ -204,6 +209,11 @@ func TestConfirmedManagedValuesAcrossProcessExit(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				t.Cleanup(func() {
+					if err := session.Close(); err != nil {
+						t.Error(err)
+					}
+				})
 				record, err := session.Load(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -1884,6 +1894,11 @@ func (s *failedStreamStore) Acquire(ctx context.Context, id string) (durable.Ses
 	if err != nil {
 		return nil, err
 	}
+	s.t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			s.t.Error(err)
+		}
+	})
 	return &failedStreamSession{Session: session, owner: s}, nil
 }
 

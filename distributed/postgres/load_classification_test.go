@@ -10,6 +10,7 @@ import (
 
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/Luo-root/pulse-durable/recordio"
 )
 
 // Exercise the production decoder after a successful fenced SQL observation.
@@ -69,6 +70,53 @@ func TestOwnedLoadCorruptionClassification(t *testing.T) {
 				if !errors.Is(e, d.ErrInvalidRecord) || !errors.Is(e, d.ErrInvalid) || p.loaded {
 					t.Fatalf("corrupt record classification: loaded=%v err=%v", p.loaded, e)
 				}
+			}
+		})
+	}
+}
+
+func TestDecodeRecordInvalidCategories(t *testing.T) {
+	task := taskFixture(t, "tenant", "classification-business-value")
+	base := record(task, 1)
+	const businessValue = "classification-business-value"
+	cases := []struct {
+		name   string
+		want   error
+		mutate func(*durable.RunRecord)
+		wire   func(durable.RunRecord) []byte
+	}{
+		{name: "snapshot", want: ErrInvalidRecordSnapshot, wire: func(durable.RunRecord) []byte { return []byte(`{"version":`) }},
+		{name: "identity", want: ErrInvalidRecordIdentity, mutate: func(r *durable.RunRecord) { r.RunID = "other" }},
+		{name: "revision", want: ErrInvalidRecordRevision, mutate: func(r *durable.RunRecord) { r.Revision = 2 }},
+		{name: "format", want: ErrInvalidRecordFormat, mutate: func(r *durable.RunRecord) { r.Format++ }},
+		{name: "version", want: ErrInvalidRecordVersion, mutate: func(r *durable.RunRecord) { r.Version = "other" }},
+		{name: "definition", want: ErrInvalidRecordDefinition, mutate: func(r *durable.RunRecord) { r.Definition = strings.Repeat("a", 64) }},
+		{name: "inputs", want: ErrInvalidRecordInputs, mutate: func(r *durable.RunRecord) { r.Inputs = strings.Repeat("b", 64) }},
+		{name: "root", want: ErrInvalidRecordRoot, mutate: func(r *durable.RunRecord) { r.RootScope = "" }},
+		{name: "shapes", want: ErrInvalidRecordShapes, mutate: func(r *durable.RunRecord) { r.Scopes = nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := base
+			if tc.mutate != nil {
+				tc.mutate(&r)
+			}
+			encode := tc.wire
+			if encode == nil {
+				encode = func(r durable.RunRecord) []byte {
+					wire, err := recordio.Encode(r)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return wire
+				}
+			}
+			_, err := decodeRecord(task, 1, encode(r))
+			if !errors.Is(err, tc.want) || !errors.Is(err, d.ErrInvalid) {
+				t.Fatalf("classification: %v", err)
+			}
+			if strings.Contains(err.Error(), businessValue) {
+				t.Fatalf("error leaks business value: %v", err)
 			}
 		})
 	}

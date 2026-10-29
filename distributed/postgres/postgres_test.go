@@ -114,7 +114,7 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 	}
 	t.Logf("migrate ok ns=%s role=%s", ns, role)
 	var schemaVersion int
-	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 3 {
+	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 5 {
 		t.Fatalf("migration version=%d err=%v", schemaVersion, e)
 	}
 	cfg, e := pgxpool.ParseConfig(dsn)

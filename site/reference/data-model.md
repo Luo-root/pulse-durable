@@ -150,7 +150,23 @@ Load 校验完整性后返回隔离完整投影；仅无检查点时返回 `ErrN
 
 Apply 是唯一普通写入口：typed ChangeBatch 原子核对身份、业务版本、expected/next revision 严格加一及精确对象前置条件，成功返回与批头精确匹配的 CommitAck。前置条件或 CAS 冲突返回 `ErrConflict`，不发布部分变更；uint64 修订号耗尽必须拒绝。没有兼容 Save、可选 DeltaSession、RequireDelta 或全量回退。
 
-耐久后端保存初始快照、连续不可变批及权威 head。快照摘要、批 wire 摘要、父修订号和链锚点由后端验证与维护；物理链不属于 ChangeHeader。新会话必须权威加载并校验链，普通 Apply 不得每次重放整个历史或重写完整快照。Initialize 可以写完整初始快照；显式快照合成属于单独维护能力，当前尚未实现，不是普通提交的回退。物理合成不等于业务历史压缩或 retention。
+耐久后端保存初始快照、连续不可变批及权威 head。快照摘要、批 wire 摘要、父修订号和链锚点由后端验证与维护；物理链不属于 ChangeHeader。新会话必须权威加载并校验链，普通 Apply 不得每次重放整个历史或重写完整快照。Initialize 可以写完整初始快照；显式快照合成属于单独维护能力，不是普通提交的回退。
+
+`durable.Maintenance` 是 Store 级接口，MemoryStore、FileStore、SQLite 与独立 PostgreSQL 已实现；第三方 Store 可不提供：
+
+```go
+type Maintenance interface {
+	InspectStorage(context.Context, string) (StorageState, error)
+	LoadRevision(context.Context, string, uint64) (RevisionImage, error)
+	CompactStorage(context.Context, CompactStorageRequest) (StorageState, error)
+}
+```
+
+`StorageState` 包含 RunID、Generation、BaseRevision/BaseChain 与 HeadRevision/HeadChain，是一次原子观察而非后续操作的授权。Generation 从 1 开始，仅表示发布时改变，普通 Apply 只改变业务 head。`RevisionImage` 返回隔离的 Record 和精确修订号的 Chain，不以更新记录替代请求，不建立持久 pin。`CompactStorageRequest` 含 RunID、正数 ThroughRevision/ExpectedGeneration；generation 必须仍匹配，目标须在当前 base/head 之间，否则 `ErrConflict`。
+
+合成修订号 R 的新快照摘要独立于原提交链 `C(R)`，必须保留该锚点，不由新摘要重置链；发布只改变表示 generation/base，业务 revision/head 不变，后续 suffix 保留。所有历史修订、原快照与批全部保留，无 GC。保留链缺失或损坏是 `ErrInvalidRecord`，不能冒充 `ErrHistoryExpired`；后者为显式 retention 删除后的语义预留，`ErrPinned` 为保护历史阻止回收预留。未支持能力可用 `ErrUnsupportedCapability`，维护预算超限用 `ErrLimitExceeded`。物理合成不执行业务代码；业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成。
+
+FileStore 与独立 PostgreSQL 的全部维护操作使用运行独占锁，活跃 Session 返回 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务，不需要 runlock，但 CompactStorage 排他。MemoryStore 在锁外重建、发布时校验 generation，仍不耐久。构建取消不发布；发布后错误或取消可能结果不确定，应重新 Inspect 核对 generation/base，不盲重试。distributed PostgreSQL 使用独立的 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance）、maintain 授权与 pin/receipt；当前无对外 LoadRevision，不能视为满足上述 root 接口。
 
 Runtime 仅在精确 CommitAck 确认后推进内存状态和发布成果。Initialize/Apply 可能已提交却返回错误；此时停止，不回滚或盲重试，等待所有权释放后由新会话 Load 裁决。Close 幂等、等待在途操作退出并释放会话所有权；关闭后的 Load/Initialize/Apply 必须返回错误。
 
@@ -160,7 +176,7 @@ MemoryStore 的零值可用，Initialize 复制初始记录，Apply 校验后仅
 
 FileStore 必须通过 `filestore.New` 创建。它使用每个 RunID 的 OS 文件锁，锁在 Close 或进程退出时释放，锁文件保留。提供 Windows，以及 Linux、macOS、FreeBSD、OpenBSD、NetBSD、DragonFly 的锁实现；其他平台拒绝取得会话，不退化为无锁运行。仍须使用支持所需锁与同目录原子替换的文件系统。
 
-FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。旧 `.json` 明确拒绝，不自动清除或迁移；新版使用新目录。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
+FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `2`，旧 manifest `1` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。SQLite 与独立 PostgreSQL 为物理 schema `3`，distributed PostgreSQL 为独立 schema `5`，旧版或不匹配 schema 同样拒绝并保留原数据，不提供迁移。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
 
 所有元数据字符串及 map 键必须有效 UTF-8。写前拒绝非法元数据，保留旧文件与 Revision；读时拒绝非法原始 UTF-8 和未配对 JSON Unicode 代理项。合法 Unicode 保留，Data 字节不受元数据 UTF-8 限制。
 

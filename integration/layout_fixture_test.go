@@ -81,6 +81,11 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	}
 	var h struct {
 		Format         int      `json:"format"`
+		Generation     uint64   `json:"generation"`
+		BaseID         string   `json:"base_id"`
+		OriginID       string   `json:"origin_id"`
+		OriginDigest   [32]byte `json:"origin_digest"`
+		HistoryBytes   uint64   `json:"history_bytes"`
 		BaseRevision   uint64   `json:"base_revision"`
 		SnapshotDigest [32]byte `json:"snapshot_digest"`
 		ChainAnchor    [32]byte `json:"chain_anchor"`
@@ -93,17 +98,29 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	if err = json.Unmarshal(data, &h); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := os.ReadFile(filepath.Join(dir, base+".snapshot-"+h.SnapshotID))
+	// Start from Initialize's original bytes, even if the current head was compacted.
+	snapshot, err := os.ReadFile(filepath.Join(dir, base+".snapshot-"+h.OriginID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	seed, err := recordio.Decode(snapshot)
+	if sha256.Sum256(snapshot) != h.OriginDigest {
+		t.Fatal("fixture origin snapshot digest mismatch")
+	}
+	seed, err := recordio.DecodeSnapshot(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = durable.ValidateInitialRecord(seed, r.RunID); err != nil {
 		t.Fatal(err)
 	}
+	// Replace the selected history, retaining the immutable Initialize snapshot.
+	h.Format = 2
+	h.Generation = 1
+	h.BaseID = ""
+	h.BaseRevision = seed.Revision
+	h.SnapshotID = h.OriginID
+	h.SnapshotDigest = h.OriginDigest
+	h.ChainAnchor = durable.SeedChain(h.SnapshotDigest)
 	ops := []map[string]any{}
 	add := func(kind, key, scope, name, seq string, state bool, value any) {
 		op := map[string]any{"kind": kind, "key": key, "expected": nil, "value": fixtureWireValue(reflect.ValueOf(value))}
@@ -201,6 +218,7 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	h.HeadChain = chain
 	h.HeadID = id
 	h.BatchBytes = uint64(len(env))
+	h.HistoryBytes = h.BatchBytes
 	data, err = json.Marshal(h)
 	if err != nil {
 		t.Fatal(err)

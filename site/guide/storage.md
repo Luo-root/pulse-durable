@@ -18,7 +18,7 @@
 
 `postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。同一 Store 已持有或 pending 的 RunID 立即返回 `ErrBusy`；跨 Store 须取得连接并完成 `pg_try_advisory_lock` 网络检测，检测到占用后返回 `ErrBusy`，不等待锁释放。池容量与网络检测的总等待默认最多 30 秒，caller 更短 deadline 优先；池满而无法判断远端占用时返回 `context.DeadlineExceeded`，不伪报 `ErrBusy`。Store.Close 取消 pending Acquire 并等待资源清理；解锁失败或结果不确定时销毁连接，清理最长 5 秒。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
 
-`sqlitestore`：驱动 `modernc.org/sqlite v1.60.1` 内嵌 SQLite 3.53.4；`NewContext(ctx, path)` 支持取消数据库初始化。构造设置并读回验证 WAL、FULL (2) 与 busy_timeout=5000ms。数据库必须专用，物理 schema v2 严格匹配 DDL 并拒绝额外 schema 对象；旧 schema 明确拒绝，不自动删改或迁移，新版另用新库；旁边的 `.init.lock` 构造锁必须保留。`New(path)` 只接受数据库文件路径，会创建父目录并在旁边创建 `.runlocks/`；新目录/文件分别使用 0700/0600（Windows 由 ACL 管理）。首快照与不可变批保存于独立表，head 保存权威 `revision` 和 chain，`revision` 为十进制 TEXT；Apply 一事务插批并 CAS 推进 head，不重写完整记录。短事务使用 `BEGIN IMMEDIATE`，SQLite busy timeout 为 5000ms，运行期间不持有数据库事务。它只适用于支持 OS 文件锁的本机文件系统，不支持分布式协调、迁移或跨后端导入。
+`sqlitestore`：驱动 `modernc.org/sqlite v1.60.1` 内嵌 SQLite 3.53.4；`NewContext(ctx, path)` 支持取消数据库初始化。构造设置并读回验证 WAL、FULL (2) 与 busy_timeout=5000ms。数据库必须专用，物理 schema v3 严格匹配 DDL 并拒绝额外 schema 对象；旧 schema 明确拒绝，不自动删改或迁移，新版另用新库；旁边的 `.init.lock` 构造锁必须保留。`New(path)` 只接受数据库文件路径，会创建父目录并在旁边创建 `.runlocks/`；新目录/文件分别使用 0700/0600（Windows 由 ACL 管理）。首快照与不可变批保存于独立表，head 保存权威 `revision` 和 chain，`revision` 为十进制 TEXT；Apply 一事务插批并 CAS 推进 head，不重写完整记录。短事务使用 `BEGIN IMMEDIATE`，SQLite busy timeout 为 5000ms，运行期间不持有数据库事务。它只适用于支持 OS 文件锁的本机文件系统，不支持分布式协调、迁移或跨后端导入。
 
 SQLite 初始化与示例见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。关闭时先停止业务运行并关闭 Session，再关闭 Store；Initialize/Apply 返回错误时按 Store 契约重新 Load，不推断是否已经提交。FULL 同步不等于已完成断电实测验收，备份、恢复与目录保留由宿主负责。
 
@@ -43,9 +43,11 @@ if err != nil {
 
 每个 RunID 按其原文的 SHA-256 定位文件，RunID 不直接拼成路径。新布局使用 `.snapshot-<id>` 首快照、`.batch-<id>` 不可变批和 `.head` 权威 manifest；所有权仍使用 `.lock`。锁文件保留是正常情况，独占权来自 OS 锁，Close 或进程退出后释放。不要删除锁文件解除 `ErrBusy`，否则可能产生两个独占域。
 
-Initialize 发布首快照和初始 head；普通 Apply 写不可变批并同步，再原子替换同目录的小 head，不重写整份历史。Load 只沿 head 引用校验快照摘要、连续修订号、批摘要和父链，不以 mtime 或目录排序推断提交。批已写但 head 未发布时属于未提交孤儿，不可认回为业务成果；head 发布后的确认失败按未知提交处理。显式快照合成是独立维护能力，当前尚未实现；不能把每次 Apply 后重写快照当作合成，也不承诺自动历史压缩或无限保留。
+Initialize 发布首快照和初始 head；普通 Apply 写不可变批并同步，再原子替换同目录的小 head，不重写整份历史。Load 只沿 head 引用校验快照摘要、连续修订号、批摘要和父链，不以 mtime 或目录排序推断提交。批已写但 head 未发布时属于未提交孤儿，不可认回为业务成果；head 发布后的确认失败按未知提交处理。显式快照合成通过独立的 `durable.Maintenance` 完成，不是普通 Apply 的全量写入回退。`InspectStorage(ctx, runID)` 读取 generation、base/head revision 与 chain；`LoadRevision(ctx, runID, revision)` 返回精确历史投影及原链锚点，不执行业务代码，也不建立持久 pin。`CompactStorage` 请求须携带 RunID、正数 `ThroughRevision` 与从 Inspect 取得的 `ExpectedGeneration`，目标须位于当前 base 与 head 之间；generation 过期返回 `ErrConflict`。
 
-检测到旧 `.json` 返回明确旧格式错误，不自动清除、覆盖或迁移；需要旧数据时保留旧版和隔离目录，新版另用新目录。Acquire 取得锁后仍可清理本运行精确匹配 `<SHA-256>-<uint32十进制>.tmp` 的普通暂存文件（无前导零，`0` 除外），但不会把未引用的不可变文件认作提交。清理不递归、不触碰其他运行或 `.lock`；失败返回错误并释放锁。目录权限和保留由宿主管理。性能与逻辑 bytes 的测量边界见[检查点成本](checkpoint-cost.md)，增量不保证所有规模都更快。
+合成在修订号 R 保存新的完整物理快照，其 snapshot digest 独立计算，但必须保留原提交链锚点 `C(R)`，不能由新快照摘要重新播种历史链。发布只推进表示 generation/base，不改变业务 revision/head 或成果；原始快照、全部批和历史修订仍保留，无 GC。MemoryStore 提供同语义的非耐久参考实现。FileStore 与独立 PostgreSQL 的维护读写使用原有独占运行锁，活跃 Session 导致 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务、不需要 runlock，CompactStorage 仍排他并可能 `ErrBusy`。发布后报错可能结果不确定，先重新 Inspect 核对 generation/base，再规划下一次操作。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成；物理合成不是这些能力，也不是无限保留承诺。
+
+当前 `.head` manifest 为物理格式 `2`；旧 manifest `1` 和旧 `.json` 均拒绝，原数据保持不变。检测到旧 `.json` 返回明确旧格式错误，不自动清除、覆盖或迁移；需要旧数据时保留旧版和隔离目录，新版另用新目录。Acquire 取得锁后仍可清理本运行精确匹配 `<SHA-256>-<uint32十进制>.tmp` 的普通暂存文件（无前导零，`0` 除外），但不会把未引用的不可变文件认作提交。清理不递归、不触碰其他运行或 `.lock`；失败返回错误并释放锁。目录权限和保留由宿主管理。性能与逻辑 bytes 的测量边界见[检查点成本](checkpoint-cost.md)，增量不保证所有规模都更快。
 
 ## 3. 读取已有运行记录
 

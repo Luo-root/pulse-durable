@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -43,94 +42,19 @@ func (s *session) rebuild(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	var rev string
-	var head, data, digest, anchor []byte
-	err = tx.QueryRowContext(ctx, `SELECT revision, chain FROM durable_heads WHERE run_id=?`, s.runID).Scan(&rev, &head)
-	if errors.Is(err, sql.ErrNoRows) {
-		var count int
-		if err = tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM durable_snapshots WHERE run_id=?) + (SELECT count(*) FROM durable_batches WHERE run_id=?)`, s.runID, s.runID).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return errCorrupt
-		}
-		return durable.ErrNotFound
-	}
+	st, err := inspectTx(ctx, tx, s.runID)
 	if err != nil {
 		return err
 	}
-	target, err := revision(rev)
-	if err != nil || len(head) != 32 || target > maxChainBatches+1 {
-		return errCorrupt
-	}
-	if err = tx.QueryRowContext(ctx, `SELECT record,digest,chain FROM durable_snapshots WHERE run_id=?`, s.runID).Scan(&data, &digest, &anchor); err != nil {
-		return fmt.Errorf("%w: snapshot: %v", errCorrupt, err)
-	}
-	sum := sha256.Sum256(data)
-	chain := durable.SeedChain(sum)
-	if !bytes.Equal(sum[:], digest) || !bytes.Equal(chain[:], anchor) {
-		return errCorrupt
-	}
-	r, err := recordio.Decode(data)
-	if err != nil {
-		return fmt.Errorf("%w: %v", errCorrupt, err)
-	}
-	if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
-		return fmt.Errorf("%w: %v", errCorrupt, err)
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT revision,parent_revision,parent_chain,digest,chain,wire FROM durable_batches WHERE run_id=? ORDER BY length(revision), revision`, s.runID)
+	image, count, total, err := loadRevisionTx(ctx, tx, s.runID, st.HeadRevision, st)
 	if err != nil {
 		return err
-	}
-	count, total := 0, 0
-	for rows.Next() {
-		var next, parent string
-		var pc, bd, nc, wire []byte
-		if err = rows.Scan(&next, &parent, &pc, &bd, &nc, &wire); err != nil {
-			rows.Close()
-			return err
-		}
-		n, e := revision(next)
-		p, e2 := revision(parent)
-		count++
-		total += len(wire)
-		if e != nil || e2 != nil || p != r.Revision || n != p+1 || n > target || count > maxChainBatches || total > maxChainBytes || !bytes.Equal(pc, chain[:]) {
-			rows.Close()
-			return errCorrupt
-		}
-		sum = sha256.Sum256(wire)
-		if !bytes.Equal(sum[:], bd) {
-			rows.Close()
-			return errCorrupt
-		}
-		batch, e := durable.UnmarshalChangeBatch(wire)
-		if e != nil {
-			rows.Close()
-			return fmt.Errorf("%w: %v", errCorrupt, e)
-		}
-		nextChain, e := durable.NextChain(chain, sum, n)
-		if e != nil || !bytes.Equal(nextChain[:], nc) || batch.Header().Revision != n {
-			rows.Close()
-			return errCorrupt
-		}
-		if _, e = batch.ApplyTo(&r); e != nil {
-			rows.Close()
-			return fmt.Errorf("%w: %v", errCorrupt, e)
-		}
-		chain = nextChain
-	}
-	err = errors.Join(rows.Err(), rows.Close())
-	if err != nil {
-		return err
-	}
-	if r.Revision != target || !bytes.Equal(chain[:], head) {
-		return errCorrupt
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	s.cache = &r
-	s.chain = chain
+	s.cache = &image.Record
+	s.chain = image.Chain
 	s.batchCount = count
 	s.batchBytes = total
 	return nil
@@ -160,11 +84,11 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if err := durable.ValidateInitialRecord(r, s.runID); err != nil {
 		return err
 	}
-	data, err := recordio.Encode(r)
+	data, err := recordio.EncodeSnapshot(r)
 	if err != nil {
 		return err
 	}
-	copyRecord, err := recordio.Decode(data)
+	copyRecord, err := recordio.DecodeSnapshot(data)
 	if err != nil {
 		return err
 	}
@@ -182,10 +106,13 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if count != 0 {
 		return durable.ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_snapshots VALUES (?,?,?,?)`, s.runID, data, sum[:], chain[:]); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_snapshots (run_id,revision,record,digest,chain) VALUES (?,?,?,?,?)`, s.runID, "1", data, sum[:], chain[:]); err != nil {
 		return saveContextError(ctx, err)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_heads VALUES (?,'1',?)`, s.runID, chain[:]); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_heads (run_id,revision,chain) VALUES (?,'1',?)`, s.runID, chain[:]); err != nil {
+		return saveContextError(ctx, err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_manifests (run_id,generation,base_revision,base_chain) VALUES (?,'1','1',?)`, s.runID, chain[:]); err != nil {
 		return saveContextError(ctx, err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -216,7 +143,7 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 		return ack, err
 	}
 	if s.batchCount >= maxChainBatches || len(wire) > maxChainBytes-s.batchBytes {
-		return ack, errors.New("sqlitestore: chain budget exceeded; explicit compaction required")
+		return ack, fmt.Errorf("%w: sqlitestore chain budget; explicit compaction required", durable.ErrLimitExceeded)
 	}
 	sum := sha256.Sum256(wire)
 	chain, err := durable.NextChain(s.chain, sum, b.Header().Revision)
@@ -260,7 +187,7 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	}
 	mutated = true
 	next := strconv.FormatUint(ack.Header.Revision, 10)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_batches VALUES (?,?,?,?,?,?,?)`, s.runID, next, expected, s.chain[:], sum[:], chain[:], wire); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO durable_batches (run_id,revision,parent_revision,parent_chain,digest,chain,wire) VALUES (?,?,?,?,?,?,?)`, s.runID, next, expected, s.chain[:], sum[:], chain[:], wire); err != nil {
 		return durable.CommitAck{}, saveContextError(ctx, err)
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE durable_heads SET revision=?,chain=? WHERE run_id=? AND revision=? AND chain=?`, next, chain[:], s.runID, expected, s.chain[:])

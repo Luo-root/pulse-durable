@@ -304,8 +304,8 @@ func TestPGReorderedColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = seed.pool.Exec(ctx, `DROP TABLE pulse_durable.snapshots,pulse_durable.heads,pulse_durable.batches;
- CREATE TABLE pulse_durable.snapshots(run_id text PRIMARY KEY NOT NULL,record bytea NOT NULL,chain bytea NOT NULL,digest bytea NOT NULL);
- CREATE TABLE pulse_durable.heads(revision text NOT NULL,chain bytea NOT NULL,run_id text PRIMARY KEY NOT NULL);
+ CREATE TABLE pulse_durable.snapshots(record bytea NOT NULL,revision text NOT NULL,run_id text NOT NULL,chain bytea NOT NULL,digest bytea NOT NULL,PRIMARY KEY(run_id,revision));
+ CREATE TABLE pulse_durable.heads(generation text NOT NULL,revision text NOT NULL,base_revision text NOT NULL,chain bytea NOT NULL,run_id text PRIMARY KEY NOT NULL);
  CREATE TABLE pulse_durable.batches(wire bytea NOT NULL,parent_revision text NOT NULL,chain bytea NOT NULL,run_id text NOT NULL,digest bytea NOT NULL,revision text NOT NULL,parent_chain bytea NOT NULL,PRIMARY KEY(run_id,revision));`)
 	closeErr := seed.Close()
 	if err != nil {
@@ -362,6 +362,21 @@ func TestPGReorderedColumns(t *testing.T) {
 	}
 	if got.Revision != 2 || got.Attempts["a-1"].State != durable.AttemptActive {
 		t.Fatal("committed attempt missing")
+	}
+	if err = a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := reopened.CompactStorage(ctx, durable.CompactStorageRequest{RunID: initial.RunID, ThroughRevision: 2, ExpectedGeneration: 1})
+	if err != nil || state.Generation != 2 || state.BaseRevision != 2 {
+		t.Fatalf("reordered synthesis: %+v %v", state, err)
+	}
+	image, err := reopened.LoadRevision(ctx, initial.RunID, 2)
+	if err != nil || !reflect.DeepEqual(image.Record, expected) || image.Chain != state.HeadChain {
+		t.Fatalf("reordered synthesized load: %v", err)
+	}
+	old, err := reopened.LoadRevision(ctx, initial.RunID, 1)
+	if err != nil || !reflect.DeepEqual(old.Record, initial) {
+		t.Fatalf("reordered historical load: %v", err)
 	}
 }
 

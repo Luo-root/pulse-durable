@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,8 +14,13 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed maintenance.sql
+var maintenanceSQL string
+
 // Grant authorizes an existing database role for exactly one namespace. Rights
-// are query, submit, worker, cancel. Grant query as well for recovery queries.
+// are query, submit, worker, cancel, maintain, retain, replay. Maintain alone
+// authorizes physical synthesis; retain/replay are reserved and grant no API yet.
+// Grant query as well for ordinary worker recovery queries.
 // The caller must provision separate non-owner, non-superuser login roles.
 type Grant struct {
 	Role        string
@@ -24,7 +30,8 @@ type Grant struct {
 
 // Migrate installs a new physical schema or verifies the exact installed one.
 // Older schemas are rejected without changing their data or DDL. Logical records
-// remain format 2; physical schema version 3 is not a logical record upgrade.
+// remain format 2; physical schema version 5 is not a logical record upgrade.
+// Versions 1–4 are rejected; this release never rewrites installed schemas.
 // This explicit administrator entry point may grant API execution and namespace
 // permissions, but never grants table access. Run using dedicated owner credentials.
 func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
@@ -62,7 +69,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		return scrub(e, false)
 	}
 	if !exists {
-		if _, e = tx.Exec(ctx, schemaSQL); e != nil {
+		if _, e = tx.Exec(ctx, schemaSQL+maintenanceSQL); e != nil {
 			return scrub(e, false)
 		}
 		if _, e = tx.Exec(ctx, checkSQL); e != nil {
@@ -80,14 +87,14 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		if e = tx.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&installed); e != nil {
 			return scrub(e, false)
 		}
-		if installed != 3 {
+		if installed != 5 {
 			return errors.New("distributed postgres: unsupported physical schema; use a new database (old data unchanged)")
 		}
 		if e = validate(ctx, tx, false); e != nil {
 			return e
 		}
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -100,12 +107,12 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return errors.New("distributed postgres: grant requires isolated non-owner role")
 		}
 		role := pgx.Identifier{g.Role}.Sanitize()
-		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
+		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
 			return scrub(e, false)
 		}
 		for _, permission := range g.Permissions {
 			switch permission {
-			case "query", "worker", "submit", "cancel":
+			case "query", "worker", "submit", "cancel", "maintain", "retain", "replay":
 			default:
 				return errors.New("distributed postgres: invalid permission")
 			}
@@ -164,7 +171,7 @@ func validate(ctx context.Context, q querier, worker bool) error {
 		}
 		return scrub(e, false)
 	}
-	if n != 1 || v != 3 {
+	if n != 1 || v != 5 {
 		return errors.New("distributed postgres: incompatible schema version")
 	}
 	current, e := signature(ctx, q)
@@ -180,6 +187,17 @@ func validate(ctx context.Context, q querier, worker bool) error {
 	return nil
 }
 func validateWorker(ctx context.Context, q querier) error {
+	// An old self-consistent schema can return true from its own old checker.
+	// pg_proc is readable without granting workers SELECT on meta. Pin the
+	// checker body before trusting it to validate the catalog and privileges.
+	var current bool
+	body := strings.Split(checkSQL, "$check$")[1]
+	if e := q.QueryRow(ctx, `SELECT prosrc=$1 FROM pg_proc WHERE oid='pulse_durable_distributed.check_schema()'::regprocedure`, body).Scan(&current); e != nil {
+		return scrub(e, false)
+	}
+	if !current {
+		return errors.New("distributed postgres: incompatible schema version")
+	}
 	var ok bool
 	if e := q.QueryRow(ctx, "SELECT pulse_durable_distributed.check_schema()").Scan(&ok); e != nil {
 		return scrub(e, false)

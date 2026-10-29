@@ -12,22 +12,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// These hard limits bound replay and retained wire data until explicit compaction
-// is implemented. They are not a promise of unlimited stream retention.
+// These hard limits bound replay and the active suffix after snapshot synthesis.
+// They are not a promise of unlimited stream retention.
 const MaxChainBatches = 100000
 const MaxChainBytes = 256 << 20
 
 var ErrBudget = errors.New("postgresstore: uncompacted chain budget exceeded")
-var errCorrupt = errors.New("postgresstore: corrupt incremental checkpoint")
+var errCorrupt = fmt.Errorf("postgresstore: corrupt incremental checkpoint: %w", durable.ErrInvalidRecord)
 var errUncertain = errors.New("postgresstore: session invalidated; close and acquire again")
 
-const schemaDDL = `CREATE TABLE pulse_durable.snapshots (run_id text PRIMARY KEY NOT NULL, record bytea NOT NULL, digest bytea NOT NULL, chain bytea NOT NULL);
-CREATE TABLE pulse_durable.heads (run_id text PRIMARY KEY NOT NULL, revision text NOT NULL, chain bytea NOT NULL);
+const schemaDDL = `CREATE TABLE pulse_durable.snapshots (run_id text NOT NULL, revision text NOT NULL, record bytea NOT NULL, digest bytea NOT NULL, chain bytea NOT NULL, PRIMARY KEY(run_id,revision));
+CREATE TABLE pulse_durable.heads (run_id text PRIMARY KEY NOT NULL, revision text NOT NULL, chain bytea NOT NULL, base_revision text NOT NULL, generation text NOT NULL);
 CREATE TABLE pulse_durable.batches (run_id text NOT NULL, revision text NOT NULL, parent_revision text NOT NULL, parent_chain bytea NOT NULL, digest bytea NOT NULL, chain bytea NOT NULL, wire bytea NOT NULL, PRIMARY KEY(run_id,revision));`
 
 // An existing schema is read-only until its exact layout and version pass. In
 // particular, a v1 database is never completed, upgraded or cleared by New.
-func validateSchemaV2(ctx context.Context, q txQuerier) error {
+func validateSchemaV3(ctx context.Context, q txQuerier) error {
 	var count int
 	err := q.QueryRow(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pulse_durable' AND c.relkind IN ('r','p','v','m','f','S')`).Scan(&count)
 	if err != nil {
@@ -38,8 +38,8 @@ func validateSchemaV2(ctx context.Context, q txQuerier) error {
 	}
 	columns := map[string]map[string]string{
 		"schema_meta": {"version": "integer"},
-		"snapshots":   {"run_id": "text", "record": "bytea", "digest": "bytea", "chain": "bytea"},
-		"heads":       {"run_id": "text", "revision": "text", "chain": "bytea"},
+		"snapshots":   {"run_id": "text", "revision": "text", "record": "bytea", "digest": "bytea", "chain": "bytea"},
+		"heads":       {"run_id": "text", "revision": "text", "chain": "bytea", "base_revision": "text", "generation": "text"},
 		"batches":     {"run_id": "text", "revision": "text", "parent_revision": "text", "parent_chain": "bytea", "digest": "bytea", "chain": "bytea", "wire": "bytea"},
 	}
 	rows, err := q.Query(ctx, `SELECT table_name,column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='pulse_durable'`)
@@ -63,7 +63,7 @@ func validateSchemaV2(ctx context.Context, q txQuerier) error {
 	if err = rows.Err(); err != nil {
 		return scrubPGError(err)
 	}
-	if total != 15 {
+	if total != 18 {
 		return errors.New("postgresstore: incompatible schema columns")
 	}
 	if err = q.QueryRow(ctx, `SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pulse_durable' AND c.relkind='i'`).Scan(&count); err != nil {
@@ -72,7 +72,7 @@ func validateSchemaV2(ctx context.Context, q txQuerier) error {
 	if count != 3 {
 		return errors.New("postgresstore: incompatible schema indexes")
 	}
-	for table, keys := range map[string][]string{"snapshots": {"run_id"}, "heads": {"run_id"}, "batches": {"run_id", "revision"}} {
+	for table, keys := range map[string][]string{"snapshots": {"run_id", "revision"}, "heads": {"run_id"}, "batches": {"run_id", "revision"}} {
 		var actual []string
 		err = q.QueryRow(ctx, `SELECT array_agg(a.attname::text ORDER BY k.ord) FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace ns ON ns.oid=c.relnamespace CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY k(num,ord) JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.num WHERE ns.nspname='pulse_durable' AND c.relname=$1 AND con.contype='p'`, table).Scan(&actual)
 		if err != nil {
@@ -129,100 +129,22 @@ func (x *session) rebuild(ctx context.Context) error {
 		return scrubPGError(err)
 	}
 	defer rollback(tx)
-	var rev string
-	var head, data, digest, anchor []byte
-	err = tx.QueryRow(ctx, `SELECT revision,chain FROM pulse_durable.heads WHERE run_id=$1`, x.runID).Scan(&rev, &head)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var n int
-		if err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable.snapshots WHERE run_id=$1)+(SELECT count(*) FROM pulse_durable.batches WHERE run_id=$1)`, x.runID).Scan(&n); err != nil {
-			return scrubPGError(err)
-		}
-		if n != 0 {
-			return errCorrupt
-		}
-		return durable.ErrNotFound
-	}
+	state, err := readState(ctx, tx, x.runID)
 	if err != nil {
-		return scrubPGError(err)
+		return err
 	}
-	target, err := parseRevision(rev)
-	if err != nil || len(head) != 32 || target > MaxChainBatches+1 {
-		return errCorrupt
-	}
-	if err = tx.QueryRow(ctx, `SELECT record,digest,chain FROM pulse_durable.snapshots WHERE run_id=$1`, x.runID).Scan(&data, &digest, &anchor); err != nil {
-		return errors.Join(errCorrupt, scrubPGError(err))
-	}
-	if len(data) > durable.MaxChangeBatchBytes {
-		return errCorrupt
-	}
-	sum := sha256.Sum256(data)
-	chain := durable.SeedChain(sum)
-	if !bytes.Equal(sum[:], digest) || !bytes.Equal(chain[:], anchor) {
-		return errCorrupt
-	}
-	r, err := decodeSnapshot(data)
+	image, count, total, err := readImage(ctx, tx, state, state.HeadRevision, state.BaseRevision)
 	if err != nil {
-		return errors.Join(errCorrupt, err)
-	}
-	if err = durable.ValidateInitialRecord(r, x.runID); err != nil {
-		return errors.Join(errCorrupt, err)
-	}
-	rows, err := tx.Query(ctx, `SELECT revision,parent_revision,parent_chain,digest,chain,wire FROM pulse_durable.batches WHERE run_id=$1 ORDER BY length(revision),revision`, x.runID)
-	if err != nil {
-		return scrubPGError(err)
-	}
-	defer rows.Close()
-	count, total := 0, 0
-	for rows.Next() {
-		var next, parent string
-		var pc, bd, nc, wire []byte
-		if err = rows.Scan(&next, &parent, &pc, &bd, &nc, &wire); err != nil {
-			return scrubPGError(err)
-		}
-		n, e := parseRevision(next)
-		p, e2 := parseRevision(parent)
-		count++
-		total += len(wire)
-		if e != nil || e2 != nil || p != r.Revision || n != p+1 || n > target || count > MaxChainBatches || total > MaxChainBytes || !bytes.Equal(pc, chain[:]) {
-			return errCorrupt
-		}
-		sum = sha256.Sum256(wire)
-		if !bytes.Equal(sum[:], bd) {
-			return errCorrupt
-		}
-		batch, e := durable.UnmarshalChangeBatch(wire)
-		if e != nil {
-			return errors.Join(errCorrupt, e)
-		}
-		canonical, e := durable.MarshalChangeBatch(batch)
-		if e != nil || !bytes.Equal(canonical, wire) {
-			return errCorrupt
-		}
-		nextChain, e := durable.NextChain(chain, sum, n)
-		if e != nil || !bytes.Equal(nextChain[:], nc) || batch.Header().Revision != n {
-			return errCorrupt
-		}
-		if _, e = batch.ApplyTo(&r); e != nil {
-			return errors.Join(errCorrupt, e)
-		}
-		chain = nextChain
-	}
-	if err = rows.Err(); err != nil {
-		return scrubPGError(err)
-	}
-	rows.Close()
-	if r.Revision != target || !bytes.Equal(chain[:], head) {
-		return errCorrupt
+		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return scrubPGError(err)
 	}
-	x.cache = &r
-	x.chain = chain
-	x.batchCount = count
-	x.batchBytes = total
+	x.cache, x.chain = &image.Record, image.Chain
+	x.batchCount, x.batchBytes = count, total
 	return nil
 }
+
 func (x *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -277,10 +199,10 @@ func (x *session) Initialize(ctx context.Context, r durable.RunRecord) (resultEr
 		completed = true
 		return durable.ErrConflict
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.snapshots(run_id,record,digest,chain) VALUES($1,$2,$3,$4)`, x.runID, data, sum[:], chain[:]); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.snapshots(run_id,revision,record,digest,chain) VALUES($1,'1',$2,$3,$4)`, x.runID, data, sum[:], chain[:]); err != nil {
 		return scrubPGError(err)
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.heads(run_id,revision,chain) VALUES($1,'1',$2)`, x.runID, chain[:]); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.heads(run_id,revision,chain,base_revision,generation) VALUES($1,'1',$2,'1','1')`, x.runID, chain[:]); err != nil {
 		return scrubPGError(err)
 	}
 	if err = tx.Commit(ctx); err != nil {

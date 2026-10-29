@@ -15,6 +15,7 @@ type MemoryStore struct {
 	records map[string]RunRecord
 	active  map[string]*memorySession
 	chains  map[string][32]byte
+	history map[string]*memoryHistory
 }
 
 // NewMemoryStore 创建进程内存储。
@@ -71,7 +72,7 @@ func (s *memorySession) Load(ctx context.Context) (RunRecord, error) {
 	}
 	chain, anchored := s.store.chains[s.runID]
 	if !anchored || r.RunID != s.runID || r.Revision == 0 {
-		return RunRecord{}, fmt.Errorf("%w: invalid memory checkpoint", ErrConflict)
+		return RunRecord{}, fmt.Errorf("%w: invalid memory checkpoint", ErrInvalidRecord)
 	}
 	s.revision, s.chain, s.loaded = r.Revision, chain, true
 	return cloneRecord(r), nil
@@ -106,6 +107,12 @@ func (s *memorySession) Initialize(ctx context.Context, r RunRecord) error {
 	if s.store.chains == nil {
 		s.store.chains = make(map[string][32]byte)
 	}
+	if s.store.history == nil {
+		s.store.history = make(map[string]*memoryHistory)
+	}
+	s.store.history[s.runID] = &memoryHistory{generation: 1, first: 1, base: 1,
+		anchors:   map[uint64][32]byte{1: chain},
+		snapshots: map[uint64]RevisionImage{1: {Record: cloneRecord(r), Chain: chain}}}
 	s.store.records[s.runID] = cloneRecord(r)
 	s.store.chains[s.runID] = chain
 	s.revision, s.chain, s.loaded = 1, chain, true
@@ -125,7 +132,14 @@ func (s *memorySession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck
 		return CommitAck{}, fmt.Errorf("durable: session closed")
 	}
 	r, exists := s.store.records[s.runID]
-	if !exists || !s.loaded || s.revision != r.Revision || s.chain != s.store.chains[s.runID] || batch.Header().RunID != s.runID {
+	if !exists {
+		return CommitAck{}, ErrConflict
+	}
+	// Validate retained history before ApplyTo can mutate shared record maps.
+	if _, err := s.store.storageLocked(s.runID); err != nil {
+		return CommitAck{}, err
+	}
+	if !s.loaded || s.revision != r.Revision || s.chain != s.store.chains[s.runID] || batch.Header().RunID != s.runID {
 		return CommitAck{}, ErrConflict
 	}
 	digest, err := ChangeBatchDigest(batch)
@@ -141,6 +155,9 @@ func (s *memorySession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck
 	if err != nil {
 		return CommitAck{}, err
 	}
+	h := s.store.history[s.runID]
+	h.batches = append(h.batches, batch)
+	h.anchors[r.Revision] = next
 	s.store.records[s.runID], s.store.chains[s.runID] = r, next
 	s.revision, s.chain = r.Revision, next
 	return ack, nil

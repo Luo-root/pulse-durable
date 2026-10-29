@@ -30,6 +30,15 @@ func TestUnixDeniedReadIsNotMissing(t *testing.T) {
 	if _, err := session.Load(context.Background()); err == nil || errors.Is(err, durable.ErrNotFound) {
 		t.Fatalf("denied Load error = %v; want access failure", err)
 	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadRevision(t.Context(), "run", 1); err == nil || errors.Is(err, durable.ErrNotFound) || errors.Is(err, durable.ErrHistoryExpired) {
+		t.Fatalf("denied history: %v", err)
+	}
+	if _, err := store.CompactStorage(t.Context(), durable.CompactStorageRequest{RunID: "run", ThroughRevision: 1, ExpectedGeneration: 1}); err == nil || errors.Is(err, durable.ErrNotFound) {
+		t.Fatalf("denied compaction: %v", err)
+	}
 }
 
 func TestUnixTemporaryCleanupFailureReleasesLock(t *testing.T) {

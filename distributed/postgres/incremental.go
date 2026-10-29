@@ -85,9 +85,11 @@ type storedBatch struct {
 	Next     string `json:"next_chain"`
 }
 type storedLog struct {
-	Digest  string        `json:"snapshot_digest"`
-	Chain   string        `json:"head_chain"`
-	Batches []storedBatch `json:"batches"`
+	BaseRevision string        `json:"base_revision"`
+	BaseChain    string        `json:"base_chain"`
+	Digest       string        `json:"snapshot_digest"`
+	Chain        string        `json:"head_chain"`
+	Batches      []storedBatch `json:"batches"`
 }
 
 func chainText(h [32]byte) string { return hex.EncodeToString(h[:]) }
@@ -122,12 +124,18 @@ func (c *Coordinator) loadProjection(ctx context.Context, t d.Token, p *projecti
 // transport, clock and token errors above retain their conservative semantics.
 func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r durable.RunRecord, err error) {
 	s, owner, snapshot, e := decodeSnapshot(b)
-	if e != nil || owner != t || s.Status != d.Running {
-		return durable.RunRecord{}, d.ErrInvalid
+	if e != nil {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
+	}
+	if owner != t {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordIdentity)
+	}
+	if s.Status != d.Running {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordStatus)
 	}
 	defer func() {
 		if errors.Is(err, d.ErrInvalid) {
-			err = d.ErrInvalidRecord
+			err = errors.Join(d.ErrInvalidRecord, err)
 		}
 	}()
 	if s.Revision == 0 {
@@ -135,39 +143,58 @@ func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r du
 	}
 	var log storedLog
 	if json.Unmarshal(b, &log) != nil {
-		return durable.RunRecord{}, d.ErrInvalid
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordLog)
 	}
 	digest := sha256.Sum256(snapshot)
 	if chainText(digest) != log.Digest {
-		return durable.RunRecord{}, d.ErrInvalid
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordDigest)
 	}
-	r, e = decodeRecord(s.Task, 1, snapshot)
+	base := uint64(1)
+	if log.BaseRevision != "" {
+		base, e = strconv.ParseUint(log.BaseRevision, 10, 64)
+		if e != nil || base == 0 || strconv.FormatUint(base, 10) != log.BaseRevision {
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordLog)
+		}
+	}
+	r, e = decodeRecord(s.Task, base, snapshot)
 	if e != nil {
 		return durable.RunRecord{}, e
 	}
 	chain := durable.SeedChain(digest)
+	if log.BaseChain != "" {
+		if !fingerprint(log.BaseChain) {
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordChain)
+		}
+		b, _ := hex.DecodeString(log.BaseChain)
+		copy(chain[:], b)
+	} else if base != 1 {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordChain)
+	}
 	for _, entry := range log.Batches {
 		if entry.Revision != strconv.FormatUint(r.Revision+1, 10) || entry.Parent != chainText(chain) {
-			return durable.RunRecord{}, d.ErrInvalid
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordBatch)
 		}
 		digest = sha256.Sum256(entry.Wire)
 		if chainText(digest) != entry.Digest {
-			return durable.RunRecord{}, d.ErrInvalid
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordDigest)
 		}
 		batch, err := durable.UnmarshalChangeBatch(entry.Wire)
 		if err != nil {
-			return durable.RunRecord{}, d.ErrInvalid
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordBatch)
 		}
 		if _, err = batch.ApplyTo(&r); err != nil {
-			return durable.RunRecord{}, d.ErrInvalid
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordBatch)
 		}
 		chain, err = durable.NextChain(chain, digest, r.Revision)
 		if err != nil || entry.Next != chainText(chain) {
-			return durable.RunRecord{}, d.ErrInvalid
+			return durable.RunRecord{}, invalidRecord(ErrInvalidRecordChain)
 		}
 	}
-	if r.Revision != s.Revision || log.Chain != chainText(chain) {
-		return durable.RunRecord{}, d.ErrInvalid
+	if r.Revision != s.Revision {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordRevision)
+	}
+	if log.Chain != chainText(chain) {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordChain)
 	}
 	if p.revoked.Load() {
 		return durable.RunRecord{}, d.ErrLeaseLost

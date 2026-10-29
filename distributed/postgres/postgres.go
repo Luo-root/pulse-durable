@@ -26,6 +26,25 @@ import (
 const MaxRecordBytes = 16 << 20
 const OperationTimeout = 5 * time.Second
 
+var (
+	ErrInvalidRecordSnapshot   = errors.New("postgres: invalid record snapshot")
+	ErrInvalidRecordStatus     = errors.New("postgres: invalid record status")
+	ErrInvalidRecordIdentity   = errors.New("postgres: invalid record identity")
+	ErrInvalidRecordRevision   = errors.New("postgres: invalid record revision")
+	ErrInvalidRecordFormat     = errors.New("postgres: invalid record format")
+	ErrInvalidRecordVersion    = errors.New("postgres: invalid record version")
+	ErrInvalidRecordDefinition = errors.New("postgres: invalid record definition")
+	ErrInvalidRecordInputs     = errors.New("postgres: invalid record inputs")
+	ErrInvalidRecordRoot       = errors.New("postgres: invalid record root")
+	ErrInvalidRecordShapes     = errors.New("postgres: invalid record shapes")
+	ErrInvalidRecordLog        = errors.New("postgres: invalid record log")
+	ErrInvalidRecordDigest     = errors.New("postgres: invalid record digest")
+	ErrInvalidRecordChain      = errors.New("postgres: invalid record chain")
+	ErrInvalidRecordBatch      = errors.New("postgres: invalid record batch")
+)
+
+func invalidRecord(kind error) error { return errors.Join(kind, d.ErrInvalid) }
+
 type Coordinator struct {
 	pool         *pgxpool.Pool
 	projectionMu sync.Mutex
@@ -266,11 +285,42 @@ func decodeSnapshot(b []byte) (d.Snapshot, d.Token, []byte, error) {
 }
 func decodeRecord(t d.Task, n uint64, b []byte) (durable.RunRecord, error) {
 	if len(b) == 0 || len(b) > MaxRecordBytes {
-		return durable.RunRecord{}, d.ErrInvalid
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
 	}
-	r, e := recordio.Decode(b)
-	if e != nil || r.RunID != t.Identity().RunID || r.Revision != n || r.Format != t.Route().RecordFormat || r.Version != t.Route().BusinessVersion || r.Definition != t.Route().Definition || r.Inputs != t.InputsFingerprint() || r.RootScope == "" || r.Scopes == nil || r.Attempts == nil {
-		return durable.RunRecord{}, d.ErrInvalid
+	// Initial/legacy worker checkpoints are bare RunRecord JSON. A published
+	// maintenance representation is a lossless versioned snapshot envelope.
+	// Accept both at this boundary, but keep one identity/revision validation
+	// path below so compaction cannot weaken ordinary checkpoint checks.
+	r, e := recordio.DecodeSnapshot(b)
+	if e != nil {
+		r, e = recordio.Decode(b)
+	}
+	if e != nil {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
+	}
+	if r.RunID != t.Identity().RunID {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordIdentity)
+	}
+	if r.Revision != n {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordRevision)
+	}
+	if r.Format != t.Route().RecordFormat {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordFormat)
+	}
+	if r.Version != t.Route().BusinessVersion {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordVersion)
+	}
+	if r.Definition != t.Route().Definition {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordDefinition)
+	}
+	if r.Inputs != t.InputsFingerprint() {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordInputs)
+	}
+	if r.RootScope == "" {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordRoot)
+	}
+	if r.Scopes == nil || r.Attempts == nil {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordShapes)
 	}
 	return r, nil
 }

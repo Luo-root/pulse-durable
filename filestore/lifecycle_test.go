@@ -70,6 +70,7 @@ func TestApplyRejectsChangedHeadAndChainBudget(t *testing.T) {
 				h.HeadChain[0] ^= 1
 			} else {
 				h.BatchBytes = maxChainBytes
+				h.HistoryBytes = maxChainBytes
 			}
 			data, err := json.Marshal(h)
 			if err != nil {

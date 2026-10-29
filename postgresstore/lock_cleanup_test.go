@@ -10,6 +10,32 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
+func TestWaitConnCleanup(t *testing.T) {
+	t.Run("completed", func(t *testing.T) {
+		done := make(chan struct{})
+		close(done)
+		if err := waitConnCleanup(context.Background(), done); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("asynchronous completion", func(t *testing.T) {
+		done := make(chan struct{})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		go func() { close(done) }()
+		if err := waitConnCleanup(ctx, done); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("incomplete", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := waitConnCleanup(ctx, make(chan struct{})); !errors.Is(err, context.Canceled) {
+			t.Fatalf("incomplete cleanup: %v", err)
+		}
+	})
+}
+
 func TestPGUncertainUnlockDiscardsConnection(t *testing.T) {
 	dsn := os.Getenv("PULSE_POSTGRES_TEST_DSN")
 	if dsn == "" {
