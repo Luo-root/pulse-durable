@@ -545,7 +545,7 @@ func TestHistoricalStreamReferencePreservesSourceConstraints(t *testing.T) {
 			protocol := newStreamProtocol(t)
 			logical := streamKey(streamID(protocol.input.Stream.ID))
 			stream := protocol.s.record.Streams[logical]
-			history := stream.Stream // Sub was confirmed before its actual source ended.
+			history := stream.Stream // Sub 在其实际源结束前已确认。
 			stream.Stream.Terminal = string(terminal)
 			protocol.s.record.Streams[logical] = stream
 			owner := protocol.s.record.Attempts[history.Attempt]

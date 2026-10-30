@@ -14,7 +14,7 @@ import (
 	"github.com/Luo-root/pulse-durable/filestore"
 )
 
-// These tests are selected by TestPanicNilModes in both isolated subprocesses.
+// TestPanicNilModes 在两个隔离子进程中均选中这些测试。
 func requirePanicNilRecoveryChild(t *testing.T) {
 	t.Helper()
 	if os.Getenv("PULSE_DURABLE_PANICNIL_MODE") == "" {
@@ -169,7 +169,7 @@ func (c *panicNilValueCodec) Decode(data []byte) (any, error) {
 	if c.decodePanic.Load() {
 		panic(nil)
 	}
-	// Empty is a legal encoding for zero. An Encode panic must never fabricate it.
+	// 空值是零的合法编码。Encode panic 绝不能凭空生成它。
 	var value int
 	if len(data) == 0 {
 		return value, nil

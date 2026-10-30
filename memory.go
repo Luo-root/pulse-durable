@@ -135,7 +135,7 @@ func (s *memorySession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck
 	if !exists {
 		return CommitAck{}, ErrConflict
 	}
-	// Validate retained history before ApplyTo can mutate shared record maps.
+	// 在 ApplyTo 修改共享记录映射前验证保留历史。
 	if _, err := s.store.storageLocked(s.runID); err != nil {
 		return CommitAck{}, err
 	}
@@ -150,7 +150,7 @@ func (s *memorySession) Apply(ctx context.Context, batch ChangeBatch) (CommitAck
 	if err != nil {
 		return CommitAck{}, err
 	}
-	// ApplyTo validates every precondition before mutating only changed objects.
+	// ApplyTo 先验证全部前置条件，再仅修改变化对象。
 	ack, err := batch.ApplyTo(&r)
 	if err != nil {
 		return CommitAck{}, err

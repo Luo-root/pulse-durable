@@ -19,7 +19,7 @@ func TestFailedStreamOwnerAtomicAndIdempotent(t *testing.T) {
 	if err := p.append(1); err != nil {
 		t.Fatal(err)
 	}
-	// A second reading group is another endpoint of the same writer root.
+	// 第二个读取组是同一写入根的另一个端点。
 	request := p.openRequest(false)
 	request.Group = "second"
 	sibling, err := p.s.openStream(ctx, request)

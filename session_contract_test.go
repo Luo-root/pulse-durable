@@ -99,7 +99,7 @@ func TestUnifiedMemoryInitializeAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Memory uses the same physical chain transition as persistent backends.
+	// Memory 使用与持久化后端相同的物理链转换。
 	expected, err := NextChain(SeedChain(memorySeedDigest(contractSeed("run"))), digest, 2)
 	if err != nil || chain != expected {
 		t.Fatalf("chain mismatch: %v", err)

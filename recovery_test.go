@@ -393,7 +393,7 @@ func TestLegacyFailedStreamValidationPrecedesRepair(t *testing.T) {
 				sibling.Stream.ID.Group, sibling.Stream.Terminal = "other", "canceled"
 				p.s.record.Streams[streamKey(sibling.Stream.ID)] = sibling
 			}
-			// Test the Runtime entry, not a helper capable of repairing unvalidated data.
+			// 测试 Runtime 入口，而非能修复未经验证数据的辅助函数。
 			stored := cloneRecord(p.s.record)
 			store := NewMemoryStore()
 			installMemoryFixtureLocked(store, stored)

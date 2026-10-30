@@ -11,8 +11,8 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// Requires a fresh disposable schema-5 database and the standard destructive
-// integration opt-in. Offline validation compiles but does not execute this test.
+// 要求全新、可丢弃的模式版本 5 数据库，并显式启用标准破坏性
+// 集成测试。离线验证只编译、不执行此测试。
 func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 	for _, boundary := range []string{"count", "bytes"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -71,8 +71,8 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Synthetic boundary injection avoids writing 100000 rows or 256 MiB.
-			// The final legal append still uses the real restricted worker API.
+			// 合成边界注入避免写入 100000 行或 256 MiB。
+			// 最后一次合法追加仍使用真实的受限工作进程 API。
 			wire, err := durable.MarshalChangeBatch(nextBatch(t, r))
 			if err != nil {
 				t.Fatal(err)
@@ -85,7 +85,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// A business append races the build interval, not the publication lock.
+			// 业务追加与构建阶段竞争，而非与发布锁竞争。
 			if err = appendBatch("concurrent-suffix"); err != nil {
 				t.Fatal("last legal append", err)
 			}
@@ -103,8 +103,8 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err = appendBatch("over-budget"); !errors.Is(err, d.ErrInvalid) {
 				t.Fatal("over-budget append must fail", err)
 			}
-			// Compare every run column except the representation/budget/watermark;
-			// this includes the business head, lease, revision and original record.
+			// 除表示形式、预算和水位外，比较运行记录的每一列；
+			// 包括业务头、租约、修订号和原始记录。
 			businessState := func() string {
 				t.Helper()
 				var state string
@@ -145,7 +145,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err = appendBatch("after-compaction"); err != nil {
 				t.Fatal("compaction did not release active budget", err)
 			}
-			// Compact through the current head too: the empty suffix has zero cost.
+			// 也压缩到当前头：空后缀的开销为零。
 			q = CompactStorageRequest{Identity: id, ExpectedGeneration: 2, ThroughRevision: 4, Mutation: d.Mutation{ID: "budget-head"}}
 			q.Mutation.Digest = CompactStorageDigest(q)
 			before, retained = businessState(), retainedState()

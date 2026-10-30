@@ -14,7 +14,7 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// ErrAcquireUnsupported guards against accidentally using the legacy execution path.
+// ErrAcquireUnsupported 防止意外使用旧执行路径。
 var ErrAcquireUnsupported = errors.New("worker: Acquire unsupported; use claimed execution")
 
 type claimedOnlyStore struct{}
@@ -43,8 +43,8 @@ func mutation(v any) (d.Mutation, error) {
 	return d.Mutation{ID: id, Digest: hex.EncodeToString(h[:])}, nil
 }
 
-// session gates admission before waiting for in-flight operations. Closing is local
-// only: it never releases a lease, especially one a new epoch may already own.
+// session 在等待进行中的操作前封闭准入。关闭仅作用于本地：
+// 绝不释放租约，尤其是新纪元可能已拥有的租约。
 type session struct {
 	c              d.Coordinator
 	token          d.Token
@@ -102,16 +102,16 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if errors.Is(err, d.ErrNotFound) || errors.Is(err, durable.ErrNotFound) {
 		return r, durable.ErrNotFound
 	}
-	// Deterministic corruption follows a successful authoritative load. Keep
-	// renewal alive so execute can Block; every other failure remains unsafe.
+	// 确定性损坏出现在成功的权威加载之后。保持
+	// 续租以便 execute 调用 Block；其他失败仍是不安全的。
 	if err != nil && !errors.Is(err, d.ErrInvalidRecord) {
 		s.seal(true)
 	}
 	return r, err
 }
 
-// confirmed uses the request start, not response arrival, as the conservative
-// local lease budget. The database remains the only ownership authority.
+// confirmed 使用请求开始时间而非响应到达时间，作为保守的
+// 本地租约预算。数据库仍是唯一的所有权权威。
 func (s *session) confirmed(start time.Time, ttl, margin time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,9 +140,9 @@ func (s *session) confirmed(start time.Time, ttl, margin time.Duration) bool {
 	return true
 }
 
-// Contain backend panics at the uncertainty boundary, before runtime recovery
-// could classify infrastructure failure and attempt Release. Track return rather
-// than recover's value so legacy panic(nil) also seals and cancels the session.
+// 在不确定性边界隔离后端 panic，避免运行时恢复逻辑
+// 将其归类为基础设施失败并尝试 Release。跟踪是否正常返回，
+// 而非 recover 的值，以确保旧式 panic(nil) 也封闭并取消会话。
 func (s *session) initializeOwned(ctx context.Context, req d.InitializeRequest) (err error) {
 	returned := false
 	defer func() {
@@ -170,8 +170,8 @@ func (s *session) Apply(ctx context.Context, batch durable.ChangeBatch) (ack dur
 		s.seal(true)
 		return durable.CommitAck{}, err
 	}
-	// Digest binds the canonical batch wire to the operation and immutable
-	// ownership token. The random ID is only an idempotency identity.
+	// Digest 将规范批次线格式绑定到操作及不可变的
+	// 所有权令牌。随机 ID 仅是幂等身份。
 	digest, err := d.DeltaMutationDigest(s.token, batch)
 	if err != nil {
 		s.seal(true)

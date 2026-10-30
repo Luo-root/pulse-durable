@@ -13,8 +13,8 @@ import (
 	"github.com/Luo-root/pulse-durable/recordio"
 )
 
-// Exercise the production decoder after a successful fenced SQL observation.
-// This does not substitute for the real coordinator rejection system test.
+// 在成功且受栅栏保护的 SQL 观测后测试生产解码器。
+// 这不能替代真实协调器拒绝请求的系统测试。
 func TestOwnedLoadCorruptionClassification(t *testing.T) {
 	task := taskFixture(t, "tenant", "load-classification")
 	token := d.Token{Identity: task.Identity(), Worker: d.Worker{ID: "worker", BootID: strings.Repeat("a", 32)}, LeaseID: strings.Repeat("b", 32), Epoch: 1}

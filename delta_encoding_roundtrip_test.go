@@ -10,8 +10,8 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// This small synthetic test remains useful for protocol boundary values; it is
-// intentionally named as such and is not the Runtime acceptance test below.
+// 此小型合成测试仍可检查协议边界值；其名称
+// 有意体现这一点，并非下方的 Runtime 验收测试。
 func TestChangeBatchWireSyntheticFiveHundredRoundTrips(t *testing.T) {
 	for i := 0; i < 500; i++ {
 		tx := newRecordTransaction(uint64(i))
@@ -159,7 +159,7 @@ func TestChangeBatchWireRealRuntimeManagedFiveHundredRoundsAndResume(t *testing.
 			t.Fatalf("batch %d bytes not stable", i)
 		}
 	}
-	// A sentinel detects even a re-execution that recomputes the same final sum.
+	// 即使重新执行算出相同的最终总和，哨兵也能检测到。
 	total = -1
 	beforeResumeTotal := total
 	if _, err := runtime.Resume(t.Context(), graph, pulse.Inputs{}, opts); err != nil {
@@ -168,9 +168,9 @@ func TestChangeBatchWireRealRuntimeManagedFiveHundredRoundsAndResume(t *testing.
 	if total != beforeResumeTotal {
 		t.Fatalf("Resume re-executed business: sum changed from %d to %d", beforeResumeTotal, total)
 	}
-	// Resume may checkpoint source-generation metadata; the sentinel above checks
-	// business execution independently of those legitimate recovery batches.
-	// Confirm the persisted result is an independently decodable format-2 record.
+	// Resume 可能为源代际元数据建立检查点；上方哨兵独立于
+	// 这些合法恢复批次检查业务执行。
+	// 确认持久化结果是可独立解码的格式 2 记录。
 	record := store.records["wire-runtime-500"]
 	if record.Format != RecordFormat || record.Revision == 0 {
 		t.Fatalf("persisted record format/revision: %d/%d", record.Format, record.Revision)

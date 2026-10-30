@@ -41,7 +41,7 @@ func TestFixedKillCommand(t *testing.T) {
 			t.Fatalf("arg %d: %q", i, c.Args[i])
 		}
 	}
-	// Undo the POSIX single-quote envelope to inspect the exact script text.
+	// 解开 POSIX 单引号包裹，检查精确的脚本文本。
 	quoted := c.Args[len(c.Args)-1]
 	if !strings.HasPrefix(quoted, "'") || !strings.HasSuffix(quoted, "'") {
 		t.Fatal("missing shell quote envelope")

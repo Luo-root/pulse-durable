@@ -13,7 +13,7 @@ import (
 
 type Host struct {
 	Label   string  `json:"label"`
-	OS      string  `json:"os"` // Operator assertion, not remote attestation.
+	OS      string  `json:"os"` // 操作员声明，不是远端证明。
 	Workers int     `json:"workers"`
 	Command Command `json:"command"`
 }
@@ -23,13 +23,13 @@ type Config struct {
 	Version          string        `json:"version"`
 	Hosts            []Host        `json:"hosts"`
 	Capacity         int           `json:"capacity"`
-	Timeout          time.Duration `json:"timeout"` // JSON nanoseconds; CLI also accepts -timeout.
+	Timeout          time.Duration `json:"timeout"` // JSON 中使用纳秒；CLI 也接受 -timeout。
 	Poll             time.Duration `json:"poll,omitempty"`
-	Scenario         string        `json:"scenario"` // normal or checkpoint-kill
+	Scenario         string        `json:"scenario"` // 可选值为 normal 或 checkpoint-kill
 	KillHost         string        `json:"kill_host,omitempty"`
 	AdminDSNEnv      string        `json:"admin_dsn_env"`
 	WorkerDSNEnv     string        `json:"worker_dsn_env"`
-	Prepare          bool          `json:"prepare"` // Explicit DDL authorization, never implied by run.
+	Prepare          bool          `json:"prepare"` // 显式 DDL 授权，绝不由运行操作隐含授予。
 	TTL              time.Duration `json:"ttl,omitempty"`
 	RenewInterval    time.Duration `json:"renew_interval,omitempty"`
 	RenewTimeout     time.Duration `json:"renew_timeout,omitempty"`
@@ -38,7 +38,7 @@ type Config struct {
 	PollMax          time.Duration `json:"poll_max,omitempty"`
 }
 
-// Store observes only sanitized task metadata; implementations must not return payloads.
+// Store 仅观察脱敏后的任务元数据；实现不得返回载荷。
 type Store interface {
 	Submit(context.Context, string) error
 	Get(context.Context, string) (TaskEvidence, error)
@@ -78,8 +78,8 @@ type Report struct {
 	Limitations []string                 `json:"limitations"`
 }
 
-// Kill must kill only the observed test worker, and return after death is confirmed.
-// For SSH never implement this by merely killing the local ssh client.
+// Kill 只能终止已观察到的测试工作进程，并在确认其终止后返回。
+// 对于 SSH，绝不能仅通过终止本地 ssh 客户端来实现。
 type Kill func(context.Context, WorkerEvidence) error
 type Controller struct {
 	Launch Launcher
@@ -252,8 +252,8 @@ func (ctl Controller) Run(parent context.Context, c Config, db Store) (report Re
 	}
 	report.Phases["ready"] = time.Since(phase)
 	phase = time.Now()
-	// Submit at least two tasks per worker, then fill workers one at a time. Earlier
-	// workers remain blocked at suffix and cannot monopolize subsequent slots.
+	// 每个工作进程至少提交两个任务，再逐个填满工作进程。较早启动的
+	// 工作进程保持阻塞在后缀阶段，无法独占后续槽位。
 	for i := 0; i < len(ps)*c.Capacity; i++ {
 		id := fmt.Sprintf("run-%04d", i)
 		ids = append(ids, id)
@@ -290,7 +290,7 @@ func (ctl Controller) Run(parent context.Context, c Config, db Store) (report Re
 	if db.Submit(ctx, "overflow") != nil {
 		return fail("submit_overflow")
 	}
-	// Hold all suffix gates while checking DB ownership over several polls.
+	// 保持所有后缀关卡关闭，并通过多次轮询检查数据库所有权。
 	for i := 0; i < 3; i++ {
 		if i > 0 {
 			select {
@@ -371,8 +371,8 @@ func (ctl Controller) Run(parent context.Context, c Config, db Store) (report Re
 		return fail("all_succeeded")
 	}
 	report.Checks["all_succeeded"] = "PASS"
-	// First drain every live process and collect every event, including the
-	// killed process's trailing pipe bytes. DB success alone is not a replay oracle.
+	// 先排空所有存活进程并收集全部事件，包括
+	// 已终止进程管道中残留的字节。仅数据库成功不足以判断重放正确。
 	report.Phases["release_and_recovery"] = time.Since(phase)
 	phase = time.Now()
 	for _, p := range ps {
@@ -427,5 +427,5 @@ func (ctl Controller) Run(parent context.Context, c Config, db Store) (report Re
 	return
 }
 
-// ProbeFinish exposes the harness handshake without weakening its persistent gate.
+// ProbeFinish 暴露测试框架握手，而不削弱其持久化关卡。
 func ProbeFinish(p Process) error { return p.Send("probe_finish") }

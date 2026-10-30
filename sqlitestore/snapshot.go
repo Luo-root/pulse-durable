@@ -9,7 +9,7 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// This validates persisted structure, not graph definitions or codec behavior.
+// 这验证持久化结构，而非图定义或编解码器行为。
 func validateSnapshot(r durable.RunRecord, id string, rev uint64) error {
 	if rev == 1 {
 		return durable.ValidateInitialRecord(r, id)

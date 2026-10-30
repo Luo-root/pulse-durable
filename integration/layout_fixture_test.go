@@ -67,9 +67,9 @@ func fixtureWireValue(v reflect.Value) any {
 	}
 }
 
-// installHistoryFixture constructs an explicitly synthetic typed history, not a
-// storage adapter. Initialize's actual empty snapshot is retained; every object
-// is introduced by a public decoded typed batch. Used only with t.TempDir data.
+// installHistoryFixture 构造显式合成的类型化历史，而非
+// 存储适配器。保留 Initialize 的实际空快照；每个对象
+// 均由公开解码的类型化批次引入。仅用于 t.TempDir 数据。
 func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	t.Helper()
 	sum := sha256.Sum256([]byte(r.RunID))
@@ -98,7 +98,7 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	if err = json.Unmarshal(data, &h); err != nil {
 		t.Fatal(err)
 	}
-	// Start from Initialize's original bytes, even if the current head was compacted.
+	// 从 Initialize 的原始字节开始，即使当前头已压缩。
 	snapshot, err := os.ReadFile(filepath.Join(dir, base+".snapshot-"+h.OriginID))
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	if err = durable.ValidateInitialRecord(seed, r.RunID); err != nil {
 		t.Fatal(err)
 	}
-	// Replace the selected history, retaining the immutable Initialize snapshot.
+	// 替换选中的历史，保留不可变的 Initialize 快照。
 	h.Format = 2
 	h.Generation = 1
 	h.BaseID = ""

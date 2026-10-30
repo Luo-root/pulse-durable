@@ -22,7 +22,7 @@ func TestReasonClassifiesClockRegression(t *testing.T) {
 	}
 }
 
-// fake exercises local loop interleavings only, not database fencing/atomicity.
+// fake 仅测试本地循环交错，不验证数据库栅栏或原子性。
 type fake struct {
 	d.Coordinator
 	mu                                      sync.Mutex
@@ -268,12 +268,12 @@ func TestRenewUnknownRetainsExecutionAndCapacityUntilQuiescent(t *testing.T) {
 	f.mu.Lock()
 	f.renewUnknown = true
 	f.mu.Unlock()
-	until(t, func() bool { // wait until a failed renewal event seals the local session
+	until(t, func() bool { // 等待失败续租事件封闭本地会话
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		return f.claims == 1
 	})
-	// Observe cancellation through the explicit renewal event, not a sleep.
+	// 通过显式续租事件观察取消，而非休眠。
 	until(t, func() bool { return len(f.renewCalled) >= 2 })
 	drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()

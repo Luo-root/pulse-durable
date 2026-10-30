@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// All test sockets, including synthetic upstreams, are loopback ephemeral.
+// 所有测试套接字，包括合成上游，均使用回环地址的临时端口。
 func upstream(t *testing.T, handler func(net.Conn)) string {
 	t.Helper()
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -45,7 +45,7 @@ func upstream(t *testing.T, handler func(net.Conn)) string {
 	}()
 	t.Cleanup(func() {
 		ln.Close()
-		// Join accept first, so it cannot register sockets after this snapshot.
+		// 先等待 accept 结束，确保快照后不会再注册套接字。
 		<-acceptDone
 		mu.Lock()
 		for c := range conns {
@@ -122,8 +122,8 @@ func closed(t *testing.T, p *Proxy) {
 	}
 }
 
-// connectionClosed probes both paths: a successful write can merely enter the
-// local TCP buffer, so it must be followed by a read. A deadline is not closure.
+// connectionClosed 检查两个方向：写入成功可能只是进入
+// 本地 TCP 缓冲区，因此随后必须读取。超时不等于关闭。
 func connectionClosed(c net.Conn) error {
 	_, err := io.WriteString(c, "cut")
 	if err == nil {
@@ -160,7 +160,7 @@ func TestConnectionClosedRejectsOpenBlackhole(t *testing.T) {
 	if p.Snapshot().Active != 1 {
 		t.Fatal("negative control connection was not open")
 	}
-	// The old assertion accepted any non-nil Read error, including this timeout.
+	// 旧断言接受任意非 nil 的 Read 错误，包括此超时。
 	if _, err := p.Blackhole(ServerToClient, false); err != nil {
 		t.Fatal(err)
 	}
@@ -192,8 +192,8 @@ func TestNormalBidirectional(t *testing.T) {
 	}
 }
 
-// delayedWriteReturn exposes the interval between delivery and pump accounting.
-// The wrapped Write delivers real bytes before waiting for the test to release it.
+// delayedWriteReturn 暴露数据交付与转发协程记账之间的间隔。
+// 包装后的 Write 先交付真实字节，再等待测试放行。
 type delayedWriteReturn struct {
 	net.Conn
 	release <-chan struct{}
@@ -259,7 +259,7 @@ func TestPauseResumeBothDirectionsExistingAndNew(t *testing.T) {
 			p := proxy(t, echo(t))
 			old := dial(t, p)
 			roundtrip(t, old, "warm")
-			// Receiving warm does not join the pumps' post-Write accounting.
+			// 收到 warm 并不代表已等待转发协程完成 Write 后的记账。
 			eventually(t, func() bool {
 				s := p.Snapshot()
 				return s.Directions[0].ForwardedBytes == 4 && s.Directions[1].ForwardedBytes == 4

@@ -1,7 +1,7 @@
-// Package faultproxy provides a bounded, loopback-only TCP fault injector for
-// tests, not a production proxy. It does not parse SQL or identify commits.
-// PostgreSQL tests may use sslmode=disable and coordinate byte barriers with
-// application/database barriers. No payload bytes are logged or retained.
+// faultproxy 包为测试提供有界、仅限回环地址的 TCP 故障注入器，
+// 而非生产代理。它不解析 SQL，也不识别提交。
+// PostgreSQL 测试可使用 sslmode=disable，并将字节屏障与
+// 应用或数据库屏障协调。不记录或保留任何载荷字节。
 package faultproxy
 
 import (
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// Direction is relative to the client that connects to the proxy.
+// Direction 相对于连接到代理的客户端。
 type Direction uint8
 
 const (
@@ -26,15 +26,15 @@ const (
 
 var ErrClosed = errors.New("faultproxy: closed")
 
-// Config requires a numeric loopback IP:port upstream; DNS and external
-// connections are deliberately unsupported. MaxConnections defaults to 64.
+// Config 要求上游地址为数字形式的回环 IP:port；DNS 和外部连接被刻意禁用。
+// MaxConnections 默认值为 64。
 type Config struct {
 	Upstream       string
 	MaxConnections int
 }
 
-// DirectionStats counts chunks at the proxy, not TCP packets or SQL messages.
-// Interceptions increments once per chunk encountering any active fault.
+// DirectionStats 统计代理处的 chunk，而不是 TCP 数据包或 SQL 消息。
+// Interceptions 每遇到一次启用的故障就按 chunk 增加一次。
 type DirectionStats struct {
 	ReadBytes        uint64
 	ForwardedBytes   uint64
@@ -62,10 +62,9 @@ type connection struct {
 	cancel         context.CancelFunc
 }
 
-// Proxy controls existing and future connections. Controls affect bytes not yet
-// past the gate: bytes already written to kernel buffers cannot be recalled.
-// Each direction holds at most one fixed-size chunk per connection. Blackhole
-// drains and discards chunks immediately; Pause applies TCP backpressure.
+// Proxy 控制已有连接和未来连接。控制只影响尚未通过闸门的字节：已经写入内核缓冲区的字节无法收回。
+// 每个方向每条连接最多持有一个固定大小的 chunk。Blackhole 会立即读取并丢弃 chunk；
+// Pause 会施加 TCP 背压。
 type Proxy struct {
 	mu          sync.Mutex
 	listener    net.Listener
@@ -83,7 +82,7 @@ type Proxy struct {
 	wg          sync.WaitGroup
 }
 
-// Listen binds 127.0.0.1:0. Canceling ctx has the same teardown effect as Close.
+// Listen 绑定 127.0.0.1:0。取消 ctx 与调用 Close 具有相同的拆除效果。
 func Listen(ctx context.Context, cfg Config) (*Proxy, error) {
 	if ctx == nil {
 		return nil, errors.New("faultproxy: nil context")
@@ -138,8 +137,8 @@ func (p *Proxy) update(d Direction, f func(*policy)) (uint64, error) {
 	return p.stats.Directions[d].Interceptions, nil
 }
 
-// Pause returns a barrier baseline atomically with enabling the gate. Resume
-// releases held chunks; blackhole, when also enabled, discards them on release.
+// Pause 在启用闸门的同时原子返回 barrier 基线。Resume 释放持有的 chunk；
+// 如果同时启用了 blackhole，则在释放时丢弃这些 chunk。
 func (p *Proxy) Pause(d Direction) (uint64, error) {
 	return p.update(d, func(s *policy) { s.paused = true })
 }
@@ -151,8 +150,8 @@ func (p *Proxy) Blackhole(d Direction, enabled bool) (uint64, error) {
 	return p.update(d, func(s *policy) { s.blackhole = enabled })
 }
 
-// Delay is per read chunk, bounded by MaxDelay. Changing it wakes pending
-// delays; elapsed time counts toward the new delay. Pause and delay overlap.
+// Delay 作用于每个读取 chunk，并受 MaxDelay 限制。修改 Delay 会唤醒等待中的延迟；
+// 已经过的时间计入新的延迟。Pause 和 delay 可以重叠。
 func (p *Proxy) Delay(d Direction, delay time.Duration) (uint64, error) {
 	if delay < 0 || delay > MaxDelay {
 		return 0, errors.New("faultproxy: delay outside 0..MaxDelay")
@@ -160,9 +159,9 @@ func (p *Proxy) Delay(d Direction, delay time.Duration) (uint64, error) {
 	return p.update(d, func(s *policy) { s.delay = delay })
 }
 
-// WaitBarrier waits for an interception strictly newer than after. It proves
-// bytes reached an active fault gate, not that an upstream transaction committed.
-// Use the baseline returned by Pause/Blackhole/Delay, not timing sleeps.
+// WaitBarrier 等待严格晚于 after 的拦截事件。它只能证明字节到达了启用的故障闸门，
+// 不能证明上游事务已经提交。
+// 应使用 Pause/Blackhole/Delay 返回的基线，不要使用定时 sleep。
 func (p *Proxy) WaitBarrier(ctx context.Context, d Direction, after uint64) (DirectionStats, error) {
 	if d > ServerToClient {
 		return DirectionStats{}, errors.New("faultproxy: invalid direction")
@@ -187,8 +186,8 @@ func (p *Proxy) WaitBarrier(ctx context.Context, d Direction, after uint64) (Dir
 	}
 }
 
-// Cut closes both ends of all connections, including pending upstream dials,
-// and rejects new connections until Restore. Other directional policies remain.
+// Cut 关闭所有连接的两端，包括尚在拨号的上游连接，
+// 并在 Restore 前拒绝新连接。其他方向策略保持不变。
 func (p *Proxy) Cut() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -232,8 +231,8 @@ func (p *Proxy) shutdown() {
 	p.notify()
 }
 
-// Close is concurrent/idempotent and waits for all owned goroutines. Closing
-// sockets interrupts blocked reads/writes; cancellation interrupts gates/dials.
+// Close 支持并发、幂等调用，并等待其拥有的所有 goroutine。关闭
+// 套接字中断阻塞读写；取消操作中断关卡等待和拨号。
 func (p *Proxy) Close() error { p.shutdown(); <-p.done; return nil }
 
 func (p *Proxy) accept() {
@@ -287,7 +286,7 @@ func (p *Proxy) serve(c *connection) {
 		return
 	}
 	p.mu.Unlock()
-	// A connection has exactly two pumps, joined before it leaves the registry.
+	// 每个连接恰有两个转发协程，均结束后才从注册表移除。
 	done := make(chan struct{})
 	go func() {
 		p.pump(c.ctx, c.client, server, ClientToServer)

@@ -76,7 +76,7 @@ func TestProcessLock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Exit without Close: only the OS can release the held lock.
+		// 不调用 Close 直接退出：只有操作系统才能释放持有的锁。
 		_ = lock
 		os.Exit(0)
 	}

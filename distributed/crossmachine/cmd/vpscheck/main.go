@@ -1,5 +1,5 @@
-// vpscheck is restricted to the parent's explicitly authorized test runner.
-// It never accepts arbitrary remote shell commands or credentials on argv.
+// vpscheck 仅限父进程明确授权的测试运行器使用。
+// 绝不通过 argv 接收任意远端 shell 命令或凭据。
 package main
 
 import (
@@ -40,7 +40,7 @@ func (c remoteConfig) validate() error {
 	return nil
 }
 
-// No environment, cmdline text, executable paths or raw SSH output are reported.
+// 不报告环境、命令行文本、可执行文件路径或原始 SSH 输出。
 type killEvidence struct {
 	Kind           string `json:"kind"`
 	ProcExists     bool   `json:"proc_exists"`
@@ -51,9 +51,9 @@ type killEvidence struct {
 	Gone           bool   `json:"gone"`
 }
 
-// Values substituted below are validated numeric/safe-identifier tokens only.
-// stat's comm may contain spaces or ')'; strip through its last ') ' first,
-// then starttime (original field 22) is field 20 of the remaining text.
+// 下方替换值仅限经过验证的数字或安全标识符 token。
+// stat 的 comm 可能含空格或 ')'；先移除截至最后一个 ') ' 的部分，
+// 此后 starttime（原第 22 字段）位于剩余文本的第 20 字段。
 const remoteScript = `set -eu
 pid=__PID__
 ns=__NS__
@@ -91,8 +91,8 @@ func killCommand(config remoteConfig, w cm.WorkerEvidence, namespace string) (cm
 		return cm.Command{}, errors.New("invalid test kill target")
 	}
 	script := strings.NewReplacer("__PID__", strconv.Itoa(w.PID), "__NS__", namespace, "__SHA__", config.ExpectedSHA).Replace(remoteScript)
-	// OpenSSH joins remote args through a shell. Quote the entire fixed script;
-	// none of the validated substitutions can contain a single quote.
+	// OpenSSH 通过 shell 拼接远端参数。对整个固定脚本加引号；
+	// 所有经过验证的替换值均不可能包含单引号。
 	quoted := "'" + strings.ReplaceAll(script, "'", "'\"'\"'") + "'"
 	return cm.Command{Path: config.SSHExecutable, Args: []string{
 		"-n", "-T", "-i", config.IdentityFile, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10",
@@ -100,7 +100,7 @@ func killCommand(config remoteConfig, w cm.WorkerEvidence, namespace string) (cm
 	}}, nil
 }
 
-// boundedOutput prevents unexpected remote output from exhausting local memory.
+// boundedOutput 防止意外远端输出耗尽本地内存。
 type boundedOutput struct{ bytes.Buffer }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
@@ -121,7 +121,7 @@ func killRemote(ctx context.Context, config remoteConfig, w cm.WorkerEvidence, n
 	cmd.WaitDelay = time.Second
 	var stdout boundedOutput
 	cmd.Stdout = &stdout
-	// Never expose SSH/backend diagnostics, which may contain sensitive data.
+	// 绝不暴露可能包含敏感数据的 SSH 或后端诊断。
 	cmd.Stderr = nil
 	err = cmd.Run()
 	var e killEvidence
@@ -169,7 +169,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "invalid VPS kill configuration")
 		return 2
 	}
-	// Reserve output before any side effects; do not discard a run over a collision.
+	// 在任何副作用前预留输出位置；不得因名称冲突丢弃一次运行。
 	out, err := os.OpenFile(*output, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "report output unavailable")

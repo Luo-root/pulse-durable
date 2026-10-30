@@ -1,38 +1,38 @@
 package worker
 
-// Operational contract
+// 运行契约
 //
-// New requires explicit capacity, timing and a Renewer. Use a dedicated database
-// pool for Renewer: worker goroutines cannot guarantee renewal priority inside a
-// shared exhausted pool. Every coordinator call has a context deadline; the
-// backend must honor cancellation. Factories/codecs and Observe are trusted host
-// code and must terminate promptly. Business effects still require idempotency.
+// New 要求显式指定容量、时间配置及 Renewer。为 Renewer 使用专用数据库
+// 连接池：共享连接池耗尽时，工作 goroutine 无法保证续租优先级。
+// 每个协调器调用都有上下文截止时间；
+// 后端必须遵守取消。工厂、编解码器和 Observe 是可信宿主代码，
+// 必须及时结束。业务副作用仍要求幂等性。
 //
-// Run is single-use. Pause stops admission (a Claim already admitted may complete)
-// while active sessions keep renewing. Resume cannot reverse Drain. Drain stops
-// admission without canceling active executions and returns only when all local
-// reservations quiesce, or its caller's deadline expires. Canceling Run's context
-// is host shutdown, not business cancellation; it stops local execution and lets
-// uncertain leases expire. An uncooperative execution can outlive Run, remains in
-// Active, and prevents Drain from reporting success. No lease is released before
-// the actual execution and in-flight saves return.
+// Run 只能使用一次。Pause 停止准入（已准入的 Claim 可能完成），
+// 活跃会话则继续续租。Resume 无法撤销 Drain。Drain 停止
+// 准入但不取消活跃执行，仅在所有本地预留静止，
+// 或调用方截止时间到期时返回。取消 Run 的上下文
+// 表示宿主停机而非业务取消；它停止本地执行，并让
+// 不确定租约自然过期。不配合取消的执行可在 Run 返回后继续，仍计入
+// Active，并阻止 Drain 报告成功。在实际执行及进行中的保存
+// 返回前，不释放任何租约。
 //
-// Business cancellation is Coordinator.Cancel, not Pause, Drain or host context
-// cancellation. The coordinator fences subsequent operations; renewal rejection
-// cancels local execution. This package does not infer a canceled terminal state
-// from context.Canceled. Completed/failed terminal writes require Runtime outcomes.
+// 业务取消使用 Coordinator.Cancel，而非 Pause、Drain 或宿主上下文
+// 取消。协调器为后续操作设置栅栏；续租被拒绝时
+// 取消本地执行。本包不根据 context.Canceled 推断
+// 取消终态。完成或失败终态写入要求 Runtime 结果。
 //
-// Unknown Claim uses the original IDs exclusively. ResolveClaim serializes with
-// the original request: only a durable Closed acknowledgement frees that slot;
-// a returned Claim still requires successful Renew before first execution.
-// Unknown or invalid resolution responses retain the reservation for retry.
-// FindClaim is not used as negative evidence. Renewal/Save uncertainty never
-// restarts the same token. Shutdown retains unresolved reservations, and a Worker
-// is single-use. Finish/Block/Release errors are reported and left to
-// authoritative expiry/administrative reconciliation, never blindly replayed.
+// Claim 结果未知时仅使用原始 ID。ResolveClaim 与
+// 原请求串行化：只有持久 Closed 确认才能释放该槽位；
+// 返回的 Claim 仍须先成功 Renew，才能首次执行。
+// 未知或无效的解析响应保留预留容量以供重试。
+// 不将 FindClaim 用作不存在的证据。续租或 Save 不确定时绝不
+// 重启同一令牌。停机保留未解决的预留，且 Worker
+// 只能使用一次。Finish/Block/Release 错误会报告并留待
+// 权威过期或管理员协调处理，绝不盲目重放。
 //
-// Events use fixed reason codes and identities, without payloads or arbitrary
-// errors. IDs belong in logs/traces, not default metric labels. Observer panics
-// are contained; blocking observers are a host contract violation. No database,
-// OS-process, cross-machine or external side-effect guarantee is established by
-// this package's fake-coordinator tests.
+// 事件使用固定原因码和身份，不包含载荷或任意
+// 错误。ID 应放在日志或追踪中，而非默认指标标签。观察器 panic
+// 被隔离；阻塞观察器违反宿主契约。本包的模拟协调器测试
+// 不能证明数据库、操作系统进程、跨机器或外部副作用的
+// 任何保证。

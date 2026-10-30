@@ -52,7 +52,7 @@ func TestChangeBatchWireAllOperationVariants(t *testing.T) {
 	if string(wire) != string(wire2) {
 		t.Fatal("variant wire not canonical after roundtrip")
 	}
-	// Apply against an exact precondition-compatible record, then compare the logical result.
+	// 对满足精确前置条件的记录应用变更，再比较逻辑结果。
 	record := RunRecord{Format: 2, RunID: "r", Revision: 1, Version: "v", Definition: "d", Inputs: "i", RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{}}
 	if _, err := decoded.ApplyTo(&record); err != nil {
 		t.Fatalf("decoded variants did not apply: %v", err)

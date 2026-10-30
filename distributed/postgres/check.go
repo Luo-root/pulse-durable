@@ -1,8 +1,8 @@
 package postgres
 
-// check_schema runs as the migration owner to inspect objects without exposing
-// table contents. session_user always names the authenticated login, including
-// when this function is called through SECURITY DEFINER api.
+// check_schema 以迁移所有者身份检查对象，而不暴露
+// 表内容。session_user 始终指向已认证的登录身份，
+// 即使此函数经 SECURITY DEFINER api 调用也如此。
 var checkSQL = `CREATE FUNCTION pulse_durable_distributed.check_schema() RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $check$
 DECLARE actual text; expected text; n integer; v integer;

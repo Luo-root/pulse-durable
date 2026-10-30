@@ -72,9 +72,9 @@ func TestClockRegressionIsSanitizedAndStable(t *testing.T) {
 	}
 }
 
-// Integration tests require BOTH a dedicated DSN and explicit destructive opt-in.
-// They create roles and install or verify the dedicated schema, but never DROP
-// any schema (legacy or distributed). Use a disposable database; DDL drift fails closed.
+// 集成测试同时要求专用 DSN 和显式启用破坏性操作。
+// 它们创建角色并安装或验证专用模式，但绝不 DROP
+// 任何模式（旧版或分布式）。使用一次性数据库；DDL 漂移时安全拒绝。
 func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 	t.Helper()
 	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
@@ -100,8 +100,8 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 		t.Fatal(scrub(e, false))
 	}
 	if exists {
-		// A failed test may leave the explicitly dedicated schema installed. It is
-		// verified by Migrate; never silently replaced or dropped.
+		// 测试失败可能留下明确指定的专用模式。由 Migrate
+		// 验证该模式，绝不悄然替换或删除。
 	}
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	role := "pulse_dist_test_" + suffix
@@ -202,8 +202,8 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal("duplicate claim", len(got))
 		}
 		a := got[0]
-		// Set a large authoritative revision as administrator, then exercise the real
-		// worker CAS and actual JSON numeric path beyond float64 integer precision.
+		// 以管理员身份设置较大的权威修订号，再测试真实
+		// 工作进程 CAS 及超出 float64 整数精度的实际 JSON 数字路径。
 		r := record(task, math.MaxUint64-1)
 		b, _ := json.Marshal(r)
 		if _, e := admin.Exec(ctx, "UPDATE pulse_durable_distributed.runs SET revision=$1::numeric,record=$2 WHERE namespace=$3 AND run_id=$4", strconv.FormatUint(r.Revision, 10), b, ns, "concurrent"); e != nil {
@@ -239,7 +239,7 @@ func TestPostgresProtocol(t *testing.T) {
 		if e = c.InitializeOwned(ctx, d.InitializeRequest{Token: a.Token, Record: record(task, 1), Mutation: mut("save-a")}); e != nil {
 			t.Fatal(e)
 		}
-		// Administrator barrier deliberately expires A without modifying revision.
+		// 管理员屏障有意使 A 过期，但不修改修订号。
 		if _, e = admin.Exec(ctx, "UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1 AND run_id=$2", ns, "stale"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
@@ -321,8 +321,8 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal(scrub(e, false))
 		}
 		defer tx.Rollback(ctx)
-		// Hold the row, launch Renew, then wait until pg_stat_activity proves it is
-		// blocked. Expire the row inside the locking transaction before releasing it.
+		// 锁住该行，启动 Renew，再等待 pg_stat_activity 证明其
+		// 已阻塞。在释放前，于持锁事务内使该行过期。
 		if _, e = tx.Exec(ctx, "SELECT 1 FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2 FOR UPDATE", ns, "locked"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
@@ -357,8 +357,8 @@ func TestPostgresProtocol(t *testing.T) {
 		}
 	})
 	t.Run("safe isolated fencing mutation controls", func(t *testing.T) {
-		// Mutation variants never replace production functions. A transaction-local
-		// temporary table models the identical revision/old-token interleaving.
+		// 变异版本绝不替换生产函数。事务内的临时表
+		// 模拟相同的修订号与旧令牌交错。
 		tx, e := admin.Begin(ctx)
 		if e != nil {
 			t.Fatal(scrub(e, false))
@@ -378,7 +378,7 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e = tx.Exec(ctx, "UPDATE mutation_run SET revision=7"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
-		// A prior successful read does not protect a later unfenced write.
+		// 先前的成功读取不能保护后续未受栅栏保护的写入。
 		var readRevision int
 		if e = tx.QueryRow(ctx, "SELECT revision FROM mutation_run").Scan(&readRevision); e != nil {
 			t.Fatal(scrub(e, false))
@@ -393,8 +393,8 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e = tx.Exec(ctx, "UPDATE mutation_run SET lease_until=clock_timestamp()+interval '2 milliseconds'"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
-		// Wait on database time, not the host clock. now() remains at transaction
-		// entry and would incorrectly authorize this already-expired row.
+		// 等待数据库时间，而非主机时钟。now() 停留在事务
+		// 开始时，会错误授权此已过期行。
 		if _, e = tx.Exec(ctx, "SELECT pg_sleep(0.01)"); e != nil {
 			t.Fatal(scrub(e, false))
 		}
@@ -474,8 +474,8 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal(e)
 		}
 		worker := d.Worker{ID: "resolve-worker", BootID: "resolve-boot"}
-		// Resolve-first permanently closes an unused ID; a later Claim must not
-		// reuse it, even though a matching queued run exists.
+		// 先 Resolve 会永久关闭未使用 ID；后续 Claim 不得
+		// 复用它，即使存在匹配的排队运行。
 		unused := digest([]byte(ns + "unused"))[:32]
 		r, e := c.ResolveClaim(ctx, ns, worker, unused)
 		if e != nil || !r.Closed || r.Claim != nil {
@@ -488,8 +488,8 @@ func TestPostgresProtocol(t *testing.T) {
 		if _, e = c.Claim(ctx, d.ClaimRequest{Namespace: ns, Worker: worker, Capabilities: []d.Route{lateTask.Route()}, Limit: 1, TTL: time.Minute, LeaseIDs: []string{unused}}); !errors.Is(e, d.ErrInvalid) {
 			t.Fatalf("late claim accepted: %v", e)
 		}
-		// Claim-first represents a committed response that may be lost. Resolve
-		// must wait/read the durable lease row and return the same claim.
+		// 先 Claim 表示已提交但响应可能丢失。Resolve
+		// 必须等待或读取持久租约行，并返回相同领取结果。
 		leaseID := digest([]byte(ns + "resolve-delayed"))[:32]
 		if _, e = c.Claim(ctx, d.ClaimRequest{Namespace: ns, Worker: worker, Capabilities: []d.Route{task.Route()}, Limit: 1, TTL: time.Minute, LeaseIDs: []string{leaseID}}); e != nil {
 			t.Fatal(e)

@@ -28,7 +28,7 @@ func (s *activeAliasSignals) recordStoreError(op string, ctx context.Context, er
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
 	if s.storeErr == nil {
-		// Keep the original cause and context state, never the batch or record payload.
+		// 保留原始原因及上下文状态，绝不保留批次或记录载荷。
 		s.storeErr = fmt.Errorf("%s: %w (context: %v)", op, err, ctx.Err())
 	}
 }
@@ -190,8 +190,8 @@ func TestActiveAliasCanCommitBeforeSourceFinishes(t *testing.T) {
 				}
 				timeout := 4 * time.Second
 				if backend == "filestore" {
-					// Channels enforce ordering; this bounds deadlocks, not storage speed.
-					// Allow race-instrumented file syncs and the wrapper's full Load after each Apply.
+					// 通道保证顺序；此处限制死锁，而非衡量存储速度。
+					// 为竞态检测下的文件同步及包装器每次 Apply 后的完整 Load 留出时间。
 					timeout = 10 * time.Second
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -467,7 +467,7 @@ func (s *failedAliasBoundarySession) Apply(ctx context.Context, batch durable.Ch
 		if stream.Stream.Terminal == "failed" && s.owner.fired.CompareAndSwap(false, true) {
 			match = true
 			if !s.owner.confirmRoot {
-				// Recreate the legacy partial format at a real Save boundary.
+				// 在真实 Save 边界重建旧版部分格式。
 				root := record.Attempts[stream.Stream.Attempt]
 				root.State = durable.AttemptActive
 				record.Attempts[stream.Stream.Attempt] = root

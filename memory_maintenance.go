@@ -9,7 +9,7 @@ import (
 
 type memoryHistory struct {
 	generation uint64
-	first      uint64 // explicit oldest retained revision; never inferred from missing data
+	first      uint64 // 显式指定最早保留修订号，绝不根据缺失数据推断
 	base       uint64
 	anchors    map[uint64][32]byte
 	snapshots  map[uint64]RevisionImage
@@ -62,8 +62,8 @@ func (s *MemoryStore) InspectStorage(ctx context.Context, id string) (StorageSta
 	return s.storageLocked(id)
 }
 
-// LoadRevision captures immutable batches and an isolated nearest snapshot under
-// the store lock. Replaying runs outside that lock, independently of writers.
+// LoadRevision 在存储锁内捕获不可变批次及隔离的最近快照。
+// 重放在锁外执行，独立于写入方。
 func (s *MemoryStore) LoadRevision(ctx context.Context, id string, revision uint64) (RevisionImage, error) {
 	if err := maintenanceContext(ctx, s, id); err != nil {
 		return RevisionImage{}, err

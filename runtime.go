@@ -191,9 +191,9 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 		if err := state.reconcileFailedStreams(ctx); err != nil {
 			return execution, checkpointError("reconcile failed streams", err)
 		}
-		// No restore events, host registrations or Start for a scope whose
-		// final business failure is already authoritative. This Execution
-		// remains pending; the returned error, not Snapshot, is the verdict.
+		// 对最终业务失败已成为权威结论的作用域，不触发恢复事件、
+		// 宿主注册或 Start。此 Execution 保持待启动状态；
+		// 判定依据是返回错误，而非 Snapshot。
 		if err := state.scopeFailure(stored.RootScope); err != nil {
 			outcome = OutcomeFailed
 			return execution, err

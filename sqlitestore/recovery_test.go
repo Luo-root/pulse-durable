@@ -22,9 +22,9 @@ const recoveryExit = 73
 
 var uncertainApply = errors.New("test: SQLite committed but acknowledgement was lost")
 
-// These are Runtime tests against a real SQLite database, not lock tests.
-// Every Run and Resume reconstructs the graph in a separate process. Audit files
-// observe business entries only; business and recovery never read them.
+// 这些是对真实 SQLite 数据库的 Runtime 测试，而非锁测试。
+// 每次 Run 和 Resume 都在独立进程中重建图。审计文件
+// 仅观察业务进入；业务及恢复过程绝不读取它们。
 func TestSQLiteRuntimeRecovery(t *testing.T) {
 	for _, scenario := range []string{"node-before", "node-after", "sub-before", "sub-after", "retry-failed", "retry-exhausted", "uncertain-node", "stream-append-after", "message-before", "message-after", "uncertain-message"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -117,7 +117,7 @@ func TestSQLiteRuntimeRecovery(t *testing.T) {
 					}
 				}
 			}
-			// A third independent process must not replay any confirmed business.
+			// 第三个独立进程不得重放任何已确认业务。
 			trace := recoveryAudits(t, dir)
 			runRecoveryChild(t, dir, scenario, "resume", 0)
 			final := readRecoveryRecord(t, dir)
@@ -213,8 +213,8 @@ func assertAudit(t *testing.T, dir, name, want string) {
 	}
 }
 
-// The wrapper only selects a boundary from the candidate record. All persistence
-// is performed by the real SQLite Session.Apply; no product fault hooks are used.
+// 包装器仅根据候选记录选择边界。所有持久化
+// 均由真实 SQLite Session.Apply 完成，不使用产品故障钩子。
 type recoveryStore struct {
 	durable.Store
 	scenario string
@@ -523,8 +523,8 @@ func assertFinishedStream(t *testing.T, r durable.RunRecord) {
 	}
 }
 
-// Observe entry into Apply without a scheduler-delay guess. The concrete session
-// mutex is held by Apply, and its Store connection is checked out for BEGIN.
+// 无须猜测调度延迟，即可观察进入 Apply。具体会话的
+// 互斥锁由 Apply 持有，且其 Store 连接已取出用于 BEGIN。
 func awaitSQLiteApply(t *testing.T, ss *session) {
 	t.Helper()
 	deadline := time.NewTimer(3 * time.Second)
@@ -554,8 +554,8 @@ func TestSQLiteBusyApplyCancellation(t *testing.T) {
 	if err := ss.Initialize(t.Context(), old); err != nil {
 		t.Fatal(err)
 	}
-	// A separate RunID owns this connection's independent write transaction;
-	// durable run ownership is not the source of contention.
+	// 另一个 RunID 持有此连接的独立写事务；
+	// 争用并非来自持久运行所有权。
 	acquire(t, blocker, "blocking-run")
 	conn, err := blocker.db.Conn(t.Context())
 	if err != nil {
@@ -587,8 +587,8 @@ func TestSQLiteBusyApplyCancellation(t *testing.T) {
 	select {
 	case saveErr = <-done:
 	case <-time.After(7 * time.Second):
-		// Always release the SQL lock before teardown so even a cancellation
-		// defect cannot leave Close waiting indefinitely on this test's lock.
+		// 拆除前始终释放 SQL 锁，避免即使取消有缺陷，
+		// Close 也因测试持有的锁而无限等待。
 		release()
 		select {
 		case saveErr = <-done:
@@ -602,8 +602,8 @@ func TestSQLiteBusyApplyCancellation(t *testing.T) {
 	if !errors.Is(saveErr, context.Canceled) || errors.Is(saveErr, durable.ErrBusy) || errors.Is(saveErr, durable.ErrConflict) {
 		t.Errorf("busy cancellation classification: %v", saveErr)
 	}
-	// Check authority before releasing the blocking transaction or issuing a new
-	// write. A failed/uncertain Apply is never blindly retried.
+	// 释放阻塞事务或发出新写入前检查权威状态。
+	// 绝不盲目重试失败或结果不确定的 Apply。
 	got, err := ss.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -633,8 +633,8 @@ func TestSQLiteConcurrentOperationsAndClose(t *testing.T) {
 		if err := ss.Initialize(t.Context(), initial); err != nil {
 			t.Fatal(err)
 		}
-		// Occupy the only connection as a deterministic barrier: Apply has taken
-		// its session mutex before Load and both Close operations are released.
+		// 占用唯一连接作为确定性屏障：在放行 Load 和两个 Close
+		// 操作前，Apply 已获取其会话互斥锁。
 		conn, err := s.db.Conn(t.Context())
 		if err != nil {
 			t.Fatal(err)

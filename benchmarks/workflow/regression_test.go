@@ -19,7 +19,7 @@ func TestSQLiteFilePaths(t *testing.T) {
 			c.Engine, c.Backend, c.Nodes, c.Iterations = "go-workflows", "file", 2, 2
 			c.Timeout = 10 * time.Second
 			c.Dir = filepath.Join(localDir(t), name)
-			r := runCase(c) // Includes an isolated warmup and two fresh measured backends.
+			r := runCase(c) // 包含独立预热以及两个全新后端的测量。
 			if r.Status != "ok" || r.Iterations != 2 || r.Checksum == nil || *r.Checksum != expected(c) {
 				t.Fatalf("%+v", r)
 			}
@@ -41,7 +41,7 @@ func TestSQLiteFilePaths(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
 					probe := c
-					probe.Mode, probe.Iterations = "reopen", 1 // Inspect without starting a worker.
+					probe.Mode, probe.Iterations = "reopen", 1 // 不启动工作进程，直接检查。
 					s, err := prepareWorkflows(ctx, probe, dir, nil, 0)
 					if err != nil {
 						t.Fatal(err)

@@ -53,8 +53,8 @@ func TestPGUncertainUnlockDiscardsConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := acquired.(*session)
-	// Invalidate the expected lock state. Close must not return this backend
-	// to the idle pool even when PostgreSQL returns false without a SQL error.
+	// 使预期锁状态失效。即使 PostgreSQL 返回 false 且无 SQL 错误，
+	// Close 也不得将此后端放回空闲池。
 	if _, err = x.conn.Exec(ctx, `SELECT pg_advisory_unlock_all()`); err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,8 @@ func TestPGCrossStoreSaturatedPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	// Fill only the second Store's pool. Its local reservation table has no
-	// knowledge of first's run; a caller deadline bounds this capacity wait.
+	// 仅填满第二个 Store 的连接池。其本地预留表不知道
+	// 第一个 Store 的运行；调用方截止时间限制此容量等待。
 	held := make([]interface{ Release() }, 0)
 	defer func() {
 		for _, c := range held {

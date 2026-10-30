@@ -10,8 +10,8 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// orderedClaim models the permanent per-ID serialization contract, not SQL.
-// Claim returns unknown while its server-side decision remains behind a barrier.
+// orderedClaim 模拟每个 ID 的永久串行化契约，而非 SQL。
+// 服务端决策仍阻塞在屏障后时，Claim 返回未知。
 type orderedClaim struct {
 	*fake
 	mu                              sync.Mutex
@@ -88,7 +88,7 @@ func TestDelayedClaimResolveOrdering(t *testing.T) {
 			runWorker(t, w)
 			await(t, model.lateReady)
 			await(t, model.resolveEntered)
-			// Stop new admission while resolving the existing reserved slot.
+			// 解析已有预留槽位时停止新的准入。
 			w.Pause()
 			if claimFirst {
 				close(model.lateCommit)
@@ -113,7 +113,7 @@ func TestDelayedClaimResolveOrdering(t *testing.T) {
 				if committed || !closed || calls.Load() != 0 {
 					t.Fatal("late claim escaped durable closure")
 				}
-				// Closed has recovered capacity: admission can make a fresh independent poll.
+				// Closed 已恢复容量：准入可发起一次独立的新轮询。
 				w.Resume()
 				until(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.claims >= 2 })
 				w.Pause()

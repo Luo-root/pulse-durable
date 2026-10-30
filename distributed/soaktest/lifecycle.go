@@ -11,10 +11,10 @@ type lifecycleWorker interface {
 	Drain(context.Context) error
 }
 
-// Graceful shutdown never cancels an in-flight Claim/ResolveClaim/renewal.
-// Drain seals admission and waits for every capacity reservation; Run must then
-// exit before its context is canceled. Timeouts remain failures, not exceptions
-// to event classification.
+// 优雅停机绝不取消进行中的 Claim、ResolveClaim 或续租。
+// Drain 封闭准入并等待所有容量预留释放；随后 Run 必须
+// 在其上下文被取消前退出。超时仍算失败，不是事件分类的
+// 例外。
 func runLifecycle(parent context.Context, shutdown <-chan struct{}, w lifecycleWorker, emit func(string)) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

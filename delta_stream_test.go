@@ -13,7 +13,7 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 		{Sequence: 2, Value: ValueRecord{Data: []byte("two")}},
 		{Sequence: 3, Value: ValueRecord{Data: []byte("three")}},
 	}, LastSequence: 3}}
-	// Capture a real older Save parameter, then select the next execution path.
+	// 捕获真实的旧 Save 参数，再选择下一条执行路径。
 	legacy.saved = cloneRecord(s.record)
 	saved := cloneRecord(legacy.saved)
 	authority := &deltaTestStore{record: cloneRecord(s.record)}
@@ -48,7 +48,7 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 		t.Fatal("delta mutated old Save argument")
 	}
 	batch := authority.batches[0]
-	// Applying a retained batch to another authority must never expose its tables.
+	// 将保留批次应用到另一权威状态时，绝不能暴露该批次的表。
 	independent := cloneRecord(before)
 	if _, err := batch.ApplyTo(&independent); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 	if string(again.Streams["stream"].Pending[0].Value.Data) != "new" {
 		t.Fatal("record mutation reached retained batch")
 	}
-	// Wrong identity and stale revision fail without changing any object.
+	// 身份错误和过期修订号均应失败，且不改变任何对象。
 	for _, mutate := range []func(*RunRecord){func(r *RunRecord) { r.RunID = "other" }, func(r *RunRecord) { r.Revision++ }, func(r *RunRecord) { r.Version = "other" }} {
 		bad := cloneRecord(before)
 		mutate(&bad)
@@ -78,7 +78,7 @@ func TestDeltaSameStreamMultipleOperationsAndIsolation(t *testing.T) {
 }
 
 func TestDeltaIsMandatoryWithoutOptions(t *testing.T) {
-	// Every Session uses one seed followed by genuine typed Apply calls.
+	// 每个 Session 使用一次种子初始化，随后进行真正的类型化 Apply 调用。
 	o := &deltaTestStore{}
 	total := 0
 	g := deltaManagedGraph(t, 10, &total)

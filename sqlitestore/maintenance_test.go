@@ -97,7 +97,7 @@ func TestMaintenanceSynthesisHistory(t *testing.T) {
 	}
 }
 
-// snapshotBytes captures the physical immutable anchor, not just its decoded value.
+// snapshotBytes 捕获物理不可变锚点，而非仅捕获解码值。
 func snapshotBytes(t *testing.T, s *Store, id, revision string) (record, digest, chain []byte) {
 	t.Helper()
 	if err := s.db.QueryRow(`SELECT record,digest,chain FROM durable_snapshots WHERE run_id=? AND revision=?`, id, revision).Scan(&record, &digest, &chain); err != nil {
@@ -114,8 +114,8 @@ func TestMaintenanceSameBasePreservesImmutableSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss.Close()
-	// Valid noncanonical bytes ensure re-encoding would observably change the
-	// original revision-1 seed, even though the decoded record is identical.
+	// 合法的非规范字节确保重新编码会明显改变
+	// 原始修订 1 种子，即使解码后的记录完全相同。
 	data, _, _ := snapshotBytes(t, s, r.RunID, "1")
 	data = append([]byte(" \n"), data...)
 	digest := sha256.Sum256(data)
@@ -155,8 +155,8 @@ func TestMaintenanceSameBasePreservesImmutableSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Synthesized snapshots also accept noncanonical valid JSON; their
-			// chain remains the original batch anchor, not the snapshot digest.
+			// 合成快照也接受非规范的合法 JSON；其
+			// 链保持原始批次锚点，而非快照摘要。
 			data, _, _ = snapshotBytes(t, s, r.RunID, base.s)
 			data = append([]byte(" \n"), data...)
 			digest = sha256.Sum256(data)
@@ -418,8 +418,8 @@ func TestSynthesizedSnapshotLosslessAndStructure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Re-encode an invalid, but checksum-correct, synthesized snapshot. It must not
-	// pass simply because snapshot bytes and their digest agree.
+	// 重新编码一个无效但校验和正确的合成快照。不能仅因
+	// 快照字节与其摘要一致就通过。
 	delete(image.Record.Scopes, image.Record.RootScope)
 	wire, err := recordio.EncodeSnapshot(image.Record)
 	if err != nil {

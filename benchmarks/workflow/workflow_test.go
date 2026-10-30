@@ -306,7 +306,7 @@ func TestRealProcessRecovery(t *testing.T) {
 	}
 }
 
-// Optional ten-step run only; no scale matrix runs unless -bench is requested.
+// 仅可选运行十步骤场景；除非指定 -bench，否则不运行规模矩阵。
 func BenchmarkRun(b *testing.B) {
 	for _, engine := range []string{"durable", "go-workflows"} {
 		for _, storage := range []string{"memory", "file"} {

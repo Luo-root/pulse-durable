@@ -7,9 +7,9 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// ResolveClaim either returns a currently valid committed claim, or permanently
-// closes this ID against delayed claims. Errors never imply closure. The SQL
-// operation locks the durable lease ID before its run, matching Claim lock order.
+// ResolveClaim 返回当前有效的已提交领取结果，或永久
+// 关闭此 ID，防止延迟领取。错误绝不意味着关闭。SQL
+// 操作先锁持久租约 ID，再锁运行，与 Claim 的锁顺序一致。
 func (c *Coordinator) ResolveClaim(ctx context.Context, ns string, w d.Worker, id string) (d.ClaimResolution, error) {
 	if !validText(ns) || !validWorker(w) || !lease(id) {
 		return d.ClaimResolution{}, d.ErrInvalid
