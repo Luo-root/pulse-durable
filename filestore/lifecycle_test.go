@@ -56,7 +56,7 @@ func TestCloseWaitsForInflightApply(t *testing.T) {
 	}
 }
 func TestApplyRejectsChangedHeadAndChainBudget(t *testing.T) {
-	for _, mode := range []string{"anchor", "budget"} {
+	for _, mode := range []string{"anchor", "budget", "valid-head"} {
 		t.Run(mode, func(t *testing.T) {
 			st := newTestStore(t)
 			ss := acquireTestSession(t, st, "run")
@@ -66,11 +66,21 @@ func TestApplyRejectsChangedHeadAndChainBudget(t *testing.T) {
 			}
 			inner := ss.(*session)
 			h := inner.head
+			want := durable.ErrInvalidRecord
 			if mode == "anchor" {
 				h.HeadChain[0] ^= 1
-			} else {
+			} else if mode == "budget" {
 				h.BatchBytes = maxChainBytes
 				h.HistoryBytes = maxChainBytes
+			} else {
+				// 权威头合法但本地缓存仍旧时，仍须走 CAS 冲突而非损坏分类。
+				if _, err := ss.Apply(t.Context(), revisionBatch(t, r)); err != nil {
+					t.Fatal(err)
+				}
+				current := inner.head
+				inner.head, inner.record = h, durable.CloneRecord(r)
+				h = current
+				want = durable.ErrConflict
 			}
 			data, err := json.Marshal(h)
 			if err != nil {
@@ -79,8 +89,8 @@ func TestApplyRejectsChangedHeadAndChainBudget(t *testing.T) {
 			if err = os.WriteFile(inner.path, data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = ss.Apply(t.Context(), revisionBatch(t, r)); !errors.Is(err, durable.ErrConflict) {
-				t.Fatal("changed head accepted", err)
+			if _, err = ss.Apply(t.Context(), revisionBatch(t, r)); !errors.Is(err, want) {
+				t.Fatalf("changed head error=%v, want %v", err, want)
 			}
 			after, err := os.ReadFile(inner.path)
 			if err != nil || string(after) != string(data) {

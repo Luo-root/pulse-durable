@@ -41,13 +41,17 @@ if err != nil {
 
 支持 Unix 权限位的平台，新目录使用 `0700`，新文件使用 `0600`；已有目录权限不会被修改。Windows 使用目录 ACL。宿主负责目录、备份及数据保留策略，检查点不是加密容器。
 
-每个 RunID 按其原文的 SHA-256 定位文件，RunID 不直接拼成路径。新布局使用 `.snapshot-<id>` 首快照、`.batch-<id>` 不可变批和 `.head` 权威 manifest；所有权仍使用 `.lock`。锁文件保留是正常情况，独占权来自 OS 锁，Close 或进程退出后释放。不要删除锁文件解除 `ErrBusy`，否则可能产生两个独占域。
+每个 RunID 按其原文的 SHA-256 定位文件，RunID 不直接拼成路径。布局使用 `.snapshot-<id>` 快照、`.batch-<id>` 不可变批、`.history-<id>` 不可变快照索引和 `.head` 权威 manifest；所有权仍使用 `.lock`。每个批带固定 256 字节的路由头，包含 payload 摘要、父引用和跳指针；引用摘要逐级受 head 保护。每次合成只追加一个快照索引节点，不复制此前的快照目录。锁文件保留是正常情况，独占权来自 OS 锁，Close 或进程退出后释放。不要删除锁文件解除 `ErrBusy`，否则可能产生两个独占域。
 
-Initialize 发布首快照和初始 head；普通 Apply 写不可变批并同步，再原子替换同目录的小 head，不重写整份历史。Load 只沿 head 引用校验快照摘要、连续修订号、批摘要和父链，不以 mtime 或目录排序推断提交。批已写但 head 未发布时属于未提交孤儿，不可认回为业务成果；head 发布后的确认失败按未知提交处理。显式快照合成通过独立的 `durable.Maintenance` 完成，不是普通 Apply 的全量写入回退。`InspectStorage(ctx, runID)` 读取 generation、base/head revision 与 chain；`LoadRevision(ctx, runID, revision)` 返回精确历史投影及原链锚点，不执行业务代码，也不建立持久 pin。`CompactStorage` 请求须携带 RunID、正数 `ThroughRevision` 与从 Inspect 取得的 `ExpectedGeneration`，目标须位于当前 base 与 head 之间；generation 过期返回 `ErrConflict`。
+Initialize 发布首快照和初始 head；普通 Apply 只写一个不可变批并同步，再原子替换同目录的小 head，不重写整份历史或快照索引。Load 沿 head 引用校验当前 base 快照和到 head 的连续批，不以 mtime 或目录排序推断提交。快照、批或索引已写但 head 未发布时属于未提交孤儿，不可认回为业务成果；head 发布后的确认失败按未知提交处理。显式快照合成通过独立的 `durable.Maintenance` 完成。`InspectStorage(ctx, runID)` 读取 generation、base/head revision 与 chain；`LoadRevision(ctx, runID, revision)` 通过受摘要保护的索引选择不晚于目标的最近已提交快照，只解码该快照到目标之间的连续批，返回精确投影及原链锚点，不执行业务代码，也不建立持久 pin。目标之外的归档或 suffix payload 不由本次读取审计；所需快照、路由头或批缺失、摘要/链/身份/前置条件损坏均返回 `ErrInvalidRecord`，不能冒充 `ErrHistoryExpired`。修订号 1 直接读取 origin 快照。`CompactStorage` 请求须携带 RunID、正数 `ThroughRevision` 与从 Inspect 取得的 `ExpectedGeneration`，目标须位于当前 base 与 head 之间；generation 过期返回 `ErrConflict`。
 
-合成在修订号 R 保存新的完整物理快照，其 snapshot digest 独立计算，但必须保留原提交链锚点 `C(R)`，不能由新快照摘要重新播种历史链。发布只推进表示 generation/base，不改变业务 revision/head 或成果；原始快照、全部批和历史修订仍保留，无 GC。MemoryStore 提供同语义的非耐久参考实现。FileStore 与独立 PostgreSQL 的维护读写使用原有独占运行锁，活跃 Session 导致 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务、不需要 runlock，CompactStorage 仍排他并可能 `ErrBusy`。发布后报错可能结果不确定，先重新 Inspect 核对 generation/base，再规划下一次操作。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成；物理合成不是这些能力，也不是无限保留承诺。
+FileStore 合成从当前 base 快照重放到目标 R，保存新的完整物理快照，其 snapshot digest 独立计算，但保留原提交链锚点 `C(R)`，不由新快照摘要重新播种历史链。发布只推进表示 generation/base，使用累计物理批字节数保留完整后续 suffix，不改变业务 revision/head 或成果。目标等于当前 base 时是 no-op：仍校验请求范围、generation、权威 head、当前代快照索引及 base 快照的摘要与身份，但不读取任何批或旧归档，不写文件，也不消耗 generation。原始快照、全部批、全部已提交快照索引和历史修订仍保留，无 GC。
 
-当前 `.head` manifest 为物理格式 `2`；旧 manifest `1` 和旧 `.json` 均拒绝，原数据保持不变。检测到旧 `.json` 返回明确旧格式错误，不自动清除、覆盖或迁移；需要旧数据时保留旧版和隔离目录，新版另用新目录。Acquire 取得锁后仍可清理本运行精确匹配 `<SHA-256>-<uint32十进制>.tmp` 的普通暂存文件（无前导零，`0` 除外），但不会把未引用的不可变文件认作提交。清理不递归、不触碰其他运行或 `.lock`；失败返回错误并释放锁。目录权限和保留由宿主管理。性能与逻辑 bytes 的测量边界见[检查点成本](checkpoint-cost.md)，增量不保证所有规模都更快。
+完整校验由可选 `durable.HistoryAuditor` 提供，FileStore 的 `AuditHistory(ctx, durable.AuditHistoryRequest{RunID: id})` 在独占锁内验证完整原始链、全部已提交快照的精确投影和索引跳指针，返回观察到的 `State`、`Snapshots`、`Batches` 与 `BatchBytes`；失败时这些计数不代表完成审计。未引用孤儿不属于审计对象，也不会被采纳。该能力不要求其他后端实现。设保留批数为 H、已提交合成次数为 G、所选快照到目标的批数为 K，FileStore 精确读取的寻址元数据最坏为 `O(log² H + log²(G+1))`，payload 重放为 K 个批及一份快照；每次 Apply 或合成的索引追加最多读 `O(log H)` 或 `O(log(G+1))` 元数据，摊销 `O(1)`，不复制历史目录。完整审计仍随全部保留历史增长。
+
+MemoryStore 提供非耐久维护参考实现。FileStore 与独立 PostgreSQL 的维护读写使用原有独占运行锁，活跃 Session 导致 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务、不需要 runlock，CompactStorage 仍排他并可能 `ErrBusy`。FileStore 维护入口不枚举目录清理暂存文件。发布后报错可能结果不确定，先重新 Inspect 核对 generation/base，再规划下一次操作。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成；物理合成不是这些能力，也不是无限保留承诺。
+
+当前 `.head` manifest 与批路由头为物理格式 `3`；旧 manifest `1`、`2` 和旧 `.json` 均明确拒绝，原数据及旧目录中的暂存文件保持不变。检测到旧 `.json` 返回明确旧格式错误，不自动清除、覆盖或迁移；需要旧数据时保留旧版和隔离目录，新版另用新目录。Acquire 取得锁后仍可清理本运行精确匹配 `<SHA-256>-<uint32十进制>.tmp` 的普通暂存文件（无前导零，`0` 除外），但不会把未引用的不可变文件认作提交。清理不递归、不触碰其他运行或 `.lock`；失败返回错误并释放锁。目录权限和保留由宿主管理。性能与逻辑 bytes 的测量边界见[检查点成本](checkpoint-cost.md)，增量不保证所有规模都更快。
 
 ## 3. 读取已有运行记录
 

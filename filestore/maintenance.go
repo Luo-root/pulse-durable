@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"os"
 
 	durable "github.com/Luo-root/pulse-durable"
 	"github.com/Luo-root/pulse-durable/recordio"
@@ -13,11 +12,10 @@ import (
 
 var _ durable.Maintenance = (*Store)(nil)
 
-// 所有本地维护操作获取与业务会话相同的独占操作系统 RunID 锁。
-// 活跃 Session 导致 ErrBusy；本地合成不与
-// 业务写入并行。不回收任何历史或孤立对象。
+// 维护取得相同的独占 OS RunID 锁，活跃 Session 返回 ErrBusy。
+// 不枚举目录清理暂存文件，不与业务写入并行，也不回收历史或孤立对象。
 func (s *Store) maintenanceSession(ctx context.Context, id string) (*session, error) {
-	ss, err := s.Acquire(ctx, id)
+	ss, err := s.acquire(ctx, id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -51,107 +49,21 @@ func (s *Store) LoadRevision(ctx context.Context, id string, revision uint64) (i
 	if err != nil {
 		return image, err
 	}
-	image, _, _, err = ss.history(ctx, h, revision)
-	return image, err
-}
-
-// history 对照当前头验证完整保留的原始链，
-// 包括当前合成基线锚点。它绝不按目录顺序选择文件，
-// 缺少保留组件属于损坏，而非过期。
-func (s *session) history(ctx context.Context, h manifest, target uint64) (image durable.RevisionImage, targetID string, suffixBytes uint64, err error) {
-	if target == 0 || target > h.HeadRevision {
-		return image, "", 0, durable.ErrConflict
+	if revision == 0 || revision > h.HeadRevision {
+		return image, durable.ErrConflict
 	}
-	invalid := func(e error) error { return errors.Join(durable.ErrInvalidRecord, e) }
-	data, err := os.ReadFile(s.snapshotPath(h.OriginID))
+	snapshot, err := ss.selectSnapshot(ctx, h, revision)
 	if err != nil {
-		return image, "", 0, invalid(err)
+		return image, err
 	}
-	if sha256.Sum256(data) != h.OriginDigest {
-		return image, "", 0, invalid(errors.New("filestore: original snapshot digest mismatch"))
-	}
-	r, err := recordio.DecodeSnapshot(data)
-	if err != nil {
-		return image, "", 0, invalid(err)
-	}
-	if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
-		return image, "", 0, invalid(err)
-	}
-	var reverse []durable.ChangeBatch
-	chain, id := h.HeadChain, h.HeadID
-	var total uint64
-	var targetChain [32]byte
-	for rev := h.HeadRevision; rev > 1; rev-- {
-		if err = checkContext(ctx); err != nil {
-			return image, "", 0, err
-		}
-		if !validID(id) {
-			return image, "", 0, invalid(errors.New("filestore: invalid history identity"))
-		}
-		wire, e := os.ReadFile(s.batchPath(id))
-		if e != nil {
-			return image, "", 0, invalid(e)
-		}
-		if uint64(len(wire)) > ^uint64(0)-total {
-			return image, "", 0, durable.ErrLimitExceeded
-		}
-		total += uint64(len(wire))
-		if rev > target {
-			suffixBytes += uint64(len(wire))
-		}
-		var env envelope
-		if e = json.Unmarshal(wire, &env); e != nil {
-			return image, "", 0, invalid(e)
-		}
-		digest := sha256.Sum256(env.Wire)
-		next, e := durable.NextChain(env.ParentChain, digest, rev)
-		if e != nil || env.ParentRevision != rev-1 || env.Digest != digest || env.Chain != chain || next != chain {
-			return image, "", 0, invalid(errors.New("filestore: invalid retained chain"))
-		}
-		b, e := durable.UnmarshalChangeBatch(env.Wire)
-		if e != nil {
-			return image, "", 0, invalid(e)
-		}
-		canonical, e := durable.MarshalChangeBatch(b)
-		if e != nil || string(canonical) != string(env.Wire) || b.Header().Revision != rev {
-			return image, "", 0, invalid(errors.New("filestore: noncanonical retained batch"))
-		}
-		if rev == h.BaseRevision && (chain != h.ChainAnchor || id != h.BaseID) {
-			return image, "", 0, invalid(errors.New("filestore: base history mismatch"))
-		}
-		if rev == target {
-			targetID, targetChain = id, chain
-		}
-		reverse = append(reverse, b)
-		chain, id = env.ParentChain, env.ParentID
-	}
-	if id != "" || chain != durable.SeedChain(h.OriginDigest) || total != h.HistoryBytes {
-		return image, "", 0, invalid(errors.New("filestore: incomplete retained history"))
-	}
-	if target == 1 {
-		image = durable.RevisionImage{Record: durable.CloneRecord(r), Chain: chain}
-	}
-	for i := len(reverse) - 1; i >= 0; i-- {
-		if err = checkContext(ctx); err != nil {
-			return image, "", 0, err
-		}
-		if _, err = reverse[i].ApplyTo(&r); err != nil {
-			return image, "", 0, invalid(err)
-		}
-		if r.Revision == h.BaseRevision {
-			base, e := recordio.EncodeSnapshot(r)
-			if e != nil || sha256.Sum256(base) != h.SnapshotDigest {
-				return image, "", 0, invalid(errors.New("filestore: synthesized projection mismatch"))
-			}
-		}
-		if r.Revision == target {
-			image = durable.RevisionImage{Record: durable.CloneRecord(r), Chain: targetChain}
+	target := snapshot.Base
+	if revision != target.Revision {
+		target, err = ss.locateBatch(ctx, h, headBatch(h), revision)
+		if err != nil {
+			return image, err
 		}
 	}
-	if err = checkContext(ctx); err != nil {
-		return image, "", 0, err
-	}
-	return image, targetID, suffixBytes, nil
+	return ss.replay(ctx, h, snapshot, target)
 }
 
 func (s *Store) CompactStorage(ctx context.Context, req durable.CompactStorageRequest) (state durable.StorageState, err error) {
@@ -163,46 +75,87 @@ func (s *Store) CompactStorage(ctx context.Context, req durable.CompactStorageRe
 		return state, err
 	}
 	defer func() { err = errors.Join(err, ss.Close()) }()
-	h, err := ss.readHead()
+	return ss.compact(ctx, req)
+}
+
+func (s *session) compact(ctx context.Context, req durable.CompactStorageRequest) (durable.StorageState, error) {
+	if req.ThroughRevision == 0 || req.ExpectedGeneration == 0 {
+		return durable.StorageState{}, durable.ErrConflict
+	}
+	h, err := s.readHead()
 	if err != nil {
-		return state, err
+		return durable.StorageState{}, err
 	}
 	if h.Generation != req.ExpectedGeneration || req.ThroughRevision < h.BaseRevision || req.ThroughRevision > h.HeadRevision {
-		return state, durable.ErrConflict
+		return durable.StorageState{}, durable.ErrConflict
 	}
-	if h.Generation == ^uint64(0) {
-		return state, durable.ErrLimitExceeded
+	if req.ThroughRevision > h.BaseRevision && h.Generation == ^uint64(0) {
+		return durable.StorageState{}, durable.ErrLimitExceeded
 	}
-	image, baseID, suffix, err := ss.history(ctx, h, req.ThroughRevision)
+	snapshot, err := s.selectSnapshot(ctx, h, h.BaseRevision)
 	if err != nil {
-		return state, err
+		return durable.StorageState{}, err
 	}
+	target := snapshot.Base
+	if req.ThroughRevision != h.BaseRevision {
+		target, err = s.locateBatch(ctx, h, headBatch(h), req.ThroughRevision)
+		if err != nil {
+			return durable.StorageState{}, err
+		}
+	}
+	image, err := s.replay(ctx, h, snapshot, target)
+	if err != nil {
+		return durable.StorageState{}, err
+	}
+	// 同基线只验证权威头、当前快照及其本代索引，不读批或旧归档。
+	// 不写文件、不消耗 generation；即使 generation 耗尽也允许此 no-op。
 	if req.ThroughRevision == h.BaseRevision {
 		return storageState(req.RunID, h), nil
 	}
+	if target.Bytes > h.HistoryBytes {
+		return durable.StorageState{}, indexError("compaction target byte accounting mismatch")
+	}
 	data, err := recordio.EncodeSnapshot(image.Record)
 	if err != nil {
-		return state, err
+		return durable.StorageState{}, err
 	}
 	id, err := newID()
 	if err != nil {
-		return state, err
+		return durable.StorageState{}, err
 	}
-	if err = ss.writeImmutable(ctx, ss.snapshotPath(id), data); err != nil {
-		return state, err
+	if err = s.writeImmutable(ctx, s.snapshotPath(id), data); err != nil {
+		return durable.StorageState{}, err
 	}
-	current, err := ss.readHead()
+	previous := currentSnapshotRef(h)
+	skip, err := s.locateSnapshotGeneration(ctx, h, h.Generation+1-lowbit(h.Generation))
 	if err != nil {
-		return state, err
+		return durable.StorageState{}, err
+	}
+	indexID, err := newID()
+	if err != nil {
+		return durable.StorageState{}, err
+	}
+	index := snapshotIndex{ID: indexID, Generation: h.Generation + 1, Image: snapshotImage{ID: id, Digest: sha256.Sum256(data), Base: target}, Previous: previous, Skip: skip}
+	indexData, err := json.Marshal(index)
+	if err != nil {
+		return durable.StorageState{}, err
+	}
+	if err = s.writeImmutable(ctx, s.snapshotIndexPath(indexID), indexData); err != nil {
+		return durable.StorageState{}, err
+	}
+	current, err := s.readHead()
+	if err != nil {
+		return durable.StorageState{}, err
 	}
 	if current != h {
-		return state, durable.ErrConflict
+		return durable.StorageState{}, durable.ErrConflict
 	}
 	h.Generation++
-	h.BaseRevision, h.BaseID, h.ChainAnchor = req.ThroughRevision, baseID, image.Chain
-	h.SnapshotID, h.SnapshotDigest, h.BatchBytes = id, sha256.Sum256(data), suffix
-	if err = ss.publish(ctx, h); err != nil {
-		return state, err
+	h.BaseRevision, h.BaseID, h.ChainAnchor, h.BaseIndexDigest = req.ThroughRevision, target.ID, image.Chain, target.Digest
+	h.SnapshotID, h.SnapshotDigest, h.BatchBytes = id, index.Image.Digest, h.HistoryBytes-target.Bytes
+	h.SnapshotIndexID, h.SnapshotIndexDigest = indexID, sha256.Sum256(indexData)
+	if err = s.publish(ctx, h); err != nil {
+		return durable.StorageState{}, err
 	}
 	return storageState(req.RunID, h), nil
 }
