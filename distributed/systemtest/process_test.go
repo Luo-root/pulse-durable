@@ -210,6 +210,15 @@ func TestMultiProcess(t *testing.T) {
 			f := provision(t)
 			const capacity = 2
 			var ps []*process
+			defer func() {
+				if t.Failed() {
+					for index, p := range ps {
+						for sequence, event := range p.snapshot() {
+							t.Logf("worker evidence process=%d sequence=%d kind=%s reason=%s active=%d epoch=%d run=%s", index, sequence, event.Kind, event.Reason, event.Active, event.Epoch, event.RunID)
+						}
+					}
+				}
+			}()
 			for i := 0; i < count*capacity; i++ {
 				f.submit(t, fmt.Sprintf("run-%03d", i), "v1")
 			}
