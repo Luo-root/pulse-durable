@@ -22,13 +22,13 @@ mkdir distributed-demo
 cd distributed-demo
 go mod init example.com/distributed-demo
 go mod edit -go=1.26.0
-go mod edit -require=github.com/Luo-root/pulse@v0.5.0
-go mod edit -require=github.com/Luo-root/pulse-durable@v0.1.1-0.20261024124930-5296b17b7011
+go mod edit -require=github.com/Luo-root/pulse@v0.5.2
+go mod edit -require=github.com/Luo-root/pulse-durable@v0.1.1-0.20261103072421-d01fdac67b4f
 go mod edit -require=github.com/Luo-root/pulse-durable/distributed@v0.0.0
-go mod edit -replace=github.com/Luo-root/pulse-durable/distributed=../pulse-durable/distributed
+go work init . ../pulse-durable ../pulse-durable/distributed
 ```
 
-`v0.0.0` 只是本地 replace 的占位版本，不是下载地址。上述 Pulse 与 Durable 版本与当前 [go.mod](go.mod) 一致；源码检出必须包含 `distributed/`。若父目录已有 `go.work`，请将示例和 `distributed/` 纳入工作区，或为这些命令设置 `GOWORK=off`。
+`v0.0.0` 只是工作区模块的占位版本，不是下载地址。上述 Pulse 与 Durable 版本与当前 [go.mod](go.mod) 一致；当前根依赖是实际可下载的公开提交伪版本，包含精确大小 API，但不代表正式发版。源码联调时同时包含示例、仓库根模块和 `distributed/`；独立模块检查使用 `GOWORK=off`，按 go.mod 下载依赖。若已有 `go.work`，保留它并把需要的目录纳入现有工作区，令联调命令的 `GOWORK` 指向该文件，不覆盖已有配置。
 
 ## PostgreSQL 与最小程序
 
@@ -179,7 +179,7 @@ go build -o demo .
 
 在另一终端执行 `./demo query`，完成后应为 `succeeded`；worker 持续轮询，按 Ctrl+C 排空后退出。Windows 使用 `demo.exe`。在新任务领取前执行 `./demo cancel` 可观察 `canceled`；取消已完成任务只返回已有终态。重新演示请改用新的 RunID。
 
-`Migrate` 显式安装或验证当前物理 schema 6 的 `pulse_durable_distributed` schema；旧 v1–v5 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，需使用新库。逻辑记录仍为 format 2，协调 protocol 仍为 1，与物理 schema 版本独立。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`Migrate` 同时执行 namespace 授权；`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
+`Migrate` 显式安装或验证当前物理 schema 7 的 `pulse_durable_distributed` schema；旧 v1–v6 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，需使用新库。逻辑记录仍为 format 2，协调 protocol 仍为 1，与物理 schema 版本独立。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`Migrate` 同时执行 namespace 授权；`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
 
 ## 路由与升级
 
@@ -189,7 +189,9 @@ go build -o demo .
 - 生产者与 worker 安装相同注册契约。滚动升级时保留旧注册项处理旧任务；没有兼容 worker 的任务保持 queued。领取后校验失败可转为 blocked；当前 API 不提供通用 unblock/requeue 管理操作，不要直接改表。
 - 同 `(Namespace, RunID)` 的相同规范任务重复提交返回 `Deduplicated=true`，保留检查点和终态；内容不同返回 `ErrSubmitConflict`。终态身份不自动回收，RunID 不复用。
 
-输入必须能编码成有限载荷：最大 4 MiB，任务封装最大 8 MiB，Codec 清单最多 4096 项；检查点最大 16 MiB。不要提交函数、channel 或进程内地址。
+输入必须能编码成有限载荷：最大 4 MiB，任务封装最大 8 MiB，Codec 清单最多 4096 项；检查点最大 16 MiB。PostgreSQL 的 16 MiB 预算按当前完整 `EncodeSnapshot` 字节数计算，保留 nil/empty、base64、JSON 转义和 revision 位数。每次 Apply 仅计数变更对象；数据库从实际 wire 和当前对象/容器账本独立计算，与 head、batch、guard、receipt、event 原子发布。越界返回 `postgres.ErrSnapshotLimit`（可用 `errors.Is(err, durable.ErrLimitExceeded)`），拒绝不产生这些发布。压缩历史不会重置当前快照预算；活跃日志的 256 MiB/100000 批预算仍独立存在。Load 校验账本与重放后的快照大小，不一致时拒绝，不自动修复。不要提交函数、channel 或进程内地址。
+
+PostgreSQL 预算协议为 `snapshot_budget_version=1`，每个 API/maintenance 请求都要求该版本，已连接的旧客户端也会安全拒绝。`New` 在连接数据库前检查根模块是否提供 `ChangeBatch.SnapshotSizeDelta`，缺少时返回 `ErrSnapshotBudgetUnsupported`。当前 go.mod 已固定实际可下载且含该能力的根版本 `v0.1.1-0.20261103072421-d01fdac67b4f`，支持 `GOWORK=off` 的独立模块检查；需要联合当前根源码回归时，再使用 Go 1.26 的 `go.work` 显式包含仓库根目录和 `distributed`。逻辑格式 2、batch wire 1 和快照版本 1 均不改变。
 
 ## 生命周期与查询
 
@@ -224,4 +226,11 @@ RetentionPolicy 目前仅有可选 TTL 与校验/CAS 请求契约：nil TTL 表�
 
 ## 验证入口
 
-示例可以 `go test -run '^$' .` 只编译而不连接数据库。本模块的 [systemtest](systemtest)、[networktest](networktest)、[crossmachine](crossmachine) 与 [soaktest](soaktest) 包提供真实数据库、故障及跨进程验证入口；运行条件和观测结果应按对应测试配置核对。性能与验收数据统一见[规模与性能](../site/guide/performance.md)，本文不将单次示例或编译检查视为部署验收，也不声明本轮 distributed 整包实库通过；本机 strict-clock 检查仍有风险，需独立验证收口。
+示例可以 `go test -run '^$' .` 只编译而不连接数据库。本模块的 [systemtest](systemtest)、[networktest](networktest)、[crossmachine](crossmachine) 与 [soaktest](soaktest) 包提供真实数据库、故障及跨进程验证入口；运行条件和观测结果应按对应测试配置核对。当前性能对照统一见[生产性能对比](../site/guide/production-comparison.md)，历史规模与版本见[规模与性能](../site/guide/performance.md)。本文不将单次示例或编译检查视为部署验收，也不声明本轮 distributed 整包实库通过；本机 strict-clock 检查仍有风险，需独立验证收口。
+
+独立 PG 测试使用当前公开依赖并显式设置 `GOWORK=off`；联合当前根源码回归时使用同时包含根模块与 distributed 的工作区。设置 `PULSE_DISTRIBUTED_TEST_DSN` 指向专用可丢弃库、`PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE=yes` 后，从 distributed 目录执行以下两组；无 DSN 的跳过不算实库通过。16 MiB 大载荷两例独立运行正常构建，其余协议、并发、恢复与小对象检查运行 race，避免大载荷逐字节校验的 race 开销耗尽整包预算；原有时钟、租约和恢复断言不变。
+
+```sh
+go test -mod=readonly -race -count=1 -timeout=240s -skip '^(TestPostgresSnapshotOriginalCapacitySequence|TestPostgresSnapshotExactBoundaryAndOneByte)$' -v ./postgres
+go test -mod=readonly -count=1 -timeout=240s -run '^(TestPostgresSnapshotOriginalCapacitySequence|TestPostgresSnapshotExactBoundaryAndOneByte)$' -v ./postgres
+```

@@ -71,11 +71,12 @@ func (c *Coordinator) projectionGate(ctx context.Context, t d.Token) (*projectio
 }
 
 type projection struct {
-	gate    chan struct{}
-	revoked atomic.Bool
-	loaded  bool
-	record  durable.RunRecord
-	chain   [32]byte
+	gate          chan struct{}
+	revoked       atomic.Bool
+	loaded        bool
+	record        durable.RunRecord
+	chain         [32]byte
+	snapshotBytes int64
 }
 type storedBatch struct {
 	Revision string `json:"revision"`
@@ -196,10 +197,18 @@ func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r du
 	if log.Chain != chainText(chain) {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordChain)
 	}
+	encoded, err := recordio.EncodeSnapshot(r)
+	if err != nil || len(encoded) > MaxRecordBytes {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
+	}
+	if err = validateLoadedSnapshotBudget(b, encoded); err != nil {
+		return durable.RunRecord{}, err
+	}
 	if p.revoked.Load() {
 		return durable.RunRecord{}, d.ErrLeaseLost
 	}
 	p.record = r
+	p.snapshotBytes = int64(len(encoded))
 	p.chain = chain
 	p.loaded = true
 	return durable.CloneRecord(r), nil
@@ -208,9 +217,12 @@ func (c *Coordinator) InitializeOwned(ctx context.Context, q d.InitializeRequest
 	if !token(q.Token) || !mutation(q.Mutation) || durable.ValidateInitialRecord(q.Record, q.Token.Identity.RunID) != nil {
 		return d.ErrInvalid
 	}
-	b, e := recordio.Encode(q.Record)
-	if e != nil || len(b) > MaxRecordBytes {
+	b, e := recordio.EncodeSnapshot(q.Record)
+	if e != nil {
 		return d.ErrInvalid
+	}
+	if len(b) > MaxRecordBytes {
+		return ErrSnapshotLimit
 	}
 	p, done, e := c.projectionGate(ctx, q.Token)
 	if e != nil {
@@ -222,8 +234,14 @@ func (c *Coordinator) InitializeOwned(ctx context.Context, q d.InitializeRequest
 	mutate(a, q.Mutation)
 	a["expected"] = "0"
 	a["record"] = b
-	_, _, e = c.ownerCall(ctx, "initialize", q.Token, a, true)
+	response, e := c.call(ctx, "initialize", a, true)
 	if e != nil {
+		c.discardProjection(q.Token)
+		c.observeReject(q.Token, e)
+		return e
+	}
+	chain := durable.SeedChain(sha256.Sum256(b))
+	if e = validateSnapshotBudgetAck(response, int64(len(b)), q.Record.Revision, chain); e != nil {
 		c.discardProjection(q.Token)
 		return e
 	}
@@ -231,7 +249,8 @@ func (c *Coordinator) InitializeOwned(ctx context.Context, q d.InitializeRequest
 		return d.ErrUnknown
 	}
 	p.record = durable.CloneRecord(q.Record)
-	p.chain = durable.SeedChain(sha256.Sum256(b))
+	p.snapshotBytes = int64(len(b))
+	p.chain = chain
 	p.loaded = true
 	return nil
 }
@@ -261,6 +280,11 @@ func (c *Coordinator) ApplyOwned(ctx context.Context, t d.Token, m d.Mutation, b
 	if p.revoked.Load() {
 		return durable.CommitAck{}, d.ErrLeaseLost
 	}
+	// 只计数本批触及的对象；超限时在修改私有投影前拒绝。
+	candidate, e := snapshotCandidate(batch, p.record, p.snapshotBytes)
+	if e != nil {
+		return durable.CommitAck{}, e
+	}
 	// ApplyTo 在修改缓存前验证全部前置条件。此后任何失败
 	// 均丢弃缓存；只有数据库头的 CAS 能发布提案。
 	parent := p.chain
@@ -281,15 +305,20 @@ func (c *Coordinator) ApplyOwned(ctx context.Context, t d.Token, m d.Mutation, b
 	a["parent_chain"] = chainText(parent)
 	a["next_chain"] = chainText(next)
 	// 使用小响应，避免每个检查点都重传快照。
-	_, e = c.call(ctx, "apply", a, true)
+	response, e := c.call(ctx, "apply", a, true)
 	if e != nil {
 		c.discardProjection(t)
 		c.observeReject(t, e)
 		return durable.CommitAck{}, e
 	}
+	if e = validateSnapshotBudgetAck(response, candidate, batch.Header().Revision, next); e != nil {
+		c.discardProjection(t)
+		return durable.CommitAck{}, e
+	}
 	if p.revoked.Load() {
 		return durable.CommitAck{}, d.ErrUnknown
 	}
+	p.snapshotBytes = candidate
 	p.chain = next
 	return ack, nil
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,10 @@ func TestOwnedLoadCorruptionClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := sha256.Sum256(initial)
+	snapshot, err := recordio.EncodeSnapshot(record(task, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
 	base := wireSnapshot{Task: task.Bytes(), Digest: task.SubmissionDigest(), Namespace: token.Identity.Namespace, RunID: token.Identity.RunID, Route: task.Route(), Status: d.Running, Epoch: token.Epoch, Revision: "1", LeaseUntil: &until, CreatedAt: now, UpdatedAt: now, LeaseID: &token.LeaseID, WorkerID: &token.Worker.ID, BootID: &token.Worker.BootID, Record: initial}
 	for _, kind := range []string{"valid", "snapshot_digest", "record", "head_chain", "batch", "owner", "envelope", "revoked"} {
 		t.Run(kind, func(t *testing.T) {
@@ -52,7 +57,12 @@ func TestOwnedLoadCorruptionClassification(t *testing.T) {
 			b, e := json.Marshal(struct {
 				wireSnapshot
 				storedLog
-			}{w, log})
+				Budget int             `json:"snapshot_budget_version"`
+				Bytes  string          `json:"snapshot_bytes"`
+				Ledger string          `json:"snapshot_ledger_bytes"`
+				Valid  bool            `json:"snapshot_ledger_valid"`
+				Image  json.RawMessage `json:"snapshot_ledger"`
+			}{w, log, 1, strconv.Itoa(len(snapshot)), strconv.Itoa(len(snapshot)), true, snapshotLedgerFixture(t, snapshot)})
 			if e != nil {
 				t.Fatal(e)
 			}

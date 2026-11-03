@@ -137,7 +137,7 @@ func TestMaintenanceSQLBoundaryContract(t *testing.T) {
 			t.Fatal("maintenance clock guard missing or ambiguous", guard)
 		}
 	}
-	for _, s := range []string{"CHECK(version=6)", "'maintain','retain','replay'", "maintenance_receipts", "maintenance_guards", "build_pins", "storage_snapshots", "active_snapshot", "RETURN storage_image(r,r.revision,true)"} {
+	for _, s := range []string{"CHECK(version=7)", "'maintain','retain','replay'", "maintenance_receipts", "maintenance_guards", "build_pins", "storage_snapshots", "active_snapshot", "RETURN storage_image(r,r.revision,true)||snapshot_budget_summary(r)"} {
 		if !strings.Contains(schemaSQL, s) {
 			t.Fatal("missing schema contract", s)
 		}

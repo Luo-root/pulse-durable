@@ -19,6 +19,7 @@ END $$;
 CREATE FUNCTION pulse_durable_distributed.maintenance(op text,a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE ns text:=a->>'namespace'; rid text:=a->>'run_id'; mid text:=a->>'mutation_id'; md text:=a->>'mutation_digest'; r pulse_durable_distributed.runs; p pulse_durable_distributed.build_pins; g pulse_durable_distributed.maintenance_guards; t timestamptz; first_sample timestamptz; rev numeric; gen bigint; anchor text; b bytea; j jsonb; answer jsonb; suffix_bytes bigint; suffix_count bigint;
 BEGIN
+ IF jsonb_typeof(a->'snapshot_budget_version') IS DISTINCT FROM 'number' OR a->>'snapshot_budget_version' IS DISTINCT FROM '1' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unsupported snapshot budget client'; END IF;
  IF NOT check_schema() THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unsafe schema or credentials'; END IF;
  IF op NOT IN ('inspect','begin','publish','abort','find') OR op IS NULL THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unknown maintenance operation'; END IF;
  IF coalesce(octet_length(ns),0) NOT BETWEEN 1 AND 256 OR coalesce(octet_length(rid),0) NOT BETWEEN 1 AND 256 OR NOT EXISTS(SELECT 1 FROM pulse_durable_distributed.access x WHERE x.namespace=ns AND x.permission='maintain' AND pg_has_role(session_user,x.role_name,'MEMBER')) THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='maintenance access denied'; END IF;

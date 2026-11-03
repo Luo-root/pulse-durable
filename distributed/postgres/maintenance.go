@@ -209,6 +209,7 @@ func (c *Coordinator) maintenanceCall(ctx context.Context, op string, a map[stri
 	if c == nil || c.pool == nil {
 		return nil, d.ErrInvalid
 	}
+	a["snapshot_budget_version"] = snapshotBudgetVersion
 	b, e := json.Marshal(a)
 	if e != nil {
 		return nil, d.ErrInvalid

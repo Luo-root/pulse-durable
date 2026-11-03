@@ -17,6 +17,9 @@ var schemaSQL string
 //go:embed maintenance.sql
 var maintenanceSQL string
 
+//go:embed snapshot_budget.sql
+var snapshotBudgetSQL string
+
 // Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
 // 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
 // 授权物理合成；retain/replay 为预留权限，尚不授予任何 API。
@@ -30,8 +33,8 @@ type Grant struct {
 
 // Migrate 安装新的物理模式，或精确验证已安装的模式。
 // 拒绝旧模式，不修改其数据或 DDL。逻辑记录
-// 仍为格式 2；物理模式版本 6 并非逻辑记录升级。
-// 拒绝版本 1–5；此版本绝不重写已安装模式。
+// 仍为格式 2；物理模式版本 7 并非逻辑记录升级。
+// 拒绝版本 1–6；此版本绝不重写已安装模式。
 // 此显式管理员入口可授予 API 执行与命名空间
 // 权限，但绝不授予表访问权限。须使用专用所有者凭据运行。
 func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
@@ -69,7 +72,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		return scrub(e, false)
 	}
 	if !exists {
-		if _, e = tx.Exec(ctx, schemaSQL+maintenanceSQL); e != nil {
+		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL); e != nil {
 			return scrub(e, false)
 		}
 		if _, e = tx.Exec(ctx, checkSQL); e != nil {
@@ -87,7 +90,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		if e = tx.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&installed); e != nil {
 			return scrub(e, false)
 		}
-		if installed != 6 {
+		if installed != 7 {
 			return errors.New("distributed postgres: unsupported physical schema; use a new database (old data unchanged)")
 		}
 		if e = validate(ctx, tx, false); e != nil {
@@ -171,7 +174,7 @@ func validate(ctx context.Context, q querier, worker bool) error {
 		}
 		return scrub(e, false)
 	}
-	if n != 1 || v != 6 {
+	if n != 1 || v != 7 {
 		return errors.New("distributed postgres: incompatible schema version")
 	}
 	current, e := signature(ctx, q)

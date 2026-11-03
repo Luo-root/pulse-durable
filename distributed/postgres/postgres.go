@@ -92,6 +92,9 @@ func connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	return p, nil
 }
 func New(ctx context.Context, dsn string) (*Coordinator, error) {
+	if err := requireSnapshotSizer(); err != nil {
+		return nil, err
+	}
 	ctx, cancel, err := bounded(ctx)
 	if err != nil {
 		return nil, err
@@ -142,6 +145,8 @@ func scrub(err error, write bool) error {
 			return d.ErrTerminal
 		case "PD007":
 			return d.ErrClockRegression
+		case "PD008":
+			return ErrSnapshotLimit
 		}
 		return fmt.Errorf("distributed postgres: SQLSTATE %s", pe.Code)
 	}
@@ -192,6 +197,7 @@ func (c *Coordinator) call(ctx context.Context, op string, a map[string]any, wri
 		return nil, err
 	}
 	defer cancel()
+	a["snapshot_budget_version"] = snapshotBudgetVersion
 	b, err := json.Marshal(a)
 	if err != nil {
 		return nil, d.ErrInvalid

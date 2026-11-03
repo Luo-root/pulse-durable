@@ -30,6 +30,11 @@ var schema4Fixture embed.FS
 //go:embed testdata/schema5/schema.sql
 var schema5Fixture string
 
+// 16d7bf9 的真实 schema6，包含签名检查与活跃后缀预算，永不从当前 DDL 派生。
+//
+//go:embed testdata/schema6/*.sql
+var schema6Fixture embed.FS
+
 // 每份旧夹具都在独立的新数据库中创建。Migrate 必须在
 // 授权、DDL 或数据修改前拒绝；绝不降级生产模式。
 func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
@@ -47,7 +52,7 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 	if e != nil {
 		t.Fatal("invalid test DSN")
 	}
-	for _, version := range []int{1, 2, 3, 4, 5} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			name := "pulse_old_reject_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 			quoted := pgx.Identifier{name}.Sanitize()
@@ -73,9 +78,13 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 				if _, err := isolated.Exec(ctx, schema5Fixture); err != nil {
 					t.Fatal(scrub(err, false))
 				}
-			} else if version == 4 {
+			} else if version == 4 || version == 6 {
+				fixture := schema4Fixture
+				if version == 6 {
+					fixture = schema6Fixture
+				}
 				for _, file := range []string{"schema.sql", "maintenance.sql", "check.sql"} {
-					b, err := schema4Fixture.ReadFile("testdata/schema4/" + file)
+					b, err := fixture.ReadFile(fmt.Sprintf("testdata/schema%d/%s", version, file))
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -85,8 +94,12 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 				}
 				// 真实的旧布局，而非只改了版本号的当前 DDL。
 				var suffixColumns int
-				if err := isolated.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='pulse_durable_distributed' AND table_name='runs' AND column_name IN ('active_log_bytes','active_log_count')`).Scan(&suffixColumns); err != nil || suffixColumns != 0 {
-					t.Fatalf("schema4 fixture has active suffix columns: %d, %v", suffixColumns, err)
+				expectedSuffixColumns := 0
+				if version == 6 {
+					expectedSuffixColumns = 2
+				}
+				if err := isolated.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='pulse_durable_distributed' AND table_name='runs' AND column_name IN ('active_log_bytes','active_log_count')`).Scan(&suffixColumns); err != nil || suffixColumns != expectedSuffixColumns {
+					t.Fatalf("schema%d fixture suffix columns: %d, %v", version, suffixColumns, err)
 				}
 				if _, err := isolated.Exec(ctx, `INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route) VALUES('legacy','retained',decode('0001ff00','hex'),'fixture','{}')`); err != nil {
 					t.Fatal(scrub(err, false))
