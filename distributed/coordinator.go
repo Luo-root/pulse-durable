@@ -1,7 +1,6 @@
 package distributed
 
 import (
-	"context"
 	"time"
 
 	durable "github.com/Luo-root/pulse-durable"
@@ -125,23 +124,9 @@ type ListRequest struct {
 // 实现必须执行 namespace 授权、有界调用/记录、每次写入的 fencing 和 retention，
 // 不能适配一个没有 fencing 的旧 Store。
 type Coordinator interface {
-	Submit(context.Context, Task) (SubmitResult, error)
-	Get(context.Context, Identity) (Snapshot, error)
-	List(context.Context, ListRequest) ([]Snapshot, error)
-	Claim(context.Context, ClaimRequest) ([]Claim, error)
-	FindClaim(context.Context, string, Worker, string) ([]Claim, error)
-	ResolveClaim(context.Context, string, Worker, string) (ClaimResolution, error)
-	Renew(context.Context, Token, time.Duration) (time.Time, error)
-	// DropOwnedProjection 只丢弃与该精确 token 对应的本地缓存状态。
-	// 它是幂等的，不执行数据库操作，也绝不会释放 lease。
-	DropOwnedProjection(Token)
-	LoadOwned(context.Context, Token) (durable.RunRecord, error)
-	InitializeOwned(context.Context, InitializeRequest) error
-	ApplyOwned(context.Context, Token, Mutation, durable.ChangeBatch) (durable.CommitAck, error)
-	Finish(context.Context, FinishRequest) (Snapshot, error)
-	Release(context.Context, Token, Mutation) error
-	Block(context.Context, Token, string, Mutation) error
-	Cancel(context.Context, Identity, Mutation) (Snapshot, error)
+	TaskCatalog
+	LeaseCoordinator
+	OwnedCheckpointStore
 }
 
 // PullPolicy 限制接纳，不限制数据库所有权。Active 包括待处理 claim、未确认的提交、

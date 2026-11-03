@@ -1,7 +1,6 @@
 package durable
 
 import (
-	"context"
 	"errors"
 )
 
@@ -31,9 +30,9 @@ var (
 // 回收旧表示。发布后发生的错误可能意味着结果未知；
 // 计划下一次调用前，检查代际及基线锚点。
 type Maintenance interface {
-	InspectStorage(context.Context, string) (StorageState, error)
-	LoadRevision(context.Context, string, uint64) (RevisionImage, error)
-	CompactStorage(context.Context, CompactStorageRequest) (StorageState, error)
+	SnapshotInspector
+	RevisionReader
+	SnapshotCompactor
 }
 
 // StorageState 是一次原子观测，不是对后续操作的许可。
