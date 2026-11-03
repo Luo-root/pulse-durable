@@ -131,7 +131,7 @@ func TestPostgresProductionFencingMutations(t *testing.T) {
 		t.Helper()
 		var s string
 		e := admin.QueryRow(ctx, `SELECT jsonb_build_array((`+catalogSQL+`),
- (SELECT signature FROM pulse_durable_distributed.meta),
+ (SELECT jsonb_build_object('layout_marker',layout_marker,'signature',signature) FROM pulse_durable_distributed.meta),
  (SELECT jsonb_agg(jsonb_build_array(oid,proowner,proacl) ORDER BY oid) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace),
  (SELECT jsonb_agg(to_jsonb(a) ORDER BY role_name,namespace,permission) FROM pulse_durable_distributed.access a))::text`).Scan(&s)
 		if e != nil {

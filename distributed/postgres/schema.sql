@@ -1,6 +1,6 @@
 CREATE SCHEMA pulse_durable_distributed;
 REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
-CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=7), signature text NOT NULL);
+CREATE TABLE pulse_durable_distributed.meta(layout_marker text PRIMARY KEY CHECK(layout_marker='pulse-durable-distributed-layout-v1'), signature text NOT NULL);
 CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel','maintain','retain','replay')), PRIMARY KEY(role_name,namespace,permission));
 CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
@@ -257,4 +257,4 @@ BEGIN
  RETURN snapshot(r);
 END $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pulse_durable_distributed FROM PUBLIC;
-INSERT INTO pulse_durable_distributed.meta VALUES(7,'');
+INSERT INTO pulse_durable_distributed.meta VALUES('pulse-durable-distributed-layout-v1','');

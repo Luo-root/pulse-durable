@@ -179,7 +179,7 @@ go build -o demo .
 
 在另一终端执行 `./demo query`，完成后应为 `succeeded`；worker 持续轮询，按 Ctrl+C 排空后退出。Windows 使用 `demo.exe`。在新任务领取前执行 `./demo cancel` 可观察 `canceled`；取消已完成任务只返回已有终态。重新演示请改用新的 RunID。
 
-`Migrate` 显式安装或验证当前物理 schema 7 的 `pulse_durable_distributed` schema；旧 v1–v6 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，需使用新库。逻辑记录仍为 format 2，协调 protocol 仍为 1，与物理 schema 版本独立。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`Migrate` 同时执行 namespace 授权；`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
+`Migrate` 显式安装或验证当前 `pulse_durable_distributed` 布局，使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 以及 owner/`SECURITY DEFINER`/ACL 安全检查，再执行 namespace 授权。布局不匹配时只拒绝，不写入、删除或迁移旧数据，需使用新库。开发期不维护递增物理 schema 版本链。逻辑记录仍为 format 2，协调 protocol 仍为 1。检查点强制使用 InitializeOwned/ApplyOwned，以初始快照、不可变批和带 fencing 的 revision/chain head CAS 提交。`New` 只验证并连接，不执行 DDL。示例为简化使用一个应用角色；实际部署可通过多个 `postgres.Grant` 分离 submit、query、worker、cancel 权限，worker 同时授予 query 以支持恢复查询。不要以管理员凭据调用 `New`，也不要将旧 `postgresstore` 的表或会话用于这些任务。
 
 ## 路由与升级
 

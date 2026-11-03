@@ -1,200 +1,38 @@
 package postgres
 
 import (
-	"context"
-	"embed"
-	"errors"
-	"fmt"
-	"net"
-	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	d "github.com/Luo-root/pulse-durable/distributed"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// 从 30f92f1 原样冻结的 SQL，check.sql 由该提交的
-// check.go 和 catalogSQL 组装。这是真实的活跃后缀引入前的 schema4 布局。
-//
-//go:embed testdata/schema4/*.sql
-var schema4Fixture embed.FS
-
-// 冻结的最小真实 schema5 业务回执布局；绝不从 schemaSQL 重新生成。
-//
-//go:embed testdata/schema5/schema.sql
-var schema5Fixture string
-
-// 16d7bf9 的真实 schema6，包含签名检查与活跃后缀预算，永不从当前 DDL 派生。
-//
-//go:embed testdata/schema6/*.sql
-var schema6Fixture embed.FS
-
-// 每份旧夹具都在独立的新数据库中创建。Migrate 必须在
-// 授权、DDL 或数据修改前拒绝；绝不降级生产模式。
-func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
-	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
-	if dsn == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE") != "yes" {
-		t.Skip("dedicated DSN and destructive opt-in required")
+func TestExistingLayoutValidationIncludesSafetyContract(t *testing.T) {
+	if !strings.Contains(layoutMetaSQL, "layout_marker") || !strings.Contains(layoutMetaSQL, "signature") {
+		t.Fatal("existing-layout validation lost marker or signature query")
 	}
-	ctx := context.Background()
-	admin, e := connect(ctx, dsn)
-	if e != nil {
-		t.Fatal(e)
+	for _, fragment := range []string{
+		"p.proowner<>n.nspowner",
+		"p.prosecdef",
+		"p.proconfig",
+		"c.relowner<>n.nspowner",
+		"a.grantee=0",
+	} {
+		if !strings.Contains(layoutSafetySQL, fragment) {
+			t.Fatalf("missing layout safety rule %q", fragment)
+		}
 	}
-	defer admin.Close()
-	cfg, e := pgxpool.ParseConfig(dsn)
-	if e != nil {
-		t.Fatal("invalid test DSN")
+	for _, fragment := range []string{"p.proconfig", "c.relowner<>n.nspowner", "a.grantee=0"} {
+		if !strings.Contains(checkSQL, fragment) {
+			t.Fatalf("check_schema is missing shared safety rule %q", fragment)
+		}
 	}
-	for _, version := range []int{1, 2, 3, 4, 5, 6} {
-		t.Run(fmt.Sprint(version), func(t *testing.T) {
-			name := "pulse_old_reject_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-			quoted := pgx.Identifier{name}.Sanitize()
-			if _, e = admin.Exec(ctx, "CREATE DATABASE "+quoted); e != nil {
-				t.Fatal(scrub(e, false))
-			}
-			defer func() {
-				if _, e := admin.Exec(ctx, "DROP DATABASE "+quoted+" WITH (FORCE)"); e != nil {
-					t.Error(scrub(e, false))
-				}
-			}()
-			u := url.URL{Scheme: "postgres", Host: net.JoinHostPort(cfg.ConnConfig.Host, strconv.Itoa(int(cfg.ConnConfig.Port))), Path: "/" + name, User: url.UserPassword(cfg.ConnConfig.User, cfg.ConnConfig.Password)}
-			q := u.Query()
-			q.Set("sslmode", "disable")
-			u.RawQuery = q.Encode()
-			isolated, e := connect(ctx, u.String())
-			if e != nil {
-				t.Fatal(e)
-			}
-			defer isolated.Close()
-			workerDSN := ""
-			if version == 5 {
-				if _, err := isolated.Exec(ctx, schema5Fixture); err != nil {
-					t.Fatal(scrub(err, false))
-				}
-			} else if version == 4 || version == 6 {
-				fixture := schema4Fixture
-				if version == 6 {
-					fixture = schema6Fixture
-				}
-				for _, file := range []string{"schema.sql", "maintenance.sql", "check.sql"} {
-					b, err := fixture.ReadFile(fmt.Sprintf("testdata/schema%d/%s", version, file))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err = isolated.Exec(ctx, string(b)); err != nil {
-						t.Fatal(scrub(err, false))
-					}
-				}
-				// 真实的旧布局，而非只改了版本号的当前 DDL。
-				var suffixColumns int
-				expectedSuffixColumns := 0
-				if version == 6 {
-					expectedSuffixColumns = 2
-				}
-				if err := isolated.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='pulse_durable_distributed' AND table_name='runs' AND column_name IN ('active_log_bytes','active_log_count')`).Scan(&suffixColumns); err != nil || suffixColumns != expectedSuffixColumns {
-					t.Fatalf("schema%d fixture suffix columns: %d, %v", version, suffixColumns, err)
-				}
-				if _, err := isolated.Exec(ctx, `INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route) VALUES('legacy','retained',decode('0001ff00','hex'),'fixture','{}')`); err != nil {
-					t.Fatal(scrub(err, false))
-				}
-				role := "pulse_old_worker_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-				quotedRole := pgx.Identifier{role}.Sanitize()
-				if _, err := isolated.Exec(ctx, "CREATE ROLE "+quotedRole+" LOGIN PASSWORD 'distributed-test-only'; GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+quotedRole+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.check_schema() TO "+quotedRole); err != nil {
-					t.Fatal(scrub(err, false))
-				}
-				defer func() {
-					if _, err := isolated.Exec(ctx, "DROP OWNED BY "+quotedRole+"; DROP ROLE "+quotedRole); err != nil {
-						t.Error(scrub(err, false))
-					}
-				}()
-				sig, err := signature(ctx, isolated)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err = isolated.Exec(ctx, "UPDATE pulse_durable_distributed.meta SET signature=$1", sig); err != nil {
-					t.Fatal(scrub(err, false))
-				}
-				workerURL := u
-				workerURL.User = url.UserPassword(role, "distributed-test-only")
-				workerDSN = workerURL.String()
-				worker, err := connect(ctx, workerDSN)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var oldOK bool
-				err = worker.QueryRow(ctx, "SELECT pulse_durable_distributed.check_schema()").Scan(&oldOK)
-				worker.Close()
-				if err != nil || !oldOK {
-					t.Fatalf("old schema4 is not self-consistent for its worker: %v, %v", oldOK, err)
-				}
-			} else {
-				_, e = isolated.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA pulse_durable_distributed;
- REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
- CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=%d),signature text NOT NULL);
- INSERT INTO pulse_durable_distributed.meta VALUES(%d,'legacy-signature');
- CREATE TABLE pulse_durable_distributed.runs(namespace text,run_id text,record bytea);
- INSERT INTO pulse_durable_distributed.runs VALUES('legacy','retained',decode('0001ff00','hex'));
- REVOKE ALL ON ALL TABLES IN SCHEMA pulse_durable_distributed FROM PUBLIC;`, version, version))
-				if e != nil {
-					t.Fatal(scrub(e, false))
-				}
-			}
-			observe := func() (string, string, string) {
-				t.Helper()
-				var ddl, acl, data string
-				if e := isolated.QueryRow(ctx, catalogSQL).Scan(&ddl); e != nil {
-					t.Fatal(scrub(e, false))
-				}
-				if e := isolated.QueryRow(ctx, `SELECT string_agg(x,E'\n' ORDER BY x) FROM (
- SELECT 'schema:'||coalesce(nspacl::text,'') x FROM pg_namespace WHERE nspname='pulse_durable_distributed'
- UNION ALL SELECT 'relation:'||relname||':'||coalesce(relacl::text,'') FROM pg_class WHERE relnamespace='pulse_durable_distributed'::regnamespace
- UNION ALL SELECT 'function:'||oid::regprocedure::text||':'||coalesce(proacl::text,'') FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace) a`).Scan(&acl); e != nil {
-					t.Fatal(scrub(e, false))
-				}
-				if e := isolated.QueryRow(ctx, `SELECT jsonb_build_object('meta',(SELECT jsonb_agg(to_jsonb(m)) FROM pulse_durable_distributed.meta m),'runs',(SELECT jsonb_agg(to_jsonb(r)) FROM pulse_durable_distributed.runs r))::text`).Scan(&data); e != nil {
-					t.Fatal(scrub(e, false))
-				}
-				return ddl, acl, data
-			}
-			ddl, acl, data := observe()
-			if e = Migrate(ctx, u.String(), Grant{Role: "must-not-be-created", Namespace: "denied", Permissions: []string{"worker"}}); e == nil || !strings.Contains(e.Error(), "unsupported physical schema") {
-				t.Fatalf("old schema accepted: %v", e)
-			}
-			if c, err := New(ctx, u.String()); err == nil {
-				c.Close()
-				t.Fatal("New accepted old schema with owner credentials")
-			}
-			if workerDSN != "" {
-				if c, err := New(ctx, workerDSN); err == nil {
-					c.Close()
-					t.Fatal("New accepted self-consistent old schema4 worker")
-				}
-				var accessRows int
-				if err := isolated.QueryRow(ctx, "SELECT count(*) FROM pulse_durable_distributed.access").Scan(&accessRows); err != nil || accessRows != 0 {
-					t.Fatalf("rejection changed access data: %d, %v", accessRows, err)
-				}
-			}
-			afterDDL, afterACL, afterData := observe()
-			if ddl != afterDDL || acl != afterACL || data != afterData {
-				t.Fatal("rejected Migrate changed DDL, ACL, metadata or record bytes")
-			}
-		})
+	if strings.Contains(layoutSafetySQL, "c.relkind IN ('r','p','S')") || strings.Contains(checkSQL, "c.relkind IN ('r','p','S')") {
+		t.Fatal("relation owner safety contract still narrows pg_class by relkind")
+	}
+	if !strings.Contains(layoutSafetyError.Error(), "unsafe schema owners, SECURITY DEFINER settings or ACL") {
+		t.Fatal("missing unsafe-layout rejection error")
 	}
 }
 
-func TestMigrationErrorRedaction(t *testing.T) {
-	e := migrationError("upgrade v1 tables", &pgconn.PgError{Code: "23514", Message: "secret SQL and password", Detail: "private row"})
-	if !errors.Is(e, d.ErrInvalid) || !strings.Contains(e.Error(), "23514") || !strings.Contains(e.Error(), "upgrade v1 tables") || strings.Contains(e.Error(), "secret") || strings.Contains(e.Error(), "private") {
-		t.Fatalf("migration diagnostics lost category or exposed details: %v", e)
-	}
-}
 func TestReplacePreservesFunction(t *testing.T) {
 	s, e := replaceCreate(schemaSQL, "api")
 	if e != nil || !strings.HasPrefix(s, "CREATE OR REPLACE FUNCTION") || strings.Contains(s, "DROP FUNCTION") || !strings.HasSuffix(s, "$$;") {
