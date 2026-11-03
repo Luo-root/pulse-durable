@@ -188,6 +188,13 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 			outcome = OutcomeRejected
 			return execution, checkpointError("validate restore", err)
 		}
+		state.mu.Lock()
+		indexErr := state.rebuildMessageIndex()
+		state.mu.Unlock()
+		if indexErr != nil {
+			outcome = OutcomeRejected
+			return execution, checkpointError("index restore", indexErr)
+		}
 		if err := state.reconcileFailedStreams(ctx); err != nil {
 			return execution, checkpointError("reconcile failed streams", err)
 		}
