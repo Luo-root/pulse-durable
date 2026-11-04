@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/Luo-root/pulse-durable/recordio"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -130,7 +131,7 @@ func TestPostgresProductionFencingMutations(t *testing.T) {
 		t.Helper()
 		var s string
 		e := admin.QueryRow(ctx, `SELECT jsonb_build_array((`+catalogSQL+`),
- (SELECT signature FROM pulse_durable_distributed.meta),
+ (SELECT jsonb_build_object('layout_marker',layout_marker,'signature',signature) FROM pulse_durable_distributed.meta),
  (SELECT jsonb_agg(jsonb_build_array(oid,proowner,proacl) ORDER BY oid) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace),
  (SELECT jsonb_agg(to_jsonb(a) ORDER BY role_name,namespace,permission) FROM pulse_durable_distributed.access a))::text`).Scan(&s)
 		if e != nil {
@@ -198,7 +199,7 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	exec(`INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'worker')`, role, ns)
 
 	task := taskFixture(t, ns, "mutation")
-	rec, e := json.Marshal(record(task, 1))
+	rec, e := recordio.EncodeSnapshot(record(task, 1))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -213,6 +214,7 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	exec(`INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route,status,epoch,revision,record,lease_id,worker_id,boot_id,lease_until,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,'running',$6,1,$7,$8,$9,$10,clock_timestamp()+interval '1 hour',transaction_timestamp()-interval '2 seconds',transaction_timestamp()-interval '1 second')`,
 		ns, task.Identity().RunID, task.Bytes(), task.SubmissionDigest(), task.Route(), currentEpoch, rec, currentLease, worker, boot)
+	exec(`SELECT pulse_durable_distributed.snapshot_budget_initialize($1,$2,$3::jsonb,$4)`, ns, task.Identity().RunID, rec, len(rec))
 	seed := durable.SeedChain(sha256.Sum256(rec))
 	exec(`UPDATE pulse_durable_distributed.runs SET snapshot_digest=$1,head_chain=$2,root_scope='root' WHERE namespace=$3`, digest(rec), chainText(seed), ns)
 	if kind == "expiry" {
@@ -247,6 +249,7 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	args := owned(d.Token{Identity: task.Identity(), Epoch: 1, LeaseID: oldLease, Worker: d.Worker{ID: "old-worker", BootID: "old-boot"}})
 	mutate(args, mut("mutation-save"))
 	args["expected"] = "1"
+	args["snapshot_budget_version"] = snapshotBudgetVersion
 	batch := nextBatch(t, record(task, 1))
 	wire, e := durable.MarshalChangeBatch(batch)
 	if e != nil {
@@ -303,8 +306,8 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	if saveErr != nil || rejected {
 		t.Fatalf("mutation not detected: rejection=%v save error=%v", rejected, saveErr)
 	}
-	if string(out) != "{}" {
-		t.Fatalf("unexpected Apply response: %s", out)
+	if err := validateSnapshotBudgetAck(out, int64(len(rec)), 2, next); err != nil {
+		t.Fatalf("unexpected Apply budget response: %v", err)
 	}
 	exec("SET LOCAL SESSION AUTHORIZATION DEFAULT")
 	var revision string

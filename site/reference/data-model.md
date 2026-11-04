@@ -150,6 +150,8 @@ Load 校验完整性后返回隔离完整投影；仅无检查点时返回 `ErrN
 
 Apply 是唯一普通写入口：typed ChangeBatch 原子核对身份、业务版本、expected/next revision 严格加一及精确对象前置条件，成功返回与批头精确匹配的 CommitAck。前置条件或 CAS 冲突返回 `ErrConflict`，不发布部分变更；uint64 修订号耗尽必须拒绝。没有兼容 Save、可选 DeltaSession、RequireDelta 或全量回退。
 
+`ChangeBatch.SnapshotSizeDelta(before RunRecord) (int64, error)` 为后端提供无损快照格式 1 的精确字节差额。它验证与 ApplyTo 相同的批头和对象前置条件，不修改记录，也不克隆全量状态。大小编码只处理变更对象；对象前置条件检查仍可能线性查找同组 State/Values 条目。调用方须独占且已完整验证 before；初始化/Load 时建立完整大小，确认后累加差额。nil/空容器、JSON 转义、base64 与 revision 位数均参与计数。字节差额不代表磁盘、WAL 或网络开销，不授予提交权，也不替代后端的服务端限额与 CAS。
+
 耐久后端保存初始快照、连续不可变批及权威 head。快照摘要、批 wire 摘要、父修订号和链锚点由后端验证与维护；物理链不属于 ChangeHeader。新会话必须权威加载并校验链，普通 Apply 不得每次重放整个历史或重写完整快照。Initialize 可以写完整初始快照；显式快照合成属于单独维护能力，不是普通提交的回退。
 
 `durable.Maintenance` 是 Store 级接口，MemoryStore、FileStore、SQLite 与独立 PostgreSQL 已实现；第三方 Store 可不提供：
@@ -162,7 +164,17 @@ type Maintenance interface {
 }
 ```
 
-`StorageState` 包含 RunID、Generation、BaseRevision/BaseChain 与 HeadRevision/HeadChain，是一次原子观察而非后续操作的授权。Generation 从 1 开始，仅表示发布时改变，普通 Apply 只改变业务 head。`RevisionImage` 返回隔离的 Record 和精确修订号的 Chain，不以更新记录替代请求，不建立持久 pin。`CompactStorageRequest` 含 RunID、正数 ThroughRevision/ExpectedGeneration；generation 必须仍匹配，目标须在当前 base/head 之间，否则 `ErrConflict`。
+`StorageState` 包含 RunID、Generation、BaseRevision/BaseChain 与 HeadRevision/HeadChain，是一次原子观察而非后续操作的授权。Generation 从 1 开始，仅表示发布时改变，普通 Apply 只改变业务 head。`RevisionImage` 返回隔离的 Record 和精确修订号的 Chain，不以更新记录替代请求，不建立持久 pin。`CompactStorageRequest` 含 RunID、正数 ThroughRevision/ExpectedGeneration；generation 必须仍匹配，目标须在当前 base/head 之间，否则 `ErrConflict`。FileStore 对当前 base 的同 generation 请求验证所需元数据与快照后直接返回，不写文件、不消耗 generation；其他后端的同 base 行为仍以各自契约为准。
+
+FileStore 的精确读取和合成只校验本次所需的快照、原链锚点、寻址索引与连续批次；路径外的历史载荷损坏不必阻止本次操作。完整保留历史检查由可选 `durable.HistoryAuditor` 承担，当前由 FileStore 实现：
+
+```go
+type HistoryAuditor interface {
+	AuditHistory(context.Context, AuditHistoryRequest) (HistoryAuditResult, error)
+}
+```
+
+`AuditHistoryRequest` 指定 RunID；成功结果包含一致观察的 State，以及全部已提交 Snapshots/Batches/BatchBytes 计数，BatchBytes 包含批文件的寻址头。审计完整验证权威 head 引用的原始链、所有已提交快照及其锚点、两类索引，不采纳孤立文件，不创建 pin、不执行业务、不回收或修复数据。审计成本随全部保留历史增长；结果不覆盖观察后的写入。
 
 合成修订号 R 的新快照摘要独立于原提交链 `C(R)`，必须保留该锚点，不由新摘要重置链；发布只改变表示 generation/base，业务 revision/head 不变，后续 suffix 保留。所有历史修订、原快照与批全部保留，无 GC。保留链缺失或损坏是 `ErrInvalidRecord`，不能冒充 `ErrHistoryExpired`；后者为显式 retention 删除后的语义预留，`ErrPinned` 为保护历史阻止回收预留。未支持能力可用 `ErrUnsupportedCapability`，维护预算超限用 `ErrLimitExceeded`。物理合成不执行业务代码；业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成。
 
@@ -176,7 +188,7 @@ MemoryStore 的零值可用，Initialize 复制初始记录，Apply 校验后仅
 
 FileStore 必须通过 `filestore.New` 创建。它使用每个 RunID 的 OS 文件锁，锁在 Close 或进程退出时释放，锁文件保留。提供 Windows，以及 Linux、macOS、FreeBSD、OpenBSD、NetBSD、DragonFly 的锁实现；其他平台拒绝取得会话，不退化为无锁运行。仍须使用支持所需锁与同目录原子替换的文件系统。
 
-FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `2`，旧 manifest `1` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。SQLite 与独立 PostgreSQL 为物理 schema `3`，distributed PostgreSQL 为独立 schema `6`，旧 v1–v5 或不匹配 schema 明确拒绝，不写入、删除或迁移旧数据，新版使用新库。逻辑记录 format `2` 与协调 protocol `1` 不因此改变。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
+FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `3`，旧 manifest `1`、`2` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。每个批文件包含固定 256 字节路由头与原 canonical wire，路由头保存父批及跳转引用并受 head 的摘要链保护；每次合成只追加一个快照和一个常量大小的 `.history` 索引节点。普通 Apply 写一个新批和小 head，不复制完整历史索引；精确读取通过索引寻址后只重放所选快照到目标的连续区间。SQLite 与独立 PostgreSQL 仍各自检查其当前物理布局；distributed PostgreSQL 使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 及安全属性检查，不维护递增物理 schema 版本链。布局不匹配只拒绝，不写入、删除或迁移旧数据，新版使用新库。逻辑记录 format `2` 与协调 protocol `1` 不因此改变。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
 
 distributed mutation 的身份、结果凭据与诊断分开保存：永久 `mutation_guards`、独立 `mutation_receipts` 与诊断 `events`。`Coordinator.FindMutation(ctx, MutationQuery)` 匹配 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow；ExpectedEpoch/ExpectedRevision 可选指针 nil 表示未知，非 nil（含 0）精确匹配。`Found` 只裁决精确协调 mutation，不证明外部副作用或授予 lease/执行权限；`AbsentWithinWindow` 要求完整覆盖请求窗口；`Expired` 要求请求下界早于覆盖且观察已达到请求上界，未来上界会被拒绝。缺回执、缺席或过期均不证明从未提交，也不授权业务重放。
 

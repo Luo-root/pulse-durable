@@ -198,7 +198,15 @@ jobs:
         env:
           PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE: "yes"
           PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:5432/durable_distributed_test?sslmode=disable
-        run: go test -mod=readonly -race -count=1 -timeout=240s -v ./postgres
+        run: go test -mod=readonly -race -count=1 -timeout=240s -skip '^(TestPostgresSnapshotOriginalCapacitySequence|TestPostgresSnapshotExactBoundaryAndOneByte)$' -v ./postgres
+      # 每个大载荷用例独立计时；协议和并发仍跑 race，不延长故障场景的 deadline。
+      - name: Test real PostgreSQL snapshot capacity boundaries
+        env:
+          PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE: "yes"
+          PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:5432/durable_distributed_test?sslmode=disable
+        run: |
+          go test -mod=readonly -count=1 -timeout=240s -run '^TestPostgresSnapshotOriginalCapacitySequence$' -v ./postgres
+          go test -mod=readonly -count=1 -timeout=240s -run '^TestPostgresSnapshotExactBoundaryAndOneByte$' -v ./postgres
 
   distributed-system:
     runs-on: ubuntu-latest

@@ -11,7 +11,7 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// 要求全新、可丢弃的模式版本 5 数据库，并显式启用标准破坏性
+// 要求全新、可丢弃的模式版本 7 数据库，并显式启用标准破坏性
 // 集成测试。离线验证只编译、不执行此测试。
 func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 	for _, boundary := range []string{"count", "bytes"} {
@@ -57,7 +57,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			begun, err := c.maintenanceCall(ctx, "begin", a, true)
+			begun, err := c.storageCall(ctx, "storage_compact_begin", a, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +127,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 				t.Fatal(err)
 			}
 			a["record"], a["snapshot_digest"], a["chain"] = snapshot, digest(snapshot), chain
-			published, err := c.maintenanceCall(ctx, "publish", a, true)
+			published, err := c.storageCall(ctx, "storage_compact_publish", a, true)
 			if err != nil {
 				t.Fatal(err)
 			}

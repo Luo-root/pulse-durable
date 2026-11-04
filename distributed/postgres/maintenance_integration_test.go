@@ -35,7 +35,7 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := c.maintenanceCall(ctx, "begin", a, true)
+	b, err := c.storageCall(ctx, "storage_compact_begin", a, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,10 +70,10 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 		return state
 	}
 	before := observe()
-	for _, op := range []string{"inspect", "find", "abort", "publish", "begin"} {
+	for _, op := range []string{"storage_inspect", "storage_compact_find", "storage_compact_abort", "storage_compact_publish", "storage_compact_begin"} {
 		t.Run(op, func(t *testing.T) {
 			request := a
-			if op == "begin" {
+			if op == "storage_compact_begin" {
 				fresh := q
 				fresh.Mutation.ID = "clock-fresh-build"
 				var err error
@@ -82,7 +82,7 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := c.maintenanceCall(ctx, op, request, op != "inspect" && op != "find"); !errors.Is(err, d.ErrClockRegression) {
+			if _, err := c.storageCall(ctx, op, request, op != "storage_inspect" && op != "storage_compact_find"); !errors.Is(err, d.ErrClockRegression) {
 				t.Fatal("regressed maintenance not PD007", op, err)
 			}
 			if after := observe(); after != before {
@@ -121,7 +121,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	b, e := c.maintenanceCall(ctx, "begin", a, true)
+	b, e := c.storageCall(ctx, "storage_compact_begin", a, true)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -151,7 +151,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	a["record"] = wire
 	a["snapshot_digest"] = digest(wire)
 	a["chain"] = chain
-	b, e = c.maintenanceCall(ctx, "publish", a, true)
+	b, e = c.storageCall(ctx, "storage_compact_publish", a, true)
 	if e != nil {
 		t.Fatal(e)
 	}

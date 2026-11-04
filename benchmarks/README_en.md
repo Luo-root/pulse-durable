@@ -9,13 +9,13 @@ The first complete matrix uses chains of 1, 10, 100, 1000 and 10000 business ste
 | Group | Durable | go-workflows |
 |---|---|---|
 | `memory` | Isolated Go records in MemoryStore | Named shared-cache SQLite in-memory database with a retained connection, not a Go map |
-| `file` | Full JSON snapshots, file Sync then replacement | SQLite file, WAL requested, synchronous not overridden; actual PRAGMAs retained per sample |
+| `file` | filestore initial snapshot, immutable incremental batches and atomic head; file Sync before publication | SQLite file, WAL requested, synchronous not overridden; actual PRAGMAs retained per sample |
 
 Both persistent backends complete the same business task, but differ in transactions, history format, replay and power-loss guarantees. Filestore does not promise power-loss durability. MemoryStore does not demonstrate process-restart recovery. Read memory and file groups separately; do not rank them alongside pure in-memory DAG engines.
 
 ## Current dependencies and historical experiment
 
-The reproducible source now pins Go `1.26.0`, Pulse `v0.5.0` and Durable `v0.1.0`. This legacy two-framework module retains go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`. Aligning source dependencies with official releases does not mean the historical data below was rerun with those versions or Go 1.26.
+The reproducible source requires Go `1.26.0+` and pins Pulse `v0.5.2` and Durable `v0.1.1-0.20261029022550-ce30b655d639`. This legacy two-framework module retains go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`. `GOWORK=off` uses these public dependencies; source integration must identify its workspace separately. Updating dependencies does not rerun the historical measurements below.
 
 The sampling versions of the 2026-10-17 historical experiment remain unchanged:
 
@@ -35,9 +35,9 @@ The comparison uses an explicit low-latency single-host configuration: one Workf
 
 Both SQLite groups use the public WithDB constructor with one connection and a retained idle connection. The native in-memory convenience constructor uses two connections; the suite selects a fixed single-connection local configuration and retains it in the external raw evidence alongside journal_mode, synchronous, busy_timeout, cache and page settings. The pinned Worker.New does not act on SingleWorkerMode; setting that field is not treated as a guarantee. The history-event limit is raised with graph size to prevent the default 10000-event limit from ending large runs prematurely.
 
-`growth` is a separate instrumented scenario. A Durable Store wrapper performs an extra JSON encoding before each Save, counting Save calls, cumulative JSON bytes passed to successful Saves and final record size, with a cumulative logical-byte budget. Do not mix these extra costs into ordinary `run` rankings. After timing and before closing connections, SQLite reports event counts and current database/WAL file lengths; a WAL checkpoint at close can change those lengths. It does not provide an equivalent cumulative physical/logical-write counter. These are different metrics, not directly comparable write-amplification figures.
+`growth` is a separate instrumented scenario. A Durable Store wrapper counts Initialize/Apply calls and successes separately. `initial_snapshot_json_bytes` measures ordinary JSON for successful initialization, `canonical_batch_bytes` sums canonical wire bytes for successful Applies, and `final_record_json_bytes` measures the final projection as ordinary JSON during inspection. These are different encodings and exclude file envelopes, head, Sync and physical I/O. The cumulative budget covers the first two counters together. Do not mix these extra costs into ordinary `run` rankings. After timing and before closing connections, SQLite reports event counts and current database/WAL file lengths; a WAL checkpoint at close can change those lengths. It does not provide an equivalent cumulative physical/logical-write counter. These are different metrics, not directly comparable write-amplification figures.
 
-`resume` launches a child process and calls `os.Exit(73)` after half the steps are durably confirmed. A new process continues the same record/instance. Durable stops after successful Save and before downstream publication. The go-workflows hook stops after a confirmed history transaction and briefly prevents the next Activity from being claimed, avoiding an unrelated unfinished lease wait. A disk audit checks that every business step ran exactly once across both processes. The worker name stays `workflow-bench-single-host`, measuring same-host restart rather than cross-machine claiming/lease takeover. This precise crash boundary does not establish exactly-once external side effects.
+`resume` launches a child process and calls `os.Exit(73)` after half the steps are durably confirmed. A new process continues the same record/instance. Durable stops after successful Apply and a confirming authoritative Load, before downstream publication. The go-workflows hook stops after a confirmed history transaction and briefly prevents the next Activity from being claimed, avoiding an unrelated unfinished lease wait. A disk audit checks that every business step ran exactly once across both processes. The worker name stays `workflow-bench-single-host`, measuring same-host restart rather than cross-machine claiming/lease takeover. This precise crash boundary does not establish exactly-once external side effects.
 
 Recovery separates process startup, backend/Graph preparation, restore plus remaining work, and inspection/cleanup/IPC. Business-entry audits fsync and increase remaining-work latency, so compare recovery only with similarly audited recovery samples. This mode leaves unmeasured allocation counters empty.
 
@@ -73,6 +73,8 @@ Or run one precise scenario:
 benchmarks/workflow/workflow.exe -engine durable -backend file -nodes 100 -rounds 1 -mode growth -warmup=false -max-write-bytes 1073741824 -timeout 60s -dir benchmarks/results/local-scratch
 benchmarks/workflow/workflow.exe -engine go-workflows -backend file -nodes 100 -rounds 1 -mode resume -timeout 60s -dir benchmarks/results/local-scratch
 ```
+
+The CLI emits result JSON first: `status=ok` exits with 0; `error`, `timeout`, and `resource_limit` exit nonzero. Samplers must preserve both failure JSON and the exit code rather than dropping failed commands.
 
 Ordinary `run` does no extra encoding for write metering and is time-bounded only; the 1GiB logical-byte guard applies to Durable `growth`. Context cancellation cannot forcibly interrupt synchronous encoding/storage, so the sampler adds a 65-second parent deadline and cleans up the contained process tree. Retain timeout, resource-limit and unmeasured states separately. Never fill an incomplete 10000-step point with zero or an extrapolated value.
 

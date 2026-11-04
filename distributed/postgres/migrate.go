@@ -17,6 +17,9 @@ var schemaSQL string
 //go:embed maintenance.sql
 var maintenanceSQL string
 
+//go:embed snapshot_budget.sql
+var snapshotBudgetSQL string
+
 // Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
 // 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
 // 授权物理合成；retain/replay 为预留权限，尚不授予任何 API。
@@ -28,10 +31,9 @@ type Grant struct {
 	Permissions []string
 }
 
-// Migrate 安装新的物理模式，或精确验证已安装的模式。
-// 拒绝旧模式，不修改其数据或 DDL。逻辑记录
-// 仍为格式 2；物理模式版本 6 并非逻辑记录升级。
-// 拒绝版本 1–5；此版本绝不重写已安装模式。
+// Migrate 安装新的当前物理布局，或精确验证已安装的布局。
+// 布局标记不是递增 schema 版本；标记或签名不匹配时拒绝，
+// 不修改已有数据或 DDL。
 // 此显式管理员入口可授予 API 执行与命名空间
 // 权限，但绝不授予表访问权限。须使用专用所有者凭据运行。
 func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
@@ -69,7 +71,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		return scrub(e, false)
 	}
 	if !exists {
-		if _, e = tx.Exec(ctx, schemaSQL+maintenanceSQL); e != nil {
+		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL); e != nil {
 			return scrub(e, false)
 		}
 		if _, e = tx.Exec(ctx, checkSQL); e != nil {
@@ -83,18 +85,14 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return scrub(e, false)
 		}
 	} else {
-		var installed int
-		if e = tx.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&installed); e != nil {
-			return scrub(e, false)
-		}
-		if installed != 6 {
-			return errors.New("distributed postgres: unsupported physical schema; use a new database (old data unchanged)")
-		}
 		if e = validate(ctx, tx, false); e != nil {
 			return e
 		}
+		if e = validateLayoutSafety(ctx, tx); e != nil {
+			return e
+		}
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -107,7 +105,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return errors.New("distributed postgres: grant requires isolated non-owner role")
 		}
 		role := pgx.Identifier{g.Role}.Sanitize()
-		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
+		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
 			return scrub(e, false)
 		}
 		for _, permission := range g.Permissions {
@@ -136,6 +134,8 @@ type querier interface {
 // 签名覆盖精确的列、默认值、约束、索引、函数
 // （包括 SECURITY DEFINER 及固定 search_path）、触发器、策略和
 // 对象数量。ACL 单独检查，以允许显式角色授权。
+const layoutMetaSQL = "SELECT count(*),coalesce(min(layout_marker),''),coalesce(min(signature),'') FROM pulse_durable_distributed.meta"
+
 const catalogSQL = `SELECT coalesce(string_agg(x,E'\n' ORDER BY x),'') FROM (
  SELECT 'relation:'||c.relname||':'||c.relkind::text||':'||c.relrowsecurity::text||':'||c.relforcerowsecurity::text AS x FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pulse_durable_distributed'
  UNION ALL SELECT 'column:'||c.relname||':'||a.attname||':'||a.attnum||':'||format_type(a.atttypid,a.atttypmod)||':'||a.attnotnull||':'||a.attidentity::text||':'||a.attgenerated::text||':'||coalesce(pg_get_expr(ad.adbin,ad.adrelid),'') FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef ad ON ad.adrelid=c.oid AND ad.adnum=a.attnum WHERE n.nspname='pulse_durable_distributed' AND a.attnum>0 AND NOT a.attisdropped
@@ -161,9 +161,9 @@ func validate(ctx context.Context, q querier, worker bool) error {
 	if version < 160000 {
 		return errors.New("distributed postgres: PostgreSQL 16+ required")
 	}
-	var n, v int
-	var sig string
-	if e := q.QueryRow(ctx, "SELECT count(*),coalesce(min(version),0),coalesce(min(signature),'') FROM pulse_durable_distributed.meta").Scan(&n, &v, &sig); e != nil {
+	var n int
+	var marker, sig string
+	if e := q.QueryRow(ctx, layoutMetaSQL).Scan(&n, &marker, &sig); e != nil {
 		// 工作进程角色有意不能 SELECT meta。使用定义者身份的验证
 		// 函数，避免授予哪怕附带的表读取权限。
 		if worker {
@@ -171,8 +171,8 @@ func validate(ctx context.Context, q querier, worker bool) error {
 		}
 		return scrub(e, false)
 	}
-	if n != 1 || v != 6 {
-		return errors.New("distributed postgres: incompatible schema version")
+	if n != 1 || marker != "pulse-durable-distributed-layout-v1" {
+		return errors.New("distributed postgres: incompatible layout marker")
 	}
 	current, e := signature(ctx, q)
 	if e != nil {
@@ -186,8 +186,41 @@ func validate(ctx context.Context, q querier, worker bool) error {
 	}
 	return nil
 }
+
+var layoutSafetyError = errors.New("distributed postgres: unsafe schema owners, SECURITY DEFINER settings or ACL")
+
+const layoutSafetySQL = `SELECT NOT EXISTS(
+ SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+ WHERE n.nspname='pulse_durable_distributed' AND (
+  p.proowner<>n.nspowner OR
+  (p.prosecdef AND ((SELECT count(*) FROM unnest(coalesce(p.proconfig,'{}'::text[])) x WHERE x LIKE 'search_path=%')<>1 OR (SELECT replace(x,' ','') FROM unnest(coalesce(p.proconfig,'{}'::text[])) x WHERE x LIKE 'search_path=%') IS DISTINCT FROM 'search_path=pg_catalog,pulse_durable_distributed,pg_temp'))
+ )
+) AND NOT EXISTS(
+ SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='pulse_durable_distributed' AND c.relowner<>n.nspowner
+) AND NOT EXISTS(
+ SELECT 1 FROM pg_namespace n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+ WHERE n.nspname='pulse_durable_distributed' AND a.grantee=0
+) AND NOT EXISTS(
+ SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+ WHERE n.nspname='pulse_durable_distributed' AND a.grantee=0
+) AND NOT EXISTS(
+ SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault(CASE WHEN c.relkind='S' THEN 's'::"char" ELSE 'r'::"char" END,c.relowner))) a
+ WHERE n.nspname='pulse_durable_distributed' AND a.grantee=0
+)`
+
+func validateLayoutSafety(ctx context.Context, q querier) error {
+	var safe bool
+	if e := q.QueryRow(ctx, layoutSafetySQL).Scan(&safe); e != nil {
+		return scrub(e, false)
+	}
+	if !safe {
+		return layoutSafetyError
+	}
+	return nil
+}
+
 func validateWorker(ctx context.Context, q querier) error {
-	// 自洽的旧模式可能由其自身旧检查器返回 true。
 	// 无须授予工作进程对 meta 的 SELECT 即可读取 pg_proc。先固定
 	// 检查器函数体，再信任其对目录及权限的验证。
 	var current bool
@@ -196,7 +229,7 @@ func validateWorker(ctx context.Context, q querier) error {
 		return scrub(e, false)
 	}
 	if !current {
-		return errors.New("distributed postgres: incompatible schema version")
+		return errors.New("distributed postgres: incompatible layout marker or checker")
 	}
 	var ok bool
 	if e := q.QueryRow(ctx, "SELECT pulse_durable_distributed.check_schema()").Scan(&ok); e != nil {

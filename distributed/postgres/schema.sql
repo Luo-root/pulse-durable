@@ -1,12 +1,12 @@
 CREATE SCHEMA pulse_durable_distributed;
 REVOKE ALL ON SCHEMA pulse_durable_distributed FROM PUBLIC;
-CREATE TABLE pulse_durable_distributed.meta(version integer PRIMARY KEY CHECK(version=6), signature text NOT NULL);
+CREATE TABLE pulse_durable_distributed.meta(layout_marker text PRIMARY KEY CHECK(layout_marker='pulse-durable-distributed-layout-v1'), signature text NOT NULL);
 CREATE TABLE pulse_durable_distributed.access(role_name name NOT NULL, namespace text NOT NULL, permission text NOT NULL CHECK(permission IN ('query','worker','submit','cancel','maintain','retain','replay')), PRIMARY KEY(role_name,namespace,permission));
 CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','blocked','succeeded','failed','canceled')),
  epoch bigint NOT NULL DEFAULT 0 CHECK(epoch>=0), revision numeric(20,0) NOT NULL DEFAULT 0 CHECK(revision>=0 AND revision<=18446744073709551615),
- record bytea, snapshot_digest text, head_chain text, root_scope text, active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ record bytea, snapshot_digest text, head_chain text, root_scope text, snapshot_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_bytes BETWEEN 0 AND 16777216), snapshot_fixed_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_fixed_bytes>=0), snapshot_budget_version integer NOT NULL DEFAULT 1 CHECK(snapshot_budget_version=1), active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
  receipt_coverage_floor timestamptz NOT NULL DEFAULT statement_timestamp(), receipt_observed_through timestamptz,
  representation_generation bigint NOT NULL DEFAULT 1 CHECK(representation_generation>0), active_snapshot bigint, maintenance_watermark timestamptz,
  last_mutation_id text, last_mutation_digest text, reason text NOT NULL DEFAULT '',
@@ -34,13 +34,14 @@ CREATE TABLE pulse_durable_distributed.mutation_receipts(namespace text NOT NULL
 REVOKE ALL ON ALL TABLES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA pulse_durable_distributed FROM PUBLIC;
 CREATE FUNCTION pulse_durable_distributed.snapshot(r pulse_durable_distributed.runs) RETURNS jsonb LANGUAGE sql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
- SELECT jsonb_build_object('task',encode(r.task,'base64'),'digest',r.digest,'namespace',r.namespace,'run_id',r.run_id,'route',r.route,'status',r.status,'epoch',r.epoch,'revision',r.revision::text,'lease_until',r.lease_until,'created_at',r.created_at,'updated_at',r.updated_at,'reason',r.reason,'lease_id',r.lease_id,'worker_id',r.worker_id,'boot_id',r.boot_id,'record',encode(r.record,'base64'),'mutation_id',r.last_mutation_id,'mutation_digest',r.last_mutation_digest)
+ SELECT jsonb_build_object('task',encode(r.task,'base64'),'digest',r.digest,'namespace',r.namespace,'run_id',r.run_id,'route',r.route,'status',r.status,'epoch',r.epoch,'revision',r.revision::text,'lease_until',r.lease_until,'created_at',r.created_at,'updated_at',r.updated_at,'reason',r.reason,'lease_id',r.lease_id,'worker_id',r.worker_id,'boot_id',r.boot_id,'record',encode(r.record,'base64'),'mutation_id',r.last_mutation_id,'mutation_digest',r.last_mutation_digest,'snapshot_budget_version',r.snapshot_budget_version,'snapshot_bytes',r.snapshot_bytes::text)
 $$;
 CREATE FUNCTION pulse_durable_distributed.api(op text, a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE
  ns text:=a->>'namespace'; rid text:=a->>'run_id'; r pulse_durable_distributed.runs; l pulse_durable_distributed.leases; t timestamptz;
  first_sample timestamptz; needed text; b bytea; d jsonb; j jsonb; rev numeric; result jsonb:='[]'::jsonb; slot integer:=0; ttl bigint; lid text; changed boolean:=false;
 BEGIN
+ IF jsonb_typeof(a->'snapshot_budget_version') IS DISTINCT FROM 'number' OR a->>'snapshot_budget_version' IS DISTINCT FROM '1' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unsupported snapshot budget client'; END IF;
  IF NOT check_schema() THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unsafe schema or credentials'; END IF;
  needed:=CASE WHEN op IN ('get','list','find','receipt') THEN 'query' WHEN op IN ('resolve','claim','reject','load','renew','initialize','apply','finish','release','block') THEN 'worker' WHEN op='submit' THEN 'submit' WHEN op='cancel' THEN 'cancel' END;
  IF needed IS NULL THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unknown operation'; END IF;
@@ -183,7 +184,7 @@ BEGIN
   IF r.revision=0 OR r.head_chain IS NULL OR r.snapshot_digest IS NULL THEN
    RETURN snapshot(r);
   END IF;
-  RETURN storage_image(r,r.revision,true);
+  RETURN storage_image(r,r.revision,true)||snapshot_budget_summary(r);
  END IF;
  IF op='renew' THEN
   ttl:=(a->>'ttl_us')::bigint;
@@ -210,6 +211,7 @@ BEGIN
    OR j->'header'->>'run_id' IS DISTINCT FROM rid OR j->'header'->>'business_version' IS DISTINCT FROM d->'route'->>'business_version' OR j->'header'->>'definition_digest' IS DISTINCT FROM d->'route'->>'definition' OR j->'header'->>'inputs_digest' IS DISTINCT FROM d->>'inputs' OR j->'header'->>'root_scope' IS DISTINCT FROM r.root_scope
    OR j->'header'->>'expected_revision' IS DISTINCT FROM rev::text OR j->'header'->>'revision' IS DISTINCT FROM (rev+1)::text
    OR a->>'next_chain' IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(r.head_chain,'hex')||sha256(b)||decode(lpad(to_hex(trunc((rev+1)/4294967296)::bigint),8,'0')||lpad(to_hex(mod(rev+1,4294967296)::bigint),8,'0'),'hex')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='batch identity'; END IF;
+  PERFORM snapshot_budget_apply(r,j);
   INSERT INTO batches(namespace,run_id,revision,wire,digest,parent_chain,next_chain) VALUES(ns,rid,rev+1,b,a->>'batch_digest',r.head_chain,a->>'next_chain');
   UPDATE runs SET revision=rev+1,head_chain=a->>'next_chain',active_log_bytes=active_log_bytes+octet_length(b),active_log_count=active_log_count+1 WHERE namespace=ns AND run_id=rid;
  ELSIF op='initialize' THEN
@@ -218,14 +220,18 @@ BEGIN
   IF b IS NULL OR octet_length(b) NOT BETWEEN 1 AND 16777216 OR rev=18446744073709551615 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid record'; END IF;
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid JSON'; END IF;
   j:=convert_from(b,'UTF8')::jsonb; d:=convert_from(r.task,'UTF8')::jsonb;
+  PERFORM snapshot_value_bytes(j,'snapshot',false);
+  IF j->>'version' IS DISTINCT FROM '1' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot version'; END IF;
+  j:=j->'record';
   IF jsonb_typeof(j->'run_id') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'version') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'definition') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'inputs') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'root_scope') IS DISTINCT FROM 'string'
    OR j->>'run_id' IS DISTINCT FROM rid OR j->>'version' IS DISTINCT FROM d->'route'->>'business_version' OR j->>'definition' IS DISTINCT FROM d->'route'->>'definition' OR j->>'inputs' IS DISTINCT FROM d->>'inputs'
    OR j->>'format' IS DISTINCT FROM d->'route'->>'record_format' OR (j->>'revision')::numeric IS DISTINCT FROM rev+1
    OR jsonb_typeof(j->'revision') IS DISTINCT FROM 'number' OR jsonb_typeof(j->'format') IS DISTINCT FROM 'number'
    OR j->>'revision' !~ '^[1-9][0-9]*$' OR coalesce(j->>'root_scope','')='' OR jsonb_typeof(j->'scopes') IS DISTINCT FROM 'object' OR jsonb_typeof(j->'attempts') IS DISTINCT FROM 'object'
   THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid record'; END IF;
-  IF (SELECT count(*) FROM jsonb_object_keys(j->'scopes'))<>1 OR j->'scopes'->(j->>'root_scope') IS NULL OR coalesce(j->'attempts','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'streams','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'messages','{}'::jsonb)<>'{}'::jsonb OR coalesce(j->'managed','{}'::jsonb)<>'{}'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial state'; END IF;
-  IF coalesce(j->'scopes'->(j->>'root_scope')->>'graph','')='' OR j->'scopes'->(j->>'root_scope')->>'inputs' IS DISTINCT FROM j->>'inputs' OR coalesce(j->'scopes'->(j->>'root_scope')->'nodes','{}'::jsonb)<>'{}'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial root'; END IF;
+  IF (SELECT count(*) FROM jsonb_object_keys(j->'scopes'))<>1 OR j->'scopes'->(j->>'root_scope') IS NULL OR j->'attempts'<>'{}'::jsonb OR j->'streams' NOT IN ('null'::jsonb,'{}'::jsonb) OR j->'messages' NOT IN ('null'::jsonb,'{}'::jsonb) OR j->'managed' NOT IN ('null'::jsonb,'{}'::jsonb) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial state'; END IF;
+  IF coalesce(j->'scopes'->(j->>'root_scope')->>'graph','')='' OR j->'scopes'->(j->>'root_scope')->>'inputs' IS DISTINCT FROM j->>'inputs' OR j->'scopes'->(j->>'root_scope')->'nodes' IS DISTINCT FROM '{}'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial root'; END IF;
+  PERFORM snapshot_budget_initialize(ns,rid,convert_from(b,'UTF8')::jsonb,octet_length(b));
   UPDATE runs SET record=b,revision=1,root_scope=j->>'root_scope',snapshot_digest=encode(sha256(b),'hex'),head_chain=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||sha256(b)||int8send(1::bigint)),'hex') WHERE namespace=ns AND run_id=rid;
  ELSIF op='finish' THEN
   IF r.record IS NULL OR a->>'outcome' NOT IN ('completed','failed') OR a->>'outcome' IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid outcome'; END IF;
@@ -247,8 +253,8 @@ BEGIN
  INSERT INTO mutation_guards VALUES(ns,rid,a->>'mutation_id',a->>'mutation_digest',op,r.epoch,r.revision,t);
  INSERT INTO mutation_receipts VALUES(ns,rid,a->>'mutation_id',t,jsonb_build_object('status',r.status,'epoch',r.epoch,'revision',r.revision::text));
  INSERT INTO events(namespace,run_id,operation,epoch,revision,lease_id,mutation_id,mutation_digest,occurred_at) VALUES(ns,rid,op,r.epoch,r.revision,a->>'lease_id',a->>'mutation_id',a->>'mutation_digest',t);
- IF op='apply' THEN RETURN '{}'::jsonb; END IF;
+ IF op IN ('initialize','apply') THEN RETURN jsonb_build_object('snapshot_budget_version',r.snapshot_budget_version,'snapshot_bytes',r.snapshot_bytes::text,'revision',r.revision::text,'head_chain',r.head_chain); END IF;
  RETURN snapshot(r);
 END $$;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA pulse_durable_distributed FROM PUBLIC;
-INSERT INTO pulse_durable_distributed.meta VALUES(6,'');
+INSERT INTO pulse_durable_distributed.meta VALUES('pulse-durable-distributed-layout-v1','');

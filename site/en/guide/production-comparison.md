@@ -1,5 +1,30 @@
 # Unified production workflow comparison
 
+## 2026-11-01: message index and file history measurements
+
+This section compares two specific Durable paths before and after the current source changes. It does not update the Pulse/Eino/Temporal ranking. The baseline is Durable `16d7bf9fbee1b496fb1ffb95a25f62ee2f19e6fe`. Both variants use public Pulse `v0.5.2`, Go `1.26.10`, Windows amd64, Intel Core i9-14900HX, `GOMAXPROCS=2`, and `GOWORK=off`. Benchmarks ran serially while this round's PostgreSQL tests, race tests, and other benchmarks were paused. Filesystem caches were not cleared and not all system processes were controlled. All figures are medians over every sample, not production latency percentiles.
+
+The message comparison overlays only `attempts.go`, `runtime.go`, `delta.go`, and `messages.go` onto the same baseline source to isolate the index change. `BenchmarkMessageIndexRuntimeManaged` runs complete managed-message processing, checks the result, and retains all confirmed message history. Each sample executes one run, with three samples per point. The new index is built once after authoritative loading or confirmed initialization; ordinary confirmation updates only this batch's messages, and normal lookup misses do not rebuild it.
+
+| Messages | Old scan ms/run | Incremental index ms/run | Old allocated MB/run | New allocated MB/run |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 9.851 | 7.027 | 8.824 | 4.478 |
+| 512 | 96.115 | 14.951 | 88.586 | 17.730 |
+| 2048 | 1434.037 | 62.993 | 1209.992 | 70.779 |
+
+The file comparison fixes origin/base at revision 1 and increases only retained batch count H. Preparation writes are excluded, each fixture measures one operation, and each point has five samples. The common comparison fixture allows the old implementation to advance generation under its original behavior and the new implementation to perform its approved same-base no-op, avoiding repeated measurements that grow the old representation history. `LoadRevision(1)` reads the origin directly; same-base requests still validate the required current metadata and snapshot. Complete auditing is separate from these paths.
+
+| Retained batches H | Old LoadRevision(1) ms | New LoadRevision(1) ms | Old same-base ms | New same-base ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 35.081 | 0.706 | 36.454 | 0.682 |
+| 256 | 73.571 | 0.744 | 69.565 | 0.684 |
+| 512 | 261.411 | 0.734 | 164.402 | 0.714 |
+| 1024 | 299.611 | 0.697 | 280.153 | 0.705 |
+
+First-sample outliers were retained. At H=1024, old/new read ranges were 275.522–12019.477 ms and 0.640–9.358 ms. The 128-message timing ranges overlap; three samples do not establish a statistically significant small-scale speedup. Median allocated bytes for the H=1024 read fell from 75,295,696 B to 16,832 B. MB is decimal. Cumulative allocation is not live heap, RSS, WAL, network traffic, or device I/O. The index also retains metadata proportional to message groups; these figures do not establish linear cost for the complete Runtime/Apply or constant cost for every historical query. See [Storage](storage.md) for the boundary between targeted paths and complete `AuditHistory`.
+
+## 2026-10-17/23: historical framework comparison
+
 > New collection, 2026-10-23: [formal-release SQLite and recovery report](https://github.com/Luo-root/pulse/blob/main/site/en/reference/sqlite-formal-20261023.md). Go 1.26.0, Core v0.5.0, Durable/official sqlitestore v0.1.0; 171 valid records and all 36 recoveries ok. Another 45 Temporal checkpoint configuration errors remain as diagnostics, not performance failures; overall status: COMPLETED_WITH_ERRORS. Only reliable confirmation, the Temporal native-persistence baseline and recovery were rerun, not full execution/observation/resources. Historical identities, backends and numbers below remain unchanged.
 
 The new round keeps **Pulse/Durable, Eino and Temporal** throughout execution, observation, resources, reliable confirmation and recovery. The [full report/four figures](https://github.com/Luo-root/pulse/blob/main/site/en/reference/production-comparison.md), [234-group compact CSV](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-production/summary.csv), [versions/raw hashes](https://github.com/Luo-root/pulse/blob/main/benchmarks/reports/2026-10-17-production/identity.json) and [reproduction code](https://github.com/Luo-root/pulse/tree/main/benchmarks/production) live together in Pulse rather than duplicating raw artifacts in both repositories. See [Pulse #427](https://github.com/Luo-root/pulse/issues/427) and [Durable #41](https://github.com/Luo-root/pulse-durable/issues/41).

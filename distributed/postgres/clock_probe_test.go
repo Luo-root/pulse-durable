@@ -10,6 +10,7 @@ import (
 	"time"
 
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // 不改变模式、表或主机时钟。每个查询仅在收到
@@ -118,13 +119,14 @@ func TestPostgresClockRegressionRejectsWithoutPublication(t *testing.T) {
 	}
 	before := read()
 	var originalUpdated time.Time
-	if e = admin.QueryRow(ctx, `SELECT updated_at FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&originalUpdated); e != nil {
+	var originalReceipt pgtype.Timestamptz
+	if e = admin.QueryRow(ctx, `SELECT updated_at,receipt_observed_through FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&originalUpdated, &originalReceipt); e != nil {
 		t.Fatal(scrub(e, false))
 	}
 	restore := func() error {
 		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		_, e := admin.Exec(cleanup, `UPDATE pulse_durable_distributed.runs SET updated_at=$3 WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID, originalUpdated)
+		_, e := admin.Exec(cleanup, `UPDATE pulse_durable_distributed.runs SET updated_at=$3,receipt_observed_through=$4 WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID, originalUpdated, originalReceipt)
 		return e
 	}
 	t.Cleanup(func() {
@@ -172,5 +174,46 @@ func TestPostgresClockRegressionRejectsWithoutPublication(t *testing.T) {
 	loaded, e := c.LoadOwned(ctx, claim.Token)
 	if e != nil || loaded.Revision != 1 || loaded.RunID != initial.RunID {
 		t.Fatal("fresh authoritative load changed after rejected Apply", e)
+	}
+
+	// 只推进回执观测水位，保持 updated_at 为原来的过去值；此时合法 PD007 的 delta_us 非负。
+	var receiptUpdated time.Time
+	var updatedPast, receiptFuture bool
+	if e = admin.QueryRow(ctx, `UPDATE pulse_durable_distributed.runs SET receipt_observed_through=clock_timestamp()+interval '1 hour' WHERE namespace=$1 AND run_id=$2 RETURNING updated_at,updated_at<clock_timestamp(),receipt_observed_through>clock_timestamp()`, ns, task.Identity().RunID).Scan(&receiptUpdated, &updatedPast, &receiptFuture); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	if !receiptUpdated.Equal(originalUpdated) || !updatedPast || !receiptFuture {
+		t.Fatal("receipt-only clock fixture changed updated_at or did not isolate the future receipt watermark")
+	}
+	diagnosticMu.Lock()
+	diagnostics = nil
+	diagnosticMu.Unlock()
+	if _, e = c.ApplyOwned(ctx, claim.Token, mutation, batch); !errors.Is(e, d.ErrClockRegression) {
+		t.Fatalf("future receipt watermark not rejected as clock regression: %v", e)
+	}
+	diagnosticMu.Lock()
+	got = append([]clockDiagnostic(nil), diagnostics...)
+	diagnosticMu.Unlock()
+	if len(got) != 1 || got[0].Phase != clockOwnedFirst || got[0].DeltaUS < 0 || got[0].StepUS != 0 {
+		t.Fatalf("missing nonnegative receipt-only owned_first diagnostic: %+v", got)
+	}
+	after = read()
+	if before.revision != after.revision || before.chain != after.chain || !bytes.Equal(before.record, after.record) || before.batches != after.batches || before.receipts != after.receipts {
+		t.Fatal("receipt-only PD007 published revision, chain, snapshot bytes, batch or receipt")
+	}
+	if _, e = c.FindMutation(ctx, q); !errors.Is(e, d.ErrClockRegression) {
+		t.Fatal("receipt read ignored future receipt watermark", e)
+	}
+	if e = restore(); e != nil {
+		t.Fatal(scrub(e, false))
+	}
+	receipts, e = c.FindMutation(ctx, q)
+	if e != nil || receipts.State != d.AbsentWithinWindow {
+		t.Fatal("receipt-only rejected mutation has receipt", e)
+	}
+	c.DropOwnedProjection(claim.Token)
+	loaded, e = c.LoadOwned(ctx, claim.Token)
+	if e != nil || loaded.Revision != 1 || loaded.RunID != initial.RunID {
+		t.Fatal("fresh authoritative load changed after receipt-only rejected Apply", e)
 	}
 }

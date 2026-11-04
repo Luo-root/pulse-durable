@@ -20,8 +20,80 @@ func (s *runState) processingAttempt(scope, parent, node string, site pulse.Site
 	return s.activeAttempt(parent)
 }
 
-func sameMessage(a, b MessageAttemptRecord) bool {
-	return a.Scope == b.Scope && a.Parent == b.Parent && a.NodeID == b.NodeID && streamKey(a.Input) == streamKey(b.Input) && a.Sequence == b.Sequence
+type messageGroupKey struct {
+	scope, parent, node string
+	stream              [4]string
+	sequence            uint64
+}
+
+type messageIndexEntry struct {
+	id    string
+	index int
+}
+
+func messageGroup(message MessageAttemptRecord) messageGroupKey {
+	input := message.Input
+	// 与 streamKey 使用相同四字段；Generation 不参与消息 Retry 预算分组。
+	return messageGroupKey{scope: message.Scope, parent: message.Parent, node: message.NodeID,
+		stream: [4]string{input.Scope, input.NodeID, input.Key, input.Group}, sequence: message.Sequence}
+}
+
+// rebuildMessageIndex 在权威记录加载校验或初始化确认后调用，要求持有 s.mu。
+func (s *runState) rebuildMessageIndex() error {
+	index := make(map[messageGroupKey]messageIndexEntry, len(s.record.Messages))
+	for id, message := range s.record.Messages {
+		key := messageGroup(message)
+		current, exists := index[key]
+		if exists && s.record.Messages[current.id].Limit != message.Limit {
+			return fmt.Errorf("%w: message retry limit mismatch", ErrConflict)
+		}
+		if !exists || message.Index > current.index || (message.Index == current.index && id > current.id) {
+			index[key] = messageIndexEntry{id: id, index: message.Index}
+		}
+	}
+	s.messageIndex, s.messageIndexReady = index, true
+	return nil
+}
+
+// updateMessageIndex 只消费已确认批次；消息归属和 Index 不会被检查点钩子改变。
+// 直接构造的 runState 可保持未初始化，由首次消息查询统一重建。
+func (s *runState) updateMessageIndex(tx *recordTransaction) {
+	if !s.messageIndexReady {
+		return
+	}
+	for id, op := range tx.messages {
+		key := messageGroup(op.value)
+		current, exists := s.messageIndex[key]
+		if !exists || op.value.Index > current.index || (op.value.Index == current.index && id > current.id) {
+			s.messageIndex[key] = messageIndexEntry{id: id, index: op.value.Index}
+		}
+	}
+}
+
+func (s *runState) indexedMessage(candidate MessageAttemptRecord) (string, MessageAttemptRecord, error) {
+	if s.stopped != nil {
+		return "", MessageAttemptRecord{}, s.stopped
+	}
+	if !s.messageIndexReady {
+		// 兼容根包测试直接构造的状态；生产 Run/Resume 在启动前已完成初始化。
+		if err := s.rebuildMessageIndex(); err != nil {
+			return "", MessageAttemptRecord{}, s.stop(err)
+		}
+	}
+	if s.messageIndex == nil {
+		return "", MessageAttemptRecord{}, s.stop(fmt.Errorf("%w: missing message index", ErrConflict))
+	}
+	key := messageGroup(candidate)
+	entry, ok := s.messageIndex[key]
+	if !ok {
+		return "", MessageAttemptRecord{}, nil
+	}
+	current, exists := s.record.Messages[entry.id]
+	if !exists || current.Index != entry.index || messageGroup(current) != key || current.Index < 1 || current.Limit < current.Index ||
+		(current.State != AttemptActive && current.State != AttemptFailed && current.State != AttemptConfirmed) {
+		return "", MessageAttemptRecord{}, s.stop(fmt.Errorf("%w: inconsistent message index", ErrConflict))
+	}
+	return entry.id, current, nil
 }
 
 func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageAttemptRequest) (pulse.CheckpointMessageAttempt, error) {
@@ -45,17 +117,12 @@ func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageA
 		return pulse.CheckpointMessageAttempt{}, err
 	}
 	candidate := MessageAttemptRecord{Scope: req.Scope, Parent: req.Attempt, NodeID: req.NodeID, Input: streamID(req.Input.Stream), Sequence: req.Input.Sequence, Limit: req.Limit, State: AttemptActive}
-	var latest MessageAttemptRecord
-	var latestID string
-	for id, existing := range s.record.Messages {
-		if sameMessage(existing, candidate) {
-			if existing.Limit != req.Limit {
-				return pulse.CheckpointMessageAttempt{}, fmt.Errorf("%w: message retry limit mismatch", ErrConflict)
-			}
-			if existing.Index > latest.Index {
-				latestID, latest = id, existing
-			}
-		}
+	latestID, latest, err := s.indexedMessage(candidate)
+	if err != nil {
+		return pulse.CheckpointMessageAttempt{}, err
+	}
+	if latestID != "" && latest.Limit != req.Limit {
+		return pulse.CheckpointMessageAttempt{}, fmt.Errorf("%w: message retry limit mismatch", ErrConflict)
 	}
 	state, err := s.decodeManagedState(s.record.Managed[managedKey(req.Scope, req.Attempt, req.NodeID)].State)
 	if err != nil {

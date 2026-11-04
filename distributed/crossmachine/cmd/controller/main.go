@@ -100,6 +100,11 @@ func runArgs(args []string) int {
 			}
 		}
 	}
+	out, e := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, "report output unavailable (existing evidence is not overwritten)")
+		return 2
+	}
 	var report cm.Report
 	if c.Scenario == "checkpoint-kill" && ctl.Kill == nil {
 		report = ctl.Run(ctx, c, nil)
@@ -111,11 +116,6 @@ func runArgs(args []string) int {
 			report = ctl.Run(ctx, c, db)
 			db.Close()
 		}
-	}
-	out, e := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if e != nil {
-		fmt.Fprintln(os.Stderr, "report output unavailable (existing evidence is not overwritten)")
-		return 2
 	}
 	e = json.NewEncoder(out).Encode(report)
 	closeErr := out.Close()

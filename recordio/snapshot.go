@@ -6,12 +6,12 @@ import (
 	"errors"
 	"io"
 	"reflect"
-	"strings"
 
 	durable "github.com/Luo-root/pulse-durable"
+	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 )
 
-const snapshotVersion = 1
+const snapshotVersion = snapshotfmt.Version
 
 type snapshotWire struct {
 	Version int               `json:"version"`
@@ -25,11 +25,7 @@ func EncodeSnapshot(record durable.RunRecord) ([]byte, error) {
 	if !validMetadata(record) {
 		return nil, errors.New("recordio: snapshot metadata is not UTF-8")
 	}
-	value, err := snapshotValue(reflect.ValueOf(snapshotWire{snapshotVersion, record}))
-	if err != nil {
-		return nil, errors.New("recordio: unsupported snapshot field type")
-	}
-	data, err := json.Marshal(value)
+	data, err := snapshotfmt.Encode(record)
 	if err != nil {
 		return nil, errors.New("recordio: encode snapshot failed")
 	}
@@ -65,89 +61,6 @@ func DecodeSnapshot(data []byte) (durable.RunRecord, error) {
 	return wire.Record, nil
 }
 
-// snapshotValue 遍历实际记录类型，而非维护第二份
-// 字段副本。输出每个导出字段：JSON 的 null 与 {}
-// 或 [] 区分映射或切片，null 与 "" 区分 []byte。指针
-// 为 null 或完整值。标量保留其 Go JSON 编码。
-// 不支持的种类会安全拒绝，而非悄然省略新记录字段。
-func snapshotValue(v reflect.Value) (any, error) {
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			return nil, nil
-		}
-		return snapshotValue(v.Elem())
-	case reflect.Struct:
-		out := make(map[string]any, v.NumField())
-		for i := 0; i < v.NumField(); i++ {
-			name := snapshotFieldName(v.Type().Field(i))
-			if name == "" {
-				return nil, errors.New("unsupported field")
-			}
-			if _, exists := out[name]; exists {
-				return nil, errors.New("duplicate field")
-			}
-			value, err := snapshotValue(v.Field(i))
-			if err != nil {
-				return nil, err
-			}
-			out[name] = value
-		}
-		return out, nil
-	case reflect.Map:
-		if v.Type().Key().Kind() != reflect.String {
-			return nil, errors.New("unsupported map key")
-		}
-		if v.IsNil() {
-			return nil, nil
-		}
-		out := make(map[string]any, v.Len())
-		iter := v.MapRange()
-		for iter.Next() {
-			value, err := snapshotValue(iter.Value())
-			if err != nil {
-				return nil, err
-			}
-			out[iter.Key().String()] = value
-		}
-		return out, nil
-	case reflect.Slice:
-		if v.IsNil() {
-			return nil, nil
-		}
-		if v.Type() == reflect.TypeOf([]byte(nil)) {
-			return v.Interface(), nil
-		}
-		out := make([]any, v.Len())
-		for i := range out {
-			value, err := snapshotValue(v.Index(i))
-			if err != nil {
-				return nil, err
-			}
-			out[i] = value
-		}
-		return out, nil
-	case reflect.String, reflect.Bool, reflect.Int, reflect.Uint64:
-		return v.Interface(), nil
-	default:
-		return nil, errors.New("unsupported kind")
-	}
-}
-
-func snapshotFieldName(field reflect.StructField) string {
-	if field.PkgPath != "" || field.Anonymous {
-		return ""
-	}
-	name := strings.Split(field.Tag.Get("json"), ",")[0]
-	if name == "-" {
-		return ""
-	}
-	if name == "" {
-		return field.Name
-	}
-	return name
-}
-
 // token 级验证先于 Unmarshal，因为 encoding/json 原本会
 // 接受重复键及大小写不敏感的结构体字段匹配。
 func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
@@ -173,7 +86,7 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 		fields := make(map[string]reflect.Type)
 		if typ.Kind() == reflect.Struct {
 			for i := 0; i < typ.NumField(); i++ {
-				name := snapshotFieldName(typ.Field(i))
+				name := snapshotfmt.FieldName(typ.Field(i))
 				if name == "" || fields[name] != nil {
 					return bad
 				}

@@ -2,11 +2,8 @@ package filestore
 
 import (
 	"context"
-	"crypto/sha256"
-
 	"encoding/json"
 	"errors"
-	"github.com/Luo-root/pulse-durable/recordio"
 	"os"
 	"os/exec"
 	"reflect"
@@ -48,6 +45,9 @@ func TestMaintenanceExactHistoryAndAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.CompactStorage(ctx, durable.CompactStorageRequest{RunID: "history", ThroughRevision: 3, ExpectedGeneration: 1}); !errors.Is(err, durable.ErrBusy) {
+		t.Fatal(err)
+	}
+	if _, err := st.AuditHistory(ctx, durable.AuditHistoryRequest{RunID: "history"}); !errors.Is(err, durable.ErrBusy) {
 		t.Fatal(err)
 	}
 	ss.Close()
@@ -103,7 +103,10 @@ func TestMaintenanceExactHistoryAndAppend(t *testing.T) {
 	if _, err = st.LoadRevision(ctx, "history", 2); !errors.Is(err, durable.ErrInvalidRecord) || errors.Is(err, durable.ErrHistoryExpired) {
 		t.Fatal(err)
 	}
-	if _, err = st.CompactStorage(ctx, durable.CompactStorageRequest{RunID: "history", ThroughRevision: 6, ExpectedGeneration: 4}); !errors.Is(err, durable.ErrInvalidRecord) {
+	if _, err = st.CompactStorage(ctx, durable.CompactStorageRequest{RunID: "history", ThroughRevision: 6, ExpectedGeneration: 4}); err != nil {
+		t.Fatalf("unrelated archive blocked compaction: %v", err)
+	}
+	if _, err = st.AuditHistory(ctx, durable.AuditHistoryRequest{RunID: "history"}); !errors.Is(err, durable.ErrInvalidRecord) {
 		t.Fatal(err)
 	}
 	// 当前 Load 无须重放归档历史。
@@ -120,7 +123,23 @@ func TestMaintenanceCancellationOverflowAndLegacy(t *testing.T) {
 	if err := ss.Initialize(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := ss.Apply(t.Context(), revisionBatch(t, r)); err != nil {
+		t.Fatal(err)
+	}
 	inner := ss.(*session)
+	ss.Close()
+	if _, err := st.CompactStorage(t.Context(), durable.CompactStorageRequest{RunID: "limits", ThroughRevision: 2, ExpectedGeneration: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ss = acquireTestSession(t, st, "limits")
+	r, err := ss.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ss.Apply(t.Context(), revisionBatch(t, r)); err != nil {
+		t.Fatal(err)
+	}
+	inner = ss.(*session)
 	h := inner.head
 	ss.Close()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -136,7 +155,7 @@ func TestMaintenanceCancellationOverflowAndLegacy(t *testing.T) {
 	if err := os.WriteFile(inner.path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.CompactStorage(t.Context(), durable.CompactStorageRequest{RunID: "limits", ThroughRevision: 1, ExpectedGeneration: h.Generation}); !errors.Is(err, durable.ErrLimitExceeded) {
+	if _, err := st.CompactStorage(t.Context(), durable.CompactStorageRequest{RunID: "limits", ThroughRevision: 3, ExpectedGeneration: h.Generation}); !errors.Is(err, durable.ErrLimitExceeded) {
 		t.Fatal(err)
 	}
 	h.Format = 1
@@ -153,8 +172,23 @@ func TestMaintenanceCancellationOverflowAndLegacy(t *testing.T) {
 	}
 }
 
+type publicationExitContext struct {
+	context.Context
+	dir string
+}
+
+func (c *publicationExitContext) Err() error {
+	entries, _ := os.ReadDir(c.dir)
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			os.Exit(73)
+		}
+	}
+	return c.Context.Err()
+}
+
 // 在发布边界真实退出进程后，必须留下任一完整代际，
-// 绝不能通过枚举目录采纳合成快照。
+// 绝不能通过枚举目录采纳合成快照或历史索引。
 func TestMaintenanceProcessPublication(t *testing.T) {
 	if dir := os.Getenv("PULSE_MAINTENANCE_CHILD_DIR"); dir != "" {
 		st, err := New(dir)
@@ -166,37 +200,11 @@ func TestMaintenanceProcessPublication(t *testing.T) {
 		if os.Getenv("PULSE_MAINTENANCE_STAGE") == "after" {
 			inner.publicationSync = func(string) error { os.Exit(73); return nil }
 		}
-		h, err := inner.readHead()
-		if err != nil {
-			t.Fatal(err)
-		}
-		image, baseID, suffix, err := inner.history(t.Context(), h, 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := recordio.EncodeSnapshot(image.Record)
-		if err != nil {
-			t.Fatal(err)
-		}
-		id, err := newID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = inner.writeImmutable(t.Context(), inner.snapshotPath(id), data); err != nil {
-			t.Fatal(err)
-		}
-		h.Generation++
-		h.BaseRevision = 2
-		h.BaseID = baseID
-		h.ChainAnchor = image.Chain
-		h.SnapshotID = id
-		h.SnapshotDigest = sha256.Sum256(data)
-		h.BatchBytes = suffix
 		ctx := context.Context(t.Context())
 		if os.Getenv("PULSE_MAINTENANCE_STAGE") == "before" {
-			ctx = &exitContext{Context: ctx, target: 1}
+			ctx = &publicationExitContext{Context: ctx, dir: inner.dir}
 		}
-		if err = inner.publish(ctx, h); err != nil {
+		if _, err = inner.compact(ctx, durable.CompactStorageRequest{RunID: "exit", ThroughRevision: 2, ExpectedGeneration: 1}); err != nil {
 			t.Fatal(err)
 		}
 		t.Fatal("child did not exit")
@@ -235,6 +243,10 @@ func TestMaintenanceProcessPublication(t *testing.T) {
 				if _, err = st.LoadRevision(t.Context(), "exit", rev); err != nil {
 					t.Fatal(err)
 				}
+			}
+			audit, err := st.AuditHistory(t.Context(), durable.AuditHistoryRequest{RunID: "exit"})
+			if err != nil || audit.Snapshots != want || audit.Batches != 1 {
+				t.Fatalf("published audit %+v: %v", audit, err)
 			}
 			entries, err := os.ReadDir(st.dir)
 			if err != nil {
