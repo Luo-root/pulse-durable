@@ -31,6 +31,8 @@ var retentionPolicySQL string
 // 授权物理合成与长期历史 pin；replay 授权有限历史 pin，retain 仍为预留权限。
 // 普通工作进程的恢复查询还需授予 query。
 // 调用方必须配置独立的非所有者、非超级用户登录角色。
+var ErrUnsupportedCapability = errors.New("distributed postgres: unsupported retention capability")
+
 type Grant struct {
 	Role        string
 	Namespace   string
@@ -91,12 +93,26 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return scrub(e, false)
 		}
 	} else {
+		var retentionReady bool
+		if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+			return scrub(e, false)
+		}
+		if !retentionReady {
+			return ErrUnsupportedCapability
+		}
 		if e = validate(ctx, tx, false); e != nil {
 			return e
 		}
 		if e = validateLayoutSafety(ctx, tx); e != nil {
 			return e
 		}
+	}
+	var retentionReady bool
+	if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+		return scrub(e, false)
+	}
+	if !retentionReady {
+		return ErrUnsupportedCapability
 	}
 	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)

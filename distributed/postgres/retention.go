@@ -62,6 +62,10 @@ func decodeRetentionPolicy(v json.RawMessage) (d.RetentionPolicy, error) {
 	return p, e
 }
 
+func cursorValid(c d.RetentionCursor) bool {
+	return (!c.Set && c.Value == "") || (c.Set && validText(c.Value))
+}
+
 type RetentionPolicyResult struct {
 	Namespace     string            `json:"namespace"`
 	PolicyVersion string            `json:"policy_version"`
@@ -70,7 +74,7 @@ type RetentionPolicyResult struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
-func decodeRetentionPolicyResult(b []byte) (RetentionPolicyResult, error) {
+func decodeRetentionPolicyResult(b []byte, expectedNamespace string) (RetentionPolicyResult, error) {
 	var raw struct {
 		Namespace     string          `json:"namespace"`
 		PolicyVersion string          `json:"policy_version"`
@@ -78,7 +82,7 @@ func decodeRetentionPolicyResult(b []byte) (RetentionPolicyResult, error) {
 		PolicyDigest  string          `json:"policy_digest"`
 		UpdatedAt     time.Time       `json:"updated_at"`
 	}
-	if json.Unmarshal(b, &raw) != nil {
+	if json.Unmarshal(b, &raw) != nil || raw.Namespace != expectedNamespace || raw.UpdatedAt.IsZero() || !fingerprint(raw.PolicyDigest) || raw.PolicyVersion == "" || (raw.PolicyVersion[0] == '0') {
 		return RetentionPolicyResult{}, d.ErrInvalid
 	}
 	p, e := decodeRetentionPolicy(raw.Policy)
@@ -132,7 +136,7 @@ func (c *Coordinator) GetRetentionPolicy(ctx context.Context, ns string) (Retent
 	if e != nil {
 		return RetentionPolicyResult{}, e
 	}
-	return decodeRetentionPolicyResult(b)
+	return decodeRetentionPolicyResult(b, ns)
 }
 func (c *Coordinator) UpdateRetentionPolicy(ctx context.Context, q d.RetentionPolicyUpdate) (RetentionPolicyResult, error) {
 	if !validText(q.Namespace) || q.ExpectedVersion == 0 {
@@ -150,7 +154,7 @@ func (c *Coordinator) UpdateRetentionPolicy(ctx context.Context, q d.RetentionPo
 	if e != nil {
 		return RetentionPolicyResult{}, e
 	}
-	return decodeRetentionPolicyResult(b)
+	return decodeRetentionPolicyResult(b, q.Namespace)
 }
 
 type RetentionPolicyPreview struct {
@@ -167,15 +171,15 @@ type RetentionPolicyPreview struct {
 	ReceiptDigest   string
 }
 
-func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string, ver uint64, p d.RetentionPolicy, from, through time.Time) (RetentionPolicyPreview, error) {
-	if !validText(id) || !validText(ns) || ver == 0 || from.IsZero() || through.Before(from) {
+func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string, ver uint64, p d.RetentionPolicy, cursor d.RetentionCursor, limit uint64, from, through time.Time) (RetentionPolicyPreview, error) {
+	if !validText(id) || !validText(ns) || ver == 0 || !cursorValid(cursor) || limit == 0 || limit > 1000000 || from.IsZero() || through.Before(from) {
 		return RetentionPolicyPreview{}, d.ErrInvalid
 	}
 	w, dg, e := retentionPolicyArgs(p)
 	if e != nil {
 		return RetentionPolicyPreview{}, e
 	}
-	a := map[string]any{"dry_run_id": id, "namespace": ns, "policy_version": strconv.FormatUint(ver, 10), "policy": w, "policy_digest": dg, "observed_from": from, "observed_through": through}
+	a := map[string]any{"dry_run_id": id, "namespace": ns, "policy_version": strconv.FormatUint(ver, 10), "policy": w, "policy_digest": dg, "observed_from": from, "observed_through": through, "cursor": cursor, "limit": limit}
 	b, e := c.retentionCall(ctx, "retention_policy_preview", a, false)
 	if e != nil {
 		return RetentionPolicyPreview{}, e
@@ -195,7 +199,9 @@ func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string,
 		return RetentionPolicyPreview{}, d.ErrInvalid
 	}
 	pp, ee := decodeRetentionPolicy(r.Policy)
-	if ee != nil || r.DryRunID != id || r.Namespace != ns || n != ver || r.PolicyDigest != dg || r.Summary.Candidates == nil {
+	q := d.RetentionDryRun{Namespace: ns, PolicyVersion: ver, Policy: p, ObservedFrom: from, ObservedThrough: through, Cursor: cursor, Limit: limit}
+	full := d.RetentionDryRunResult{DryRunID: r.DryRunID, Namespace: r.Namespace, PolicyVersion: n, Policy: pp, PolicyDigest: r.PolicyDigest, ObservedFrom: r.ObservedFrom, ObservedThrough: r.ObservedThrough, Summary: r.Summary, Cursor: r.Cursor, NextCursor: r.NextCursor, ReceiptDigest: r.ReceiptDigest}
+	if ee != nil || full.Validate(q) != nil {
 		return RetentionPolicyPreview{}, errors.Join(d.ErrInvalid, ee)
 	}
 	return RetentionPolicyPreview{r.DryRunID, r.Namespace, n, pp, r.PolicyDigest, r.ObservedFrom, r.ObservedThrough, r.Summary, r.Cursor, r.NextCursor, r.ReceiptDigest}, nil
