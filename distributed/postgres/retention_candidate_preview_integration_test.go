@@ -36,12 +36,12 @@ func TestPostgresRetentionCandidatePreview(t *testing.T) {
 	if err = Migrate(ctx, dsn, Grant{Role: role, Namespace: ns, Permissions: []string{"retain"}}); err != nil {
 		t.Fatal("migrate new retention layout", err)
 	}
-	var schemaAllowed, functionAllowed bool
-	if err = admin.QueryRow(ctx, `SELECT has_schema_privilege($1,'pulse_durable_distributed','USAGE'),has_function_privilege($1,'pulse_durable_distributed.retention_candidate_preview(jsonb)','EXECUTE')`, role).Scan(&schemaAllowed, &functionAllowed); err != nil {
+	var schemaAllowed, functionAllowed, apiAllowed, pinAllowed bool
+	if err = admin.QueryRow(ctx, `SELECT has_schema_privilege($1,'pulse_durable_distributed','USAGE'),has_function_privilege($1,'pulse_durable_distributed.retention_candidate_preview(jsonb)','EXECUTE'),has_function_privilege($1,'pulse_durable_distributed.api(text,jsonb)','EXECUTE'),has_function_privilege($1,'pulse_durable_distributed.pin_create(jsonb)','EXECUTE')`, role).Scan(&schemaAllowed, &functionAllowed, &apiAllowed, &pinAllowed); err != nil {
 		t.Fatal("verify retain ACL", scrub(err, false))
 	}
-	if !schemaAllowed || !functionAllowed {
-		t.Fatalf("retain ACL schema=%v function=%v", schemaAllowed, functionAllowed)
+	if !schemaAllowed || !functionAllowed || apiAllowed || pinAllowed {
+		t.Fatalf("retain ACL schema=%v preview=%v api=%v pin=%v", schemaAllowed, functionAllowed, apiAllowed, pinAllowed)
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
