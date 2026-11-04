@@ -67,8 +67,11 @@ func (r RunRecord) RetryPrefix(parent, node, boundary string) (RetrySummary, err
 	failed := 0
 	last := ""
 	for i, a := range rows {
-		if a.Index != i+1 || a.Limit != limit || a.State != AttemptFailed {
-			return RetrySummary{}, fmt.Errorf("%w: retry prefix is not continuous, failed, or limit-consistent", ErrInvalid)
+		if a.Index != i+1 || a.Limit != limit {
+			return RetrySummary{}, fmt.Errorf("%w: retry prefix is not continuous or limit-consistent", ErrInvalid)
+		}
+		if a.State != AttemptFailed {
+			break
 		}
 		failed++
 		last = summaryDigest("retry", r.RunID, r.Revision, parent, node, boundary, a.Index, a.Limit, string(a.State))
@@ -76,7 +79,7 @@ func (r RunRecord) RetryPrefix(parent, node, boundary string) (RetrySummary, err
 	if failed == 0 {
 		return RetrySummary{}, fmt.Errorf("%w: retry prefix has no failed entry", ErrInvalid)
 	}
-	next := rows[len(rows)-1].Index + 1
+	next := failed + 1
 	identity := summaryDigest("retry-identity", r.RunID, r.Revision, parent, node, boundary)
 	if !validSummaryDigest(last) || !validSummaryDigest(identity) {
 		return RetrySummary{}, fmt.Errorf("%w: generated retry digest is invalid", ErrInvalid)
@@ -103,11 +106,6 @@ func (r RunRecord) MessagePrefix(scope, attempt, node string, input StreamIDReco
 		return MessageSummary{}, fmt.Errorf("%w: message sequence is at or behind ACK frontier", ErrConflict)
 	}
 	var rows []MessageAttemptRecord
-	for _, pending := range stream.Pending {
-		if pending.Sequence >= sequence {
-			return MessageSummary{}, fmt.Errorf("%w: message input remains pending", ErrInvalid)
-		}
-	}
 	for _, m := range r.Messages {
 		if m.Scope == scope && m.Parent == attempt && m.NodeID == node && m.Input == input {
 			if m.Sequence == 0 || m.Index < 1 || m.Limit < 1 || m.Index > m.Limit || !validAttemptState(m.State) {
@@ -126,6 +124,11 @@ func (r RunRecord) MessagePrefix(scope, attempt, node string, input StreamIDReco
 	for i, m := range rows {
 		if m.Sequence != sequence+uint64(i) || m.State != AttemptConfirmed {
 			return MessageSummary{}, fmt.Errorf("%w: message prefix is not continuously settled", ErrInvalid)
+		}
+	}
+	for _, pending := range stream.Pending {
+		if pending.Sequence >= sequence && pending.Sequence <= rows[len(rows)-1].Sequence {
+			return MessageSummary{}, fmt.Errorf("%w: message prefix input remains pending", ErrInvalid)
 		}
 	}
 	last := rows[len(rows)-1]

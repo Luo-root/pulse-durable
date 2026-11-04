@@ -32,18 +32,27 @@ func TestRetryPrefixHighWaterMarkAndIsolation(t *testing.T) {
 	}
 }
 
+func TestRetryPrefixStopsBeforeLaterActiveAttempt(t *testing.T) {
+	r := testSummaryRecord()
+	r.Attempts["a3"] = AttemptRecord{Parent: "parent", NodeID: "node", Boundary: "b", Index: 3, Limit: 3, State: AttemptActive}
+	got, err := r.RetryPrefix("parent", "node", "b")
+	if err != nil || got.PrunedThroughIndex != 2 || got.NextIndex != 3 {
+		t.Fatalf("summary=%+v err=%v", got, err)
+	}
+}
+
 func TestRetryPrefixRejectsGapStateAndLimit(t *testing.T) {
-	cases := []func(RunRecord){
-		func(r RunRecord) {
+	cases := []func(*RunRecord){
+		func(r *RunRecord) {
 			r.Attempts["a3"] = AttemptRecord{Parent: "parent", NodeID: "node", Boundary: "b", Index: 3, Limit: 3, State: AttemptFailed}
 			delete(r.Attempts, "a2")
 		},
-		func(r RunRecord) { a := r.Attempts["a2"]; a.State = AttemptActive; r.Attempts["a2"] = a },
-		func(r RunRecord) { a := r.Attempts["a2"]; a.Limit = 4; r.Attempts["a2"] = a },
+		func(r *RunRecord) { a := r.Attempts["a2"]; a.State = AttemptState("unknown"); r.Attempts["a2"] = a },
+		func(r *RunRecord) { a := r.Attempts["a2"]; a.Limit = 4; r.Attempts["a2"] = a },
 	}
 	for _, mutate := range cases {
 		r := testSummaryRecord()
-		mutate(r)
+		mutate(&r)
 		if _, err := r.RetryPrefix("parent", "node", "b"); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("err=%v", err)
 		}
@@ -58,6 +67,11 @@ func TestMessagePrefixBoundaries(t *testing.T) {
 	got, err := r.MessagePrefix("scope", "proc", "consumer", in, 1)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// 前缀之后的未来消息仍可 pending，不应阻断当前已结算前缀。
+	r.Streams[streamKey(in)] = StreamRecord{Stream: StreamDescriptorRecord{ID: in}, Pending: []StreamMessageRecord{{Sequence: 2}}}
+	if _, err := r.MessagePrefix("scope", "proc", "consumer", in, 1); err != nil {
+		t.Fatal("future pending changed settled prefix", err)
 	}
 	if got.SettledThroughSequence != 1 || !validSummaryDigest(got.FinalizedBudgetDigest) {
 		t.Fatalf("summary=%+v", got)
