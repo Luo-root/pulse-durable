@@ -34,7 +34,7 @@ func TestRetryPrefixHighWaterMarkAndIsolation(t *testing.T) {
 
 func TestRetryPrefixStopsBeforeLaterActiveAttempt(t *testing.T) {
 	r := testSummaryRecord()
-	r.Attempts["a3"] = AttemptRecord{Parent: "parent", NodeID: "node", Boundary: "b", Index: 3, Limit: 3, State: AttemptActive}
+	r.Attempts["a3"] = AttemptRecord{Parent: "parent", NodeID: "node", Boundary: "b", Index: 3, Limit: 99, State: AttemptActive}
 	got, err := r.RetryPrefix("parent", "node", "b")
 	if err != nil || got.PrunedThroughIndex != 2 || got.NextIndex != 3 {
 		t.Fatalf("summary=%+v err=%v", got, err)

@@ -67,11 +67,11 @@ func (r RunRecord) RetryPrefix(parent, node, boundary string) (RetrySummary, err
 	failed := 0
 	last := ""
 	for i, a := range rows {
-		if a.Index != i+1 || a.Limit != limit {
-			return RetrySummary{}, fmt.Errorf("%w: retry prefix is not continuous or limit-consistent", ErrInvalid)
-		}
-		if a.State != AttemptFailed {
+		if a.State == AttemptActive || a.State == AttemptConfirmed {
 			break
+		}
+		if a.Index != i+1 || a.Limit != limit || a.State != AttemptFailed {
+			return RetrySummary{}, fmt.Errorf("%w: retry prefix is not continuous, failed, or limit-consistent", ErrInvalid)
 		}
 		failed++
 		last = summaryDigest("retry", r.RunID, r.Revision, parent, node, boundary, a.Index, a.Limit, string(a.State))
