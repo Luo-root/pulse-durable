@@ -12,6 +12,12 @@ func TestRetentionPolicySQLContract(t *testing.T) {
 		"retention_policy_validate(p jsonb)",
 		"jsonb_object_keys(p)",
 		"NOT retention_policy_validate(proposed)",
+		"jsonb_object_keys(p) AS keys(key)",
+		"cursor jsonb NOT NULL",
+		"limit integer NOT NULL CHECK(limit BETWEEN 1 AND 1000000)",
+		"cur::text||':'||lim::text",
+		"ON CONFLICT(dry_run_id) DO NOTHING",
+		"retention preview binding conflict",
 	} {
 		if !strings.Contains(retentionPolicySQL, fragment) {
 			t.Fatalf("missing SQL contract %q", fragment)
