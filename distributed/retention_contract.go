@@ -294,8 +294,14 @@ func (r RetentionReceipt) Validate() error {
 	if !text(r.DryRunID) || !text(r.Namespace) || r.PolicyVersion == 0 || !fingerprint(r.PlanDigest) || !fingerprint(r.PolicyDigest) || !r.Cursor.valid() || r.Candidates == nil || r.Guards == nil {
 		return ErrInvalid
 	}
-	if e := r.CandidatesSummary().validate(); e != nil {
+	summary := r.CandidatesSummary()
+	if e := summary.validate(); e != nil {
 		return e
+	}
+	for _, c := range summary.Candidates {
+		if c.Namespace != r.Namespace {
+			return ErrInvalid
+		}
 	}
 	for _, g := range r.Guards {
 		if !text(g) {

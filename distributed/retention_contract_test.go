@@ -86,4 +86,9 @@ func TestRetentionContractCloneIsolation(t *testing.T) {
 	if err := receipt.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	foreign := receipt
+	foreign.Namespace = "other"
+	if err := foreign.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatal("foreign receipt candidate accepted", err)
+	}
 }
