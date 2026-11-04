@@ -5,8 +5,8 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// observeApply materializes only a test-side proposal for precise fault gates.
-// The backend still receives the original immutable batch, never a full record.
+// observeApply 仅在测试端物化提案，以设置精确故障关卡。
+// 后端仍接收原始不可变批次，绝非完整记录。
 func observeApply(ctx context.Context, s durable.Session, b durable.ChangeBatch, hook func(durable.RunRecord, func() error) error) (durable.CommitAck, error) {
 	r, err := s.Load(ctx)
 	if err != nil {

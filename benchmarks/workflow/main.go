@@ -1,4 +1,4 @@
-// workflow compares one durable node with one go-workflows activity per business step.
+// workflow 对比每个业务步骤分别使用一个 durable 节点和一个 go-workflows 活动的情况。
 package main
 
 import (
@@ -276,7 +276,7 @@ func prepare(ctx context.Context, c config, dir string, a *audit, crash int) (ru
 	return prepareWorkflows(ctx, c, dir, a, crash)
 }
 
-// audit is enabled only by correctness/recovery checks, never by ordinary samples.
+// audit 仅在正确性或恢复检查时启用，普通采样绝不启用。
 type audit struct {
 	mu                sync.Mutex
 	calls             []int

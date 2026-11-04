@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// A no-op typed transaction still advances the revision. Construct through the
-// public wire decoder rather than duplicating the private transaction algorithm.
+// 无操作的类型化事务仍推进修订号。通过公开线格式解码器构造，
+// 而非重复实现私有事务算法。
 func nextBatch(t *testing.T, r durable.RunRecord) durable.ChangeBatch {
 	t.Helper()
 	wire, e := json.Marshal(map[string]any{"version": 1, "header": map[string]string{

@@ -1,4 +1,4 @@
-// Package soaktest implements an opt-in local, process-based load driver.
+// soaktest 包实现显式启用的本地多进程负载驱动器。
 package soaktest
 
 import (

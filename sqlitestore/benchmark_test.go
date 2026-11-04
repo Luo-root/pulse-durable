@@ -10,9 +10,9 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// BenchmarkSQLiteRuntimeRunResume measures the complete Runtime -> RunRecord ->
-// recordio -> SQLite path, including a reopen and authoritative Resume. It is a
-// local cost check, not a speed claim; all persistence/output errors fail it.
+// BenchmarkSQLiteRuntimeRunResume 测量完整 Runtime -> RunRecord ->
+// recordio -> SQLite 路径，包括重新打开及权威 Resume。这是
+// 本地开销检查，不是速度承诺；任何持久化或输出错误均使测试失败。
 func BenchmarkSQLiteRuntimeRunResume(b *testing.B) {
 	path := filepath.Join(b.TempDir(), "runs.sqlite")
 	g, err := pulse.New("sqlite-cost", "")

@@ -56,8 +56,8 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 	a["record"] = wire
 	a["snapshot_digest"] = digest(wire)
 	a["chain"] = chain
-	// The pin expires before the prior receipt observation, although it still
-	// looks live to the regressed current clock. Never adjust the host clock.
+	// 固定点在前次回执观测之前过期，尽管在回退后的当前时钟看来
+	// 仍然有效。绝不调整主机时钟。
 	if _, err = admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET receipt_observed_through=clock_timestamp()+interval '1 hour' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +92,8 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 	}
 }
 
-// Not run by offline validation. Requires the same explicit disposable-DB opt-in
-// as all existing integration tests. The helper's role remains a restricted login.
+// 离线验证不执行。与现有集成测试一样，要求显式启用
+// 一次性数据库测试。辅助程序仍以受限登录角色运行。
 func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	c, admin, ns := integration(t)
 	ctx := context.Background()
@@ -135,7 +135,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	// Business writes after pin creation and before publication must survive.
+	// 创建固定点后、发布前的业务写入必须保留。
 	batch := nextBatch(t, r)
 	dg, e := d.DeltaMutationDigest(owner.Token, batch)
 	if e != nil {
@@ -164,7 +164,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil || loaded.Revision != 2 {
 		t.Fatal(loaded.Revision, e)
 	}
-	// A fresh owner projection must append against the preserved business chain.
+	// 新所有者投影必须基于保留的业务链追加。
 	post := nextBatch(t, loaded)
 	postDigest, err := d.DeltaMutationDigest(owner.Token, post)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil || loaded.Revision != 3 {
 		t.Fatal("reload after repeat synthesis", loaded.Revision, e)
 	}
-	// Diagnostic deletion must have no effect on maintenance receipts or guards.
+	// 删除诊断信息不得影响维护回执或保护记录。
 	if _, e = admin.Exec(ctx, "DELETE FROM pulse_durable_distributed.events WHERE namespace=$1", ns); e != nil {
 		t.Fatal(e)
 	}
@@ -196,7 +196,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e != nil || again.Status != "published" || again.Result.State.Generation != "2" {
 		t.Fatal(again, e)
 	}
-	// Replay cached business state is unchanged by representation publication.
+	// 重放缓存的业务状态不因表示形式的发布而改变。
 	if loaded.Format != durable.RecordFormat {
 		t.Fatal("logical format changed")
 	}

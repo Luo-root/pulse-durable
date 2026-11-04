@@ -9,7 +9,7 @@ import (
 	"github.com/Luo-root/pulse-durable/distributed"
 )
 
-// Each process installs the same versioned assembly, not a serialized closure.
+// 每个进程安装相同版本的 assembly，而不是序列化的 closure。
 func portableAssembly() (distributed.Assembly, error) {
 	g, err := pulse.New("portable-example", "finite input")
 	if err != nil {
@@ -43,8 +43,8 @@ func ExampleRegistry_Resolve() {
 	if err != nil {
 		panic(err)
 	}
-	// Send these bounded bytes over your transport. A fresh worker independently
-	// assembles its graph, typed keys and codecs; no in-process pointers are sent.
+	// 通过传输层发送这些有界字节。新的 worker 独立组装自己的 graph、带类型的 key 和 codec；
+	// 不发送进程内指针。
 	wire := task.Bytes()
 	worker := &distributed.Registry{}
 	if _, err = worker.Register("summarize", "business/1", portableAssembly); err != nil {
@@ -63,6 +63,6 @@ func ExampleRegistry_Resolve() {
 		panic(err)
 	}
 	fmt.Println(received.Identity().RunID, prepared.Inputs == received.InputsFingerprint())
-	// No lease was acquired and no business execution or database validation occurred.
+	// 未获取 lease，也未发生业务执行或数据库验证。
 	// Output: document-1 true
 }

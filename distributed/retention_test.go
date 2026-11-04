@@ -25,12 +25,12 @@ func TestRetentionPolicyValidation(t *testing.T) {
 			}
 		}
 	}
-	// The largest full-second duration must not overflow during validation.
+	// 最大的整秒 duration 在验证期间不得溢出。
 	largest := time.Duration(math.MaxInt64) / time.Second * time.Second
 	if _, err := (RetentionPolicy{ReceiptTTL: &largest}).Validate(); err != nil {
 		t.Fatal(err)
 	}
-	// Runtime duration arithmetic overflow to a negative value is rejected.
+	// Runtime duration 算术溢出为负值时必须拒绝。
 	overflow := time.Duration(math.MaxInt64)
 	overflow += time.Second
 	if _, err := (RetentionPolicy{EventTTL: &overflow}).Validate(); err == nil {
@@ -87,7 +87,7 @@ func TestRetentionContractions(t *testing.T) {
 	if _, err := (RetentionPolicy{}).RequiresDryRun(bad); err == nil {
 		t.Fatal("invalid next policy")
 	}
-	// Every TTL independently participates in contraction detection.
+	// 每个 TTL 都独立参与收缩检测。
 	for field := 0; field < 4; field++ {
 		p := RetentionPolicy{}
 		fields := []**time.Duration{&p.TerminalPayloadTTL, &p.ReplayHistoryTTL, &p.EventTTL, &p.ReceiptTTL}
@@ -258,7 +258,7 @@ func TestMutationQueryResults(t *testing.T) {
 		{MutationQueryResult{Expired, future, nil}, false},
 		{MutationQueryResult{Expired, short, &base}, false},
 		{MutationQueryResult{Found, q.RequestedWindow, nil}, false},
-		{MutationQueryResult{Found, short, &base}, true}, // Retained receipt predates continuous coverage.
+		{MutationQueryResult{Found, short, &base}, true}, // 保留回执早于连续覆盖范围。
 		{MutationQueryResult{"unknown", q.RequestedWindow, nil}, false},
 		{MutationQueryResult{AbsentWithinWindow, MutationWindow{}, nil}, false},
 		{MutationQueryResult{Expired, MutationWindow{q.RequestedWindow.Through, q.RequestedWindow.From}, nil}, false},

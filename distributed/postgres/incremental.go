@@ -35,8 +35,8 @@ func (c *Coordinator) discardIdentity(i d.Identity) {
 	}
 }
 
-// Global locking covers only map membership. A token gate is context-aware;
-// slow network/replay for one owner never serializes unrelated runs.
+// 全局锁只保护映射成员关系。令牌关卡支持上下文；
+// 某个所有者的慢网络或重放绝不会串行阻塞无关运行。
 func (c *Coordinator) projectionGate(ctx context.Context, t d.Token) (*projection, func(), error) {
 	if ctx == nil {
 		return nil, nil, d.ErrInvalid
@@ -94,8 +94,8 @@ type storedLog struct {
 
 func chainText(h [32]byte) string { return hex.EncodeToString(h[:]) }
 
-// LoadOwned reads a single locked database observation, verifies the immutable
-// chain and typed preconditions, then installs an owner-specific private projection.
+// LoadOwned 读取一次加锁的数据库观测，验证不可变链及
+// 类型化前置条件，再安装所有者专属的私有投影。
 func (c *Coordinator) LoadOwned(ctx context.Context, t d.Token) (durable.RunRecord, error) {
 	p, done, e := c.projectionGate(ctx, t)
 	if e != nil {
@@ -120,8 +120,8 @@ func (c *Coordinator) loadProjection(ctx context.Context, t d.Token, p *projecti
 	return c.decodeProjection(t, p, b)
 }
 
-// Only a successful fenced load response may classify record corruption. SQL,
-// transport, clock and token errors above retain their conservative semantics.
+// 只有成功且受栅栏保护的加载响应才能判定记录损坏。上方 SQL、
+// 传输、时钟和令牌错误保留其保守语义。
 func (c *Coordinator) decodeProjection(t d.Token, p *projection, b []byte) (r durable.RunRecord, err error) {
 	s, owner, snapshot, e := decodeSnapshot(b)
 	if e != nil {
@@ -261,8 +261,8 @@ func (c *Coordinator) ApplyOwned(ctx context.Context, t d.Token, m d.Mutation, b
 	if p.revoked.Load() {
 		return durable.CommitAck{}, d.ErrLeaseLost
 	}
-	// ApplyTo validates all preconditions before changing the cache. Any failure
-	// after this point discards it; only database head CAS can publish the proposal.
+	// ApplyTo 在修改缓存前验证全部前置条件。此后任何失败
+	// 均丢弃缓存；只有数据库头的 CAS 能发布提案。
 	parent := p.chain
 	ack, e := batch.ApplyTo(&p.record)
 	if e != nil {
@@ -280,7 +280,7 @@ func (c *Coordinator) ApplyOwned(ctx context.Context, t d.Token, m d.Mutation, b
 	a["batch_digest"] = chainText(sha256.Sum256(wire))
 	a["parent_chain"] = chainText(parent)
 	a["next_chain"] = chainText(next)
-	// Small response: avoid retransmitting the snapshot on every checkpoint.
+	// 使用小响应，避免每个检查点都重传快照。
 	_, e = c.call(ctx, "apply", a, true)
 	if e != nil {
 		c.discardProjection(t)

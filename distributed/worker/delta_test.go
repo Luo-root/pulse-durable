@@ -252,7 +252,7 @@ func TestDeltaSessionDigestFenceAndFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &session{c: dc, token: d.Token{Identity: dc.task.Identity(), Worker: d.Worker{ID: "one", BootID: "boot"}, LeaseID: "lease", Epoch: 1}, timeout: time.Second, ctx: ctx, cancel: cancel}
-	// Obtain a real batch and authoritative seed through the Runtime path.
+	// 通过 Runtime 路径获得真实批次和权威种子。
 	cancelRun, _ := runWorker(t, w)
 	await(t, dc.finish)
 	cancelRun()

@@ -22,8 +22,8 @@ const mutationExpiryPredicate = " OR r.lease_until<=t"
 const mutationClockStatement = " t:=clock_timestamp();\n IF t<r.updated_at OR t<r.receipt_observed_through THEN"
 const mutationRevisionCAS = "IF r.revision<>rev THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='revision conflict'; END IF;"
 
-// Exact, unique replacements are intentional: schema changes must fail closed,
-// not silently stop testing the intended production guard.
+// 有意要求精确且唯一的替换：模式变化必须安全拒绝，
+// 而不是悄然停止测试预期的生产保护条件。
 func mutationReplace(source, old, replacement string) (string, error) {
 	if strings.Count(source, old) != 1 {
 		return "", fmt.Errorf("mutation target must occur exactly once: %q", old)
@@ -77,16 +77,16 @@ func TestMutationTargetsFailClosed(t *testing.T) {
 	}
 }
 
-// This is deliberately separate from integration(): that helper commits role,
-// grant and fixture setup. After normal schema initialization, ALL mutation
-// changes, including CREATE OR REPLACE and the matching catalog signature,
-// remain in one administrator transaction. Calling
-// the real API under a restricted session_user preserves every credential/ACL
-// check; check_schema itself is never replaced or weakened.
-// Run serially, only on an explicitly authorized disposable test database.
-// Migrate installs a missing normal schema and rejects drift, independently of
-// test execution order. A superuser is needed solely to switch
-// session authorization without committing the mutation for another connection.
+// 有意与 integration() 分离：该辅助函数会提交角色、
+// 授权及夹具准备。正常模式初始化后，所有变异
+// 改动，包括 CREATE OR REPLACE 及对应目录签名，
+// 都留在一个管理员事务内。以受限 session_user 调用
+// 真实 API，保留所有凭据和 ACL 检查；
+// 绝不替换或削弱 check_schema 本身。
+// 仅在明确授权的一次性测试数据库上串行运行。
+// Migrate 安装缺失的正常模式并拒绝漂移，不依赖
+// 测试执行顺序。超级用户仅用于切换
+// 会话授权，避免为其他连接提交变异。
 func TestPostgresProductionFencingMutations(t *testing.T) {
 	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
 	if dsn == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE") != "yes" {
@@ -103,8 +103,8 @@ func TestPostgresProductionFencingMutations(t *testing.T) {
 	if e = admin.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname=session_user`).Scan(&super); e != nil || !super {
 		t.Fatal("transaction-local restricted session authorization requires a dedicated test superuser", scrub(e, false))
 	}
-	// Explicit opt-in above authorizes normal schema initialization, not drift
-	// repair. Migrate validates existing DDL before any mutation is attempted.
+	// 上方显式启用仅授权正常模式初始化，不授权修复漂移。
+	// Migrate 在尝试任何变异前验证已有 DDL。
 	if e = Migrate(ctx, dsn); e != nil {
 		t.Fatal("initialize normal schema before mutation tests", e)
 	}
@@ -124,8 +124,8 @@ func TestPostgresProductionFencingMutations(t *testing.T) {
 		t.Fatal("installed API body differs from mutation source; refusing replacement", scrub(e, false))
 	}
 
-	// Includes exact function definitions, ownership and ACLs as well as the
-	// stored signature. Comparing after every rollback detects persistent drift.
+	// 包含精确函数定义、所有权、ACL 以及
+	// 已存储签名。每次回滚后比较，以检测持久漂移。
 	state := func() string {
 		t.Helper()
 		var s string
@@ -181,9 +181,9 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 		}
 	}
 	exec(`SELECT pg_advisory_xact_lock(5788618723189269577)`)
-	// nextval alone is not rolled back. Transactional RESTART isolates the
-	// event sequence too, restoring its original state on rollback (and locking
-	// it against concurrent use). Do not replace this with setval.
+	// 单独的 nextval 不会回滚。事务性 RESTART 也隔离
+	// 事件序列，回滚时恢复原状态（同时加锁防止
+	// 并发使用）。不要替换为 setval。
 	var restart string
 	if e := tx.QueryRow(ctx, `SELECT format('ALTER SEQUENCE %s RESTART WITH 1',pg_get_serial_sequence('pulse_durable_distributed.events','event_seq'))`).Scan(&restart); e != nil {
 		t.Fatal(scrub(e, false))
@@ -208,8 +208,8 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 	if kind == "owner" {
 		currentEpoch, currentLease, worker, boot = 2, newLease, "new-worker", "new-boot"
 	}
-	// Fixture writes are administrator-only. Both owners have revision 1; the
-	// mutation can therefore succeed without bypassing the independent CAS.
+	// 夹具写入仅允许管理员执行。两个所有者的修订号均为 1；
+	// 因此变异无须绕过独立 CAS 即可成功。
 	exec(`INSERT INTO pulse_durable_distributed.runs(namespace,run_id,task,digest,route,status,epoch,revision,record,lease_id,worker_id,boot_id,lease_until,created_at,updated_at)
  VALUES($1,$2,$3,$4,$5,'running',$6,1,$7,$8,$9,$10,clock_timestamp()+interval '1 hour',transaction_timestamp()-interval '2 seconds',transaction_timestamp()-interval '1 second')`,
 		ns, task.Identity().RunID, task.Bytes(), task.SubmissionDigest(), task.Route(), currentEpoch, rec, currentLease, worker, boot)
@@ -232,8 +232,8 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 			t.Fatal(e)
 		}
 		exec(api)
-		// Re-sign ONLY inside this rollback transaction so the actual API runs
-		// its unchanged structural/permissions validator against the mutant.
+		// 仅在此回滚事务内重新签名，让实际 API 对变异版本运行
+		// 未改动的结构和权限验证器。
 		sig, e := signature(ctx, tx)
 		if e != nil {
 			t.Fatal(e)
@@ -283,9 +283,9 @@ func mutationTrial(t *testing.T, ctx context.Context, admin interface {
 		args["expected"] = "1"
 	}
 	out, saveErr := call()
-	// This is precisely the normal stale/expired-owner rejection oracle. Log
-	// its RED result explicitly rather than disguising mutant acceptance as an
-	// ordinary protocol PASS. Unexpected SQL errors do not count as detection.
+	// 这正是正常的过期所有者拒绝判据。显式记录其
+	// RED 结果，不将接受变异伪装成普通协议
+	// PASS。意外 SQL 错误不算检测成功。
 	rejected := errors.Is(saveErr, d.ErrLeaseLost)
 	if !changed {
 		if !rejected {

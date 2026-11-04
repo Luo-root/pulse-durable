@@ -285,7 +285,7 @@ func (s *runState) stageStop(tx *recordTransaction, record RunRecord, id pulse.C
 	if err != nil {
 		return err
 	}
-	// Stop drops outstanding obligations without advancing the ACK frontier.
+	// Stop 丢弃未完成义务，但不推进 ACK 前沿。
 	for _, message := range record.Streams[view.key].Pending {
 		if view.pending(message.Sequence) != nil {
 			if err := view.putPending(message.Sequence, nil); err != nil {
@@ -340,8 +340,8 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 	if err := s.streamReady(ctx); err != nil {
 		return err
 	}
-	// Core still finishes each output and then fails the root. Once a failed
-	// Finish has atomically closed the whole owner, only exact cleanup is valid.
+	// Core 仍逐个完成输出，再使根失败。一旦失败的
+	// Finish 原子关闭整个所有者，仅允许精确清理。
 	key := streamKey(streamID(req.Stream))
 	stream, exists := s.record.Streams[key]
 	root := s.record.Attempts[req.Attempt]
@@ -379,10 +379,10 @@ func (s *runState) finishStream(ctx context.Context, req pulse.CheckpointStreamF
 	return s.commitRecordTransaction(ctx, tx)
 }
 
-// A failed terminal is a full-chain business verdict, not a reliable operation
-// error or host cancellation. All opened outputs share that owner verdict;
-// closing siblings here avoids partial multi-output recovery and needs no Core
-// API for sending/acknowledging an already failed source.
+// 失败终态是整条链的业务结论，不是可靠操作
+// 错误或宿主取消。所有已打开输出共享该所有者结论；
+// 在此关闭兄弟输出可避免部分多输出恢复，且无须 Core
+// 提供向已失败源发送或确认的 API。
 func checkFailedStreamOwner(record RunRecord, id string) error {
 	for _, stream := range record.Streams {
 		if stream.Stream.Attempt == id && stream.Stream.Terminal != "" && stream.Stream.Terminal != string(pulse.StreamFailed) {
@@ -392,9 +392,9 @@ func checkFailedStreamOwner(record RunRecord, id string) error {
 	return nil
 }
 
-// Only after complete history validation: legacy format-2 saves could persist
-// one failed output before the owner failure. Reconcile live scopes in one CAS;
-// confirmed/failed ancestor history stays untouched. Canceled is not evidence.
+// 仅在完整历史验证后执行：旧格式 2 保存可能在所有者失败前，
+// 先持久化一个失败输出。在一次 CAS 中协调活跃作用域；
+// 已确认或失败的祖先历史保持不变。Canceled 不构成证据。
 func (s *runState) reconcileFailedStreams(ctx context.Context) error {
 	tx := newRecordTransaction(s.record.Revision)
 	for _, stream := range s.record.Streams {
@@ -409,9 +409,9 @@ func (s *runState) reconcileFailedStreams(ctx context.Context) error {
 	return s.commitRecordTransaction(ctx, tx)
 }
 
-// The caller has validated the complete record and the requested live scope.
-// Only failed node roots are final scope failures; inner Retry failures and
-// canceled streams do not establish this fact or consume an ancestor's budget.
+// 调用方已验证完整记录及请求的活跃作用域。
+// 只有失败的节点根才是最终作用域失败；内部 Retry 失败及
+// 已取消流均不能证明这一点，也不消耗祖先预算。
 func (s *runState) scopeFailure(scope string) error {
 	for _, attempt := range s.record.Attempts {
 		if attempt.Parent == scope && attempt.Boundary == "" && attempt.State == AttemptFailed {
@@ -492,9 +492,9 @@ func (s *runState) checkStreamReferenceRecord(record RunRecord, ref StreamDescri
 // 调用方持 runState.mu，或处于业务尚未启动的根恢复阶段。
 func (s *runState) restoreStreamReference(key pulse.CheckpointKey, historical StreamDescriptorRecord) (pulse.CheckpointStreamDescriptor, error) {
 	if stream, exists := s.record.Streams[streamKey(historical.ID)]; exists && stream.Stream.Terminal == string(pulse.StreamFailed) {
-		// A confirmed alias may live above the failing producer's Sub. Preserve
-		// that result as a read-only failed endpoint so intermediate parent
-		// chains can still catch/retry the actual producer; never reopen it.
+		// 已确认别名可能位于失败生产者的 Sub 上方。将该
+		// 结果保留为只读失败端点，使中间父链仍可
+		// 捕获或重试真实生产者；绝不重新打开它。
 		if err := s.checkStreamReferenceRecord(s.record, historical, true); err != nil {
 			return pulse.CheckpointStreamDescriptor{}, err
 		}

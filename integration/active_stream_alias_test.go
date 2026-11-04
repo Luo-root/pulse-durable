@@ -53,9 +53,9 @@ func TestActiveStreamAliasRecoveryAcrossProcessExit(t *testing.T) {
 			t.Fatal("completed stream is not owned by the confirmed real source")
 		}
 	}
-	// A further fresh process must restore the completed nodes without repeating
-	// their bodies or the now-confirmed deliveries. The call files are observations,
-	// never recovery inputs or a claim of exactly-once external side effects.
+	// 另一个全新进程必须恢复已完成节点，不重复执行
+	// 节点体或已确认交付。调用文件仅用于观测，
+	// 绝不是恢复输入，也不承诺外部副作用恰好一次。
 	if err := activeStreamAliasProcess(t, dir, "completed"); err != nil {
 		t.Fatalf("restore the final completed run: %v", err)
 	}
@@ -198,8 +198,8 @@ func activeStreamAliasGraph(t *testing.T, dir, phase string, gates *activeStream
 			logCall(dir, fmt.Sprintf("sent-%d", value))
 			if phase == "run" && value == 1 {
 				close(gates.sourceParked)
-				// Save exits the entire process before releasing this source. Its
-				// complete node and successful stream terminal must still be absent.
+				// Save 在释放此源之前退出整个进程。其
+				// 完整节点和成功流终态必须仍不存在。
 				return waitActiveStreamAlias(rc.Context(), gates.mountSaved, "confirmed Sub save before process exit")
 			}
 		}
@@ -217,9 +217,9 @@ func activeStreamAliasGraph(t *testing.T, dir, phase string, gates *activeStream
 		}
 		return waitActiveStreamAlias(rc.Context(), gates.sourceParked, "active source parked after SendAt(1)")
 	}
-	// The active outer mount delays child restoration until source's root
-	// Attempt has opened. Otherwise the alias's blocked Save could prevent
-	// source from entering its body through Durable's serialized Attempt hook.
+	// 活跃外层挂载延迟子节点恢复，直到源的根
+	// Attempt 已开启。否则别名被阻塞的 Save 可能通过
+	// Durable 串行化的 Attempt 钩子，阻止源进入节点体。
 	bridge, err := pulse.New("active-alias-bridge", "在根来源就绪后恢复子图别名")
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func activeStreamAliasGraph(t *testing.T, dir, phase string, gates *activeStream
 			return errors.New("restored source and pass-through alias have different local endpoints")
 		}
 		for want := 1; ; want++ {
-			// Alternate aliases so both names must advance the same queue and Ack ledger.
+			// 交替使用别名，要求两个名称推进相同队列及 Ack 账本。
 			stream := b
 			if want%2 == 0 {
 				stream = a
@@ -402,8 +402,8 @@ func (s *activeStreamAliasSession) observe(ctx context.Context, record durable.R
 		if !confirmedAlias {
 			return nil
 		}
-		// Inspect the filestore result after its atomic Save, before admitting
-		// either producer completion or Ack. No sleep or probabilistic crash point.
+		// 在原子 Save 后、放行生产者完成或 Ack 之前，检查 filestore 结果。
+		// 不使用休眠或概率性崩溃点。
 		saved, err := s.Session.Load(ctx)
 		if err != nil {
 			return err
@@ -433,9 +433,9 @@ func (s *activeStreamAliasSession) observe(ctx context.Context, record durable.R
 			}
 			s.resumeOpened = true
 			logCall(s.dir, "resume-open-save")
-			// Source is held outside Open until the restored alias's real Open
-			// has persisted generation 2. Hold that Open in Save until source is
-			// entering OpenStream, exercising the concurrent acquisition window.
+			// 在已恢复别名的真实 Open 持久化代际 2 前，让源停在 Open 外。
+			// 将该 Open 阻塞于 Save，直到源开始进入
+			// OpenStream，以测试并发获取窗口。
 			close(s.gates.aliasOpenSaved)
 			return waitActiveStreamAlias(ctx, s.gates.sourceOpening, "concurrent source Open")
 		}

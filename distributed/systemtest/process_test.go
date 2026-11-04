@@ -67,7 +67,7 @@ func start(t *testing.T, dsn, ns, id, version string, capacity int, hold bool) *
 	t.Helper()
 	cfg, _ := json.Marshal(Config{Namespace: ns, ID: id, Version: version, Capacity: capacity, Duration: 90 * time.Second, HoldFinish: hold})
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkerProcess$", "-test.timeout=100s")
-	// Remove inherited credential/control keys rather than relying on duplicate env precedence.
+	// 移除继承的凭据和控制键，不依赖重复环境变量的优先级。
 	for _, v := range os.Environ() {
 		if !strings.HasPrefix(v, "PULSE_SYSTEMTEST_") && !strings.HasPrefix(v, "PULSE_DISTRIBUTED_TEST_DSN=") {
 			cmd.Env = append(cmd.Env, v)
@@ -140,7 +140,7 @@ func provision(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal("invalid test DSN")
 	}
-	// Administrative DDL is limited to the explicitly authorized Docker database.
+	// 管理员 DDL 仅限明确授权的 Docker 数据库。
 	c := cfg.ConnConfig
 	allowedDatabase := c.Database == "durable_distributed_test" || c.Database == "durable_dist_security_20261025" || c.Database == "durable_clock_diag_20261028"
 	if c.Host != "127.0.0.1" || c.Port != 55432 || !allowedDatabase || c.User != "durable_test" {
@@ -159,7 +159,7 @@ func provision(t *testing.T) fixture {
 	if _, err = admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD 'systemtest-local-only'"); err != nil {
 		t.Fatal("isolated role creation failed")
 	}
-	// Deliberately no DROP/DELETE cleanup: preserve evidence, never alter shared grants.
+	// 有意不使用 DROP/DELETE 清理：保留证据，绝不修改共享授权。
 	if err = postgres.Migrate(ctx, dsn, postgres.Grant{Role: role, Namespace: ns, Permissions: []string{"query", "submit", "worker", "cancel"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -201,9 +201,9 @@ func mutation(s string) d.Mutation {
 	return d.Mutation{ID: s, Digest: hex.EncodeToString(h[:])}
 }
 
-// TestMultiProcess deliberately fills every slot with a blocked suffix before
-// releasing any process. This makes worker participation deterministic instead
-// of depending on a fast polling worker not monopolizing short tasks.
+// TestMultiProcess 有意先用阻塞后缀填满所有槽位，再
+// 释放任意进程。由此确定性保证工作进程参与，
+// 不再依赖快速轮询的工作进程不会独占短任务。
 func TestMultiProcess(t *testing.T) {
 	for _, count := range []int{2, 4, 8} {
 		t.Run(fmt.Sprintf("workers-%d", count), func(t *testing.T) {
@@ -247,7 +247,7 @@ func TestMultiProcess(t *testing.T) {
 					}
 				}
 			}
-			// A further queued task must remain unclaimed while all business slots block.
+			// 所有业务槽位阻塞时，额外排队任务必须保持未领取。
 			f.submit(t, "overflow", "v1")
 			time.Sleep(300 * time.Millisecond)
 			if s := f.status(t, "overflow"); s.Status != d.Queued || s.Epoch != 0 {
@@ -259,7 +259,7 @@ func TestMultiProcess(t *testing.T) {
 			if err != nil {
 				t.Fatal("capacity audit query failed")
 			}
-			defer rows.Close() // also closes rows on a fatal scan/assertion
+			defer rows.Close() // 致命扫描错误或断言失败时也关闭 rows
 			seen := 0
 			for rows.Next() {
 				var id string
@@ -326,8 +326,8 @@ func TestKillRecovery(t *testing.T) {
 				t.Fatal("missing persisted checkpoint under lease")
 			}
 			if window == "before_finish" {
-				// A second controller round trip after the authority query proves
-				// Finish is still held, not merely that it was entered earlier.
+				// 权威查询后的第二次控制器往返证明 Finish 仍被
+				// 暂停，而不只是证明它此前进入过。
 				a.send(t, "probe_finish")
 				await(t, func() bool { return a.has("finish_held") }, "persistent Finish kill-window handshake")
 			}
@@ -407,8 +407,8 @@ func TestVersionCancelDrain(t *testing.T) {
 	}
 }
 
-// Drain must retain a live, non-canceled task beyond one full lease TTL while
-// rejecting compatible work, then finish it without claiming the queued task.
+// Drain 必须让未取消的活跃任务持续超过完整租约 TTL，同时
+// 拒绝兼容任务，再完成当前任务，且不领取排队任务。
 func TestDrainRetainsLease(t *testing.T) {
 	f := provision(t)
 	f.submit(t, "active", "v1")
@@ -424,7 +424,7 @@ func TestDrainRetainsLease(t *testing.T) {
 		}
 	}
 	f.submit(t, "compatible-queued", "v1")
-	until := time.Now().Add(2500 * time.Millisecond) // greater than configured 2s TTL
+	until := time.Now().Add(2500 * time.Millisecond) // 大于配置的 2 秒 TTL
 	for time.Now().Before(until) {
 		if p.has("drained") {
 			t.Fatal("Drain returned before active task completed")

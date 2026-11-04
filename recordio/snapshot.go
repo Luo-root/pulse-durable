@@ -18,9 +18,9 @@ type snapshotWire struct {
 	Record  durable.RunRecord `json:"record"`
 }
 
-// EncodeSnapshot encodes an arbitrary revision without normalizing nil containers
-// or empty Data. Snapshot versioning is independent of RunRecord.Format. Identity,
-// schema and revision validation remain the caller's responsibility.
+// EncodeSnapshot 编码任意修订，不归一化 nil 容器
+// 或空 Data。快照版本独立于 RunRecord.Format。身份、
+// 模式及修订号验证仍由调用方负责。
 func EncodeSnapshot(record durable.RunRecord) ([]byte, error) {
 	if !validMetadata(record) {
 		return nil, errors.New("recordio: snapshot metadata is not UTF-8")
@@ -36,9 +36,9 @@ func EncodeSnapshot(record durable.RunRecord) ([]byte, error) {
 	return data, nil
 }
 
-// DecodeSnapshot accepts only the complete, case-sensitive versioned snapshot
-// schema. Unknown or duplicate fields (including map keys), lossy Unicode and
-// trailing data are rejected. Errors never include stored metadata or Data.
+// DecodeSnapshot 仅接受完整、大小写敏感的带版本快照
+// 模式。拒绝未知或重复字段（包括映射键）、有损 Unicode 及
+// 尾随数据。错误绝不包含已存储元数据或 Data。
 func DecodeSnapshot(data []byte) (durable.RunRecord, error) {
 	invalid := errors.New("recordio: invalid snapshot")
 	if !json.Valid(data) || !validJSONText(data) {
@@ -65,11 +65,11 @@ func DecodeSnapshot(data []byte) (durable.RunRecord, error) {
 	return wire.Record, nil
 }
 
-// snapshotValue walks the actual record types rather than maintaining a second
-// copy of their fields. Every exported field is emitted: JSON's null versus {}
-// or [] preserves maps/slices, and null versus "" preserves []byte. Pointers are
-// either null or their complete value. Scalars retain their Go JSON encoding.
-// Unsupported kinds fail closed instead of silently omitting new record fields.
+// snapshotValue 遍历实际记录类型，而非维护第二份
+// 字段副本。输出每个导出字段：JSON 的 null 与 {}
+// 或 [] 区分映射或切片，null 与 "" 区分 []byte。指针
+// 为 null 或完整值。标量保留其 Go JSON 编码。
+// 不支持的种类会安全拒绝，而非悄然省略新记录字段。
 func snapshotValue(v reflect.Value) (any, error) {
 	switch v.Kind() {
 	case reflect.Pointer:
@@ -148,8 +148,8 @@ func snapshotFieldName(field reflect.StructField) string {
 	return name
 }
 
-// Token-level validation precedes Unmarshal because encoding/json otherwise
-// accepts duplicate keys and case-insensitive struct field matches.
+// token 级验证先于 Unmarshal，因为 encoding/json 原本会
+// 接受重复键及大小写不敏感的结构体字段匹配。
 func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 	token, err := decoder.Token()
 	if err != nil {
@@ -220,7 +220,7 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 		}
 		if typ == reflect.TypeOf([]byte(nil)) {
 			if _, ok := token.(string); ok {
-				return nil // Unmarshal validates base64.
+				return nil // Unmarshal 验证 base64。
 			}
 			return bad
 		}
@@ -247,7 +247,7 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 		}
 	case reflect.Int, reflect.Uint64:
 		if _, ok := token.(json.Number); ok {
-			return nil // Unmarshal validates integer syntax and range.
+			return nil // Unmarshal 验证整数语法及范围。
 		}
 	}
 	return bad

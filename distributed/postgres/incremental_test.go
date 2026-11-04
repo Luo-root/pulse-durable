@@ -42,7 +42,7 @@ func TestPostgresIncrementalChainAndHeadCAS(t *testing.T) {
 	if e := admin.QueryRow(ctx, `SELECT record=$3,(SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2) FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID, original).Scan(&same, &batches); e != nil || !same || batches != 12 {
 		t.Fatalf("snapshot rewritten or batch lost: same=%v batches=%d err=%v", same, batches, scrub(e, false))
 	}
-	// Drop the process-local projection and require authoritative chain replay.
+	// 丢弃进程内投影，要求从权威链重放。
 	c.projectionMu.Lock()
 	delete(c.projections, claim.Token)
 	c.projectionMu.Unlock()
@@ -55,8 +55,8 @@ func TestPostgresIncrementalChainAndHeadCAS(t *testing.T) {
 	if e != nil || len(again.Scopes) != 1 {
 		t.Fatal("Load alias", e)
 	}
-	// Administrator corruption preserves revision but changes the authoritative
-	// chain: the cached proposal must not authorize a write under that head.
+	// 管理员制造的损坏保留修订号却改变权威链：
+	// 缓存提案不得据此头授权写入。
 	if _, e = admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET head_chain=repeat('f',64) WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); e != nil {
 		t.Fatal(scrub(e, false))
 	}

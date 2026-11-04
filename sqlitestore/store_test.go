@@ -77,7 +77,7 @@ func (s *captureSession) Apply(c context.Context, b durable.ChangeBatch) (durabl
 	return s.Session.Apply(c, b)
 }
 
-// Test mutations are emitted by the real Runtime, not a fabricated wire or Save bridge.
+// 测试变更由真实 Runtime 产生，而非捏造的线格式或 Save 桥。
 func runtimeBatches(t *testing.T, id string) (durable.RunRecord, []durable.ChangeBatch) {
 	t.Helper()
 	g, e := pulse.New("capture", "")

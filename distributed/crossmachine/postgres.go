@@ -19,10 +19,10 @@ type PostgresStore struct {
 	namespace, version string
 }
 
-// OpenPostgres requires distinct explicit administrator and worker environment
-// keys. Prepare creates a fresh login role using the worker DSN's credentials and
-// grants only this namespace. No drop, cleanup DDL, or credential output occurs.
-// An existing role is rejected in prepare mode; provision once, then disable it.
+// OpenPostgres 要求显式指定不同的管理员和工作进程环境变量键。
+// Prepare 使用工作进程 DSN 的凭据创建新的登录角色，且
+// 仅授权此命名空间。不执行删除、清理 DDL 或输出凭据。
+// 准备模式拒绝已有角色；只配置一次，随后禁用准备模式。
 func OpenPostgres(ctx context.Context, c Config) (*PostgresStore, error) {
 	bad := func() (*PostgresStore, error) {
 		return nil, errors.New("database preparation/open failed (details omitted)")
@@ -57,15 +57,15 @@ func OpenPostgres(ctx context.Context, c Config) (*PostgresStore, error) {
 			return bad()
 		}
 		var used bool
-		// Schema may not exist yet; Migrate installs it before checking namespace use.
+		// 模式可能尚不存在；Migrate 先安装，再检查命名空间是否已被使用。
 		if postgres.Migrate(ctx, adminDSN) != nil {
 			return bad()
 		}
 		if admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE namespace=$1) OR EXISTS(SELECT 1 FROM pulse_durable_distributed.runs WHERE namespace=$1)`, c.Namespace).Scan(&used) != nil || used {
 			return bad()
 		}
-		// Utility statements cannot bind identifiers/passwords. Quote both explicitly;
-		// standard_conforming_strings is set locally for predictable literal quoting.
+		// 工具类语句不能绑定标识符或密码。对两者显式加引号；
+		// 在本地设置 standard_conforming_strings，确保字面量引号行为可预测。
 		tx, e := admin.Begin(ctx)
 		if e != nil {
 			return bad()
@@ -85,7 +85,7 @@ func OpenPostgres(ctx context.Context, c Config) (*PostgresStore, error) {
 			return bad()
 		}
 	}
-	// Refuse reuse of task-bearing namespaces even when preparation was external.
+	// 即使由外部完成准备，也拒绝复用已有任务的命名空间。
 	var used bool
 	if admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pulse_durable_distributed.runs WHERE namespace=$1)`, c.Namespace).Scan(&used) != nil || used {
 		return bad()

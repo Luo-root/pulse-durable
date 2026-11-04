@@ -35,7 +35,7 @@ func TestTemporaryTablesCannotShadowDefinerAuthority(t *testing.T) {
 	if e = admin.QueryRow(ctx, `SELECT status FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, other, task.Identity().RunID).Scan(&status); e != nil || status != "queued" {
 		t.Fatalf("unauthorized cancellation changed authority: status=%s err=%v", status, e)
 	}
-	// Temporary business tables must not divert authorized queries/writes.
+	// 临时业务表不得重定向已授权的查询或写入。
 	if _, e = conn.Exec(ctx, `CREATE TEMP TABLE runs(namespace text,run_id text); CREATE TEMP TABLE leases(namespace text,lease_id text); CREATE TEMP TABLE events(namespace text,run_id text)`); e != nil {
 		t.Fatal(scrub(e, false))
 	}

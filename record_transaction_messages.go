@@ -89,7 +89,7 @@ func (tx *recordTransaction) putManagedEntry(key managedEntryKey, expected, valu
 	return nil
 }
 func managedEntry(values []ValueRecord, name string) *ValueRecord {
-	// Format2 validation permits unsorted imported entries.
+	// Format2 验证允许导入条目未排序。
 	for i := range values {
 		if values[i].Name == name {
 			return &values[i]

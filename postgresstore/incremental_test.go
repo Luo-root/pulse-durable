@@ -148,7 +148,7 @@ func TestPGIncrementalIntegrity(t *testing.T) {
 			}
 			b := attemptBatch(t, r)
 			if mode == "insert-failure" || mode == "commit-failure" {
-				// A trigger faults the immutable batch insert after private projection mutation.
+				// 触发器在私有投影修改后，使不可变批次插入失败。
 				_, err = s.pool.Exec(ctx, `CREATE FUNCTION pulse_durable.fail_batch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$; CREATE TRIGGER fail_batch BEFORE INSERT ON pulse_durable.batches FOR EACH ROW EXECUTE FUNCTION pulse_durable.fail_batch()`)
 				if err != nil {
 					t.Fatal(err)
@@ -289,8 +289,8 @@ func TestPGLegacyUntouched(t *testing.T) {
 	s.Close()
 }
 
-// Validation deliberately accepts column order permutations. Every production
-// INSERT must therefore bind names rather than depend on ordinal_position.
+// 验证有意接受列顺序变化。因此所有生产 INSERT
+// 必须按列名绑定，而非依赖 ordinal_position。
 func TestPGReorderedColumns(t *testing.T) {
 	dsn := os.Getenv("PULSE_POSTGRES_TEST_DSN")
 	if dsn == "" {
@@ -400,7 +400,7 @@ func TestPGExitChild(t *testing.T) {
 	if _, err = a.Apply(ctx, attemptBatch(t, r)); err != nil {
 		t.Fatal(err)
 	}
-	os.Exit(0) // Deliberately do not Close: PostgreSQL must release the session lock.
+	os.Exit(0) // 有意不调用 Close：PostgreSQL 必须释放会话锁。
 }
 func TestPGExitRecovery(t *testing.T) {
 	dsn := os.Getenv("PULSE_POSTGRES_TEST_DSN")

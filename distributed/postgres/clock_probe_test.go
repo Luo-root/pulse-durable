@@ -12,9 +12,9 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// No schema, table or host-clock changes. Each query is sent only after the
-// preceding connection's response has been received, establishing causality
-// independently of concurrent response ordering.
+// 不改变模式、表或主机时钟。每个查询仅在收到
+// 前一连接响应后发送，以此建立因果关系，
+// 不依赖并发响应的顺序。
 func TestPostgresCrossConnectionClockCausality(t *testing.T) {
 	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
 	if dsn == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE") != "yes" {
@@ -56,7 +56,7 @@ func TestPostgresCrossConnectionClockCausality(t *testing.T) {
 		}
 		var current time.Time
 		var delta int64
-		// MATERIALIZED ensures the returned timestamp and delta use one sample.
+		// MATERIALIZED 保证返回的时间戳和差值使用同一次采样。
 		e = connection.QueryRow(ctx, `WITH sampled AS MATERIALIZED (SELECT clock_timestamp() AS sampled_at) SELECT sampled_at,trunc(extract(epoch FROM (sampled_at-$1::timestamptz))*1000000)::bigint FROM sampled`, previous).Scan(&current, &delta)
 		if e != nil {
 			t.Fatalf("causal clock probe query %d: %v", i, scrub(e, false))

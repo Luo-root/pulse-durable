@@ -14,7 +14,7 @@ import (
 	"unicode/utf8"
 )
 
-// ChangeBatchWireVersion identifies the canonical ChangeBatch JSON envelope.
+// ChangeBatchWireVersion 标识规范的 ChangeBatch JSON 封装。
 const ChangeBatchWireVersion = 1
 
 const (
@@ -273,7 +273,7 @@ func (b ChangeBatch) wireOps() ([]wireOp, error) {
 	return o, nil
 }
 
-// MarshalChangeBatch returns canonical, deterministic bytes. The returned bytes do not alias the batch.
+// MarshalChangeBatch 返回规范且确定性的字节。返回的字节不会与批次共享别名。
 func MarshalChangeBatch(b ChangeBatch) ([]byte, error) {
 	if b.tx == nil {
 		return nil, errInvalidChangeWire
@@ -306,7 +306,7 @@ func MarshalChangeBatch(b ChangeBatch) ([]byte, error) {
 	return out, e
 }
 
-// ChangeBatchDigest is SHA-256 over canonical MarshalChangeBatch bytes.
+// ChangeBatchDigest 是规范 MarshalChangeBatch 字节的 SHA-256。
 func ChangeBatchDigest(b ChangeBatch) ([32]byte, error) {
 	var z [32]byte
 	p, e := MarshalChangeBatch(b)
@@ -369,8 +369,8 @@ func validWireUnicode(data []byte) bool {
 	return true
 }
 
-// scanJSON consumes exactly one JSON value while checking duplicate object keys,
-// Unicode strings and nesting before any typed unmarshal can repair or discard data.
+// scanJSON 在任何类型化反序列化修复或丢弃数据前，消费恰好一个 JSON 值，
+// 并检查重复对象键、Unicode 字符串和嵌套深度。
 func scanJSON(d *json.Decoder, depth int) error {
 	if depth > MaxChangeBatchDepth {
 		return errInvalidChangeWire
@@ -510,7 +510,7 @@ func (w wireOp) validate() error {
 	return nil
 }
 
-// UnmarshalChangeBatch validates the complete envelope before constructing any transaction state.
+// UnmarshalChangeBatch 在构造任何事务状态前校验完整封装。
 func UnmarshalChangeBatch(data []byte) (ChangeBatch, error) {
 	var z ChangeBatch
 	if e := rejectJSON(data); e != nil {

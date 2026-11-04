@@ -30,7 +30,7 @@ func TestProjectionGatesIndependentAndCancelable(t *testing.T) {
 		t.Fatalf("slow A blocked independent B: %v", e)
 	}
 	done()
-	// Revocation never requires the busy token gate and cannot delete a new epoch.
+	// 撤销绝不需要繁忙的令牌关卡，也不能删除新纪元。
 	newer := a
 	newer.Epoch = 2
 	p, done, e := c.projectionGate(context.Background(), newer)

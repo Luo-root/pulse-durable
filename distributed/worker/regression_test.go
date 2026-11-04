@@ -12,12 +12,12 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// The timer never advances on its own. Each tick admits exactly one new poll;
-// checking pending wakeups at timer creation detects the old synchronous signal
-// deterministically, without a sleep or a throughput/timing threshold.
+// 定时器绝不自行推进。每个信号恰好允许一次新轮询；
+// 在创建定时器时检查待处理唤醒，可确定性检测旧的同步信号，
+// 无须休眠或吞吐量、时序阈值。
 func TestEmptyClaimHonorsPollTimer(t *testing.T) {
 	w, f := fixture(t, func(*pulse.RunCtx) error { return nil })
-	f.claims = 1 // the fake returns empty for every subsequent Claim
+	f.claims = 1 // 模拟实现在后续每个 Claim 中返回空结果
 	type poll struct {
 		count    int
 		wakeups  int
@@ -32,7 +32,7 @@ func TestEmptyClaimHonorsPollTimer(t *testing.T) {
 		tick := make(chan time.Time, 1)
 		select {
 		case polls <- poll{count: count, wakeups: len(w.changed), duration: delay, tick: tick}:
-		default: // A broken busy poller must remain cancelable during test cleanup.
+		default: // 错误的忙轮询器在测试清理时也必须可取消。
 		}
 		return tick, func() {}
 	}
@@ -81,7 +81,7 @@ func (f *commitPanic) InitializeOwned(ctx context.Context, req d.InitializeReque
 	panic(f.value)
 }
 
-// Do not inspect or format the panic value, including via an errors.Is chain.
+// 不检查或格式化 panic 值，包括通过 errors.Is 链。
 type untrustedPanic struct{}
 
 func (untrustedPanic) Error() string { panic("panic value was formatted") }

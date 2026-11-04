@@ -42,7 +42,7 @@ func TestMessageTransactionKeyPreconditionsAndCopies(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// A changed old object at unchanged revision must fail before Save.
+			// 修订号未变而旧对象改变时，必须在 Save 前失败。
 			switch kind {
 			case "message":
 				v := s.record.Messages["message"]

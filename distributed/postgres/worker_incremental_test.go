@@ -14,8 +14,8 @@ import (
 	"github.com/Luo-root/pulse-durable/distributed/worker"
 )
 
-// The database really commits before this transport-boundary wrapper drops one
-// response. This is not an uncommitted fake Apply implementation.
+// 数据库真实提交后，此传输边界包装器才丢弃一次
+// 响应。这不是未提交的模拟 Apply 实现。
 type lostApplyResponse struct {
 	d.Coordinator
 	injected     atomic.Bool
@@ -63,7 +63,7 @@ func TestPostgresWorker500MessagesUnknownResponseRecovery(t *testing.T) {
 		failures = append(failures, line)
 	}
 	recordEvent := func(e worker.Event) {
-		// Deliberately omit token IDs, mutation digests, task and payload data.
+		// 有意省略令牌 ID、变更摘要、任务及载荷数据。
 		line := fmt.Sprintf("%s kind=%s reason=%s epoch=%d rev=%d duration=%s", time.Since(started).Round(time.Millisecond), e.Kind, e.Reason, e.Token.Epoch, e.Revision, e.Duration.Round(time.Millisecond))
 		traceMu.Lock()
 		defer traceMu.Unlock()
@@ -72,8 +72,8 @@ func TestPostgresWorker500MessagesUnknownResponseRecovery(t *testing.T) {
 			trace = trace[:255]
 		}
 		trace = append(trace, line)
-		// Keep lifecycle and errors independently: successful empty polling,
-		// renewals and Apply traffic cannot evict an earlier lost owner.
+		// 分别保留生命周期与错误：成功的空轮询、
+		// 续租和 Apply 流量不能挤掉更早的所有权丢失记录。
 		if e.Kind == "owned" || e.Kind == "execution" || e.Kind == "finish" {
 			if len(significant) == 64 {
 				copy(significant, significant[1:])
@@ -210,9 +210,9 @@ func TestPostgresWorker500MessagesUnknownResponseRecovery(t *testing.T) {
 	if count < 1500 || count != receiptsCount || snapshotRevision != 1 {
 		t.Fatalf("not incremental: batches=%d receipts=%d snapshot=%d", count, receiptsCount, snapshotRevision)
 	}
-	// A callback interrupted before its commit may run again. Confirmed messages
-	// must be exactly the 500 logical inputs; inspect replay under a fresh owner
-	// before Finish is impossible, so verify immutable wire evidence via SQL.
+	// 提交前被中断的回调可能再次运行。已确认消息
+	// 必须恰为 500 个逻辑输入；无法在 Finish 前用新所有者
+	// 检查重放，因此通过 SQL 验证不可变线格式证据。
 	var confirmed int
 	if e = admin.QueryRow(ctx, `SELECT count(*) FROM pulse_durable_distributed.batches b CROSS JOIN LATERAL jsonb_array_elements(convert_from(b.wire,'UTF8')::jsonb->'ops') op WHERE namespace=$1 AND run_id=$2 AND op->>'kind'='message' AND op->'value'->>'state'='confirmed'`, ns, task.Identity().RunID).Scan(&confirmed); e != nil {
 		t.Fatal(scrub(e, false))

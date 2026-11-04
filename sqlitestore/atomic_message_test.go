@@ -14,9 +14,9 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// The fixture is a real two-output Runtime graph. Only the public typed wire is
-// edited: the second commit removes a State entry instead of replacing it.
-// Distinct output keys and source identities are not two names in one group.
+// 夹具是真实双输出 Runtime 图。仅修改公开类型化线格式：
+// 第二次提交删除 State 条目，而非替换。
+// 不同输出键和源身份不是同一组的两个名称。
 func atomicMessageFixture(t *testing.T) (durable.RunRecord, []durable.ChangeBatch, int) {
 	t.Helper()
 	g, e := pulse.New("atomic-two-output", "")
@@ -178,8 +178,8 @@ func atomicEditedBatch(t *testing.T, original durable.ChangeBatch, badOutput boo
 		if op.Kind == "pending" && !bytes.Equal(op.Value, []byte("null")) {
 			outputs++
 			if badOutput && outputs == 2 {
-				// Both outputs are new entries. Give the second an exact-but-nonexistent
-				// expected value; decoding is valid, typed preconditions must reject it.
+				// 两个输出都是新条目。给第二个指定精确但不存在的
+				// 期望值；解码合法，但类型化前置条件必须拒绝它。
 				op.Expected = append(json.RawMessage(nil), op.Value...)
 			}
 		}

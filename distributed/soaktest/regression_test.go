@@ -121,7 +121,7 @@ func TestAuditBudgetAndCancellation(t *testing.T) {
 	}
 }
 
-// Cancel deterministically during CPU work rather than relying on scheduler timing.
+// 在 CPU 工作期间确定性取消，不依赖调度器时序。
 type cancelAfterChecks struct {
 	context.Context
 	checks int

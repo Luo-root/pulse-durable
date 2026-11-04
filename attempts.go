@@ -27,8 +27,8 @@ func (s *runState) hooks() pulse.CheckpointHooks {
 	return pulse.CheckpointHooks{OpenAttempt: s.openAttempt, FailAttempt: s.failAttempt, OpenChild: s.openChild, Commit: s.commit, StreamHooks: s.streamHooks()}
 }
 
-// Only a pre-operation context check may return this explicit fact. A Store
-// error, even context.Canceled after a possible write, always stops reliability.
+// 只有操作前的上下文检查可以返回这一明确事实。
+// Store 错误（即使是可能已写入后的 context.Canceled）都会使可靠性检查停止。
 func checkCheckpointContext(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("durable: nil checkpoint context")

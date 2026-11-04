@@ -86,8 +86,8 @@ func TestCheckpointRecoveryAcrossProcessExit(t *testing.T) {
 	}
 }
 
-// Run returns and closes the real filestore session before the process exits.
-// Each Resume uses a new process; the call file only observes business entries.
+// Run 在进程退出前返回并关闭真实 filestore 会话。
+// 每次 Resume 使用新进程；调用文件仅观察业务进入次数。
 func TestExecutionFailureBudgetAcrossProcessExit(t *testing.T) {
 	for _, kind := range []string{"mixed-skip", "cancel-nil", "cancel-skip"} {
 		t.Run(kind, func(t *testing.T) {

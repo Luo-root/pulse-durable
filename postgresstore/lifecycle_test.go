@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// These tests intentionally run serially with the schema-resetting PG tests.
+// 这些测试有意与重置模式的 PG 测试串行运行。
 func TestPGLifecycle(t *testing.T) {
 	dsn := os.Getenv("PULSE_POSTGRES_TEST_DSN")
 	if dsn == "" {
@@ -44,8 +44,8 @@ func TestPGLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Cancel acquisitions before closing, so the old implementation can also
-			// clean up on failure instead of stranding a test goroutine holding mu.
+			// 关闭前取消获取，让旧实现也能在失败时清理，
+			// 而不是遗留持有 mu 的测试 goroutine。
 			defer s.Close()
 			defer cancel()
 			a, err := s.Acquire(ctx, "lifecycle-a")
@@ -61,8 +61,8 @@ func TestPGLifecycle(t *testing.T) {
 			if mode == "same-run" {
 				run = "lifecycle-a"
 			}
-			// Background has no caller deadline: the Store owns cancellation on Close.
-			// A cancellable wrapper is retained solely for failure cleanup on baseline.
+			// Background 没有调用方截止时间：Store 在 Close 时负责取消。
+			// 保留可取消包装器，仅用于基线实现失败时清理。
 			acquireCtx, stop := context.WithCancel(context.Background())
 			defer stop()
 			go func() { b, e := s.Acquire(acquireCtx, run); resultCh <- result{b, e} }()
@@ -96,9 +96,9 @@ func TestPGLifecycle(t *testing.T) {
 				}
 				return
 			}
-			// EmptyAcquireWaitTime is recorded only after completion. CanceledAcquireCount
-			// is also too late. AcquiredConns + the pending reservation give a precise
-			// barrier without sleeping or depending on scheduler timing.
+			// EmptyAcquireWaitTime 仅在完成后记录。CanceledAcquireCount
+			// 同样太晚。AcquiredConns 加上待处理预留提供精确
+			// 屏障，无须休眠或依赖调度器时序。
 			for {
 				s.mu.Lock()
 				pending := len(s.pending)

@@ -13,8 +13,8 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// Retain the actual Save arguments, not cloneRecord copies: cloning here would
-// hide runtime aliasing. JSON is only an independent historical oracle.
+// 保留真实 Save 参数，而非 cloneRecord 副本：此处克隆会
+// 掩盖运行时别名问题。JSON 仅是独立的历史参考。
 type evolutionSave struct {
 	record RunRecord
 	bytes  []byte
@@ -149,7 +149,7 @@ func TestEvolutionMultiRouteMessageHistoryAndStopBoundary(t *testing.T) {
 	ctx := t.Context()
 	store := &evolutionStore{}
 	p.s.session = &evolutionSession{Session: p.s.session, owner: store}
-	// Two independently addressed output groups of the processor's output.
+	// 处理器输出中两个可独立寻址的输出组。
 	req := p.openRequest(true)
 	req.Group = "audit"
 	audit, err := p.s.openStream(ctx, req)
@@ -180,7 +180,7 @@ func TestEvolutionMultiRouteMessageHistoryAndStopBoundary(t *testing.T) {
 		t.Fatalf("managed Stop must reject without Save or partial effects: %v", err)
 	}
 	commit.Stops = nil
-	// A bad second route must not publish the otherwise-valid first route.
+	// 错误的第二条路由不得发布原本有效的第一条路由。
 	commit.Outputs[1].Message.Value = "wrong type"
 	if err := p.s.commitMessage(ctx, commit); err == nil || len(store.history) != saves || !reflect.DeepEqual(before, p.s.record) {
 		t.Fatalf("invalid second route partially committed: %v", err)
@@ -211,7 +211,7 @@ func TestEvolutionMultiRouteMessageHistoryAndStopBoundary(t *testing.T) {
 	}
 	commit.State[0].Value = 99
 	commit.Outputs[0].Message.Value = 99
-	// Manual ACK+Stop is legal and must preserve the managed transaction.
+	// 手动 ACK+Stop 合法，且必须保留托管事务。
 	if err := p.s.commitMessage(ctx, pulse.CheckpointMessageCommit{Site: p.site, Scope: r.RootScope,
 		Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: 2}}, Stops: []pulse.CheckpointStreamID{audit.Stream.ID}}); err != nil {
 		t.Fatal(err)

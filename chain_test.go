@@ -9,8 +9,8 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// Fixed expectations were computed independently with Python hashlib.sha256
-// and struct.pack('>Q', revision), not with the Go chain implementation.
+// 固定期望值由 Python hashlib.sha256 和 struct.pack('>Q', revision) 独立计算，
+// 并非使用 Go 链实现计算。
 func chainDigestHex(t *testing.T, text string) [32]byte {
 	t.Helper()
 	b, err := hex.DecodeString(text)
@@ -111,9 +111,8 @@ func TestChainInputSensitivity(t *testing.T) {
 }
 
 func TestChainSynthesisDoesNotReseedBusinessAnchor(t *testing.T) {
-	// At revision 2, synthesis stores Snew separately and retains C2 as the
-	// business anchor. Neither Snew nor SeedChain(Snew) replaces C2. This test
-	// illustrates the algorithm contract; it does not implement a manifest.
+	// 在 revision 2 时，合成过程单独保存 Snew，并保留 C2 作为业务锚点。
+	// Snew 和 SeedChain(Snew) 都不会替换 C2。本测试展示算法契约，不实现 manifest。
 	anchor := chainDigestHex(t, "5fa00d138fb0c2e9a07fd1f3b3cc4516433be640cd3c0aa18d0cb40725c7aa04")
 	snapshot := sha256.Sum256([]byte("synthesized-snapshot-at-2"))
 	if snapshot != chainDigestHex(t, "5cdb239ddccbea9304edc6bfb675295a877297d5a797594c3e3c82d8015273ac") {

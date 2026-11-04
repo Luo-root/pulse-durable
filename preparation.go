@@ -10,8 +10,8 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// CodecBinding identifies every graph key, including managed-stream element codecs.
-// Graph/Path disambiguate equally named keys in different subgraphs.
+// CodecBinding 标识每个图键，包括托管流元素编解码器。
+// Graph/Path 区分不同子图中的同名键。
 type CodecBinding struct {
 	Graph   string `json:"graph"`
 	Path    string `json:"path"`
@@ -21,23 +21,23 @@ type CodecBinding struct {
 	Stream  bool   `json:"stream"`
 }
 
-// Inspection is the same definition fingerprint used by Run/Resume. It does not
-// identify business function bodies; callers must still version business code.
+// Inspection 与 Run/Resume 使用相同的定义指纹。它不标识
+// 业务函数体；调用方仍须为业务代码管理版本。
 type Inspection struct {
 	Definition    string
 	CodecManifest []CodecBinding
 }
 
-// Preparation contains finite actual inputs encoded through the Run/Resume codecs.
-// Payload is canonical JSON of sorted ValueRecords (including explicit skips).
-// No execution is started and no store or BeforeStart callback is invoked.
+// Preparation 包含经 Run/Resume 编解码器编码的有限实际输入。
+// Payload 是排序后的 ValueRecords 的规范 JSON（包括显式跳过项）。
+// 不启动执行，也不调用存储或 BeforeStart 回调。
 type Preparation struct {
 	Inspection
 	Inputs  string
 	Payload []byte
 }
 
-// Inspect snapshots codecs and validates graph declarations without executing nodes.
+// Inspect 对编解码器取快照并验证图声明，不执行节点。
 func Inspect(g *pulse.Graph, codecs *Codecs) (out Inspection, err error) {
 	returned := false
 	defer func() {
@@ -99,10 +99,10 @@ func inspectForPreparation(g *pulse.Graph, codecs *Codecs) (Inspection, error) {
 	return out, nil
 }
 
-// Prepare validates Inputs with a pending Pulse Execution, then cancels it without
-// Start. Codec implementations must be deterministic and free of business effects.
-// Direct external stream inputs are rejected; graph-internal managed streams remain
-// part of the definition and use the existing Runtime stream recovery contract.
+// Prepare 使用待启动的 Pulse Execution 验证 Inputs，随后取消它，
+// 不调用 Start。编解码器实现必须确定且无业务副作用。
+// 拒绝直接外部流输入；图内托管流仍是定义的一部分，
+// 并使用现有 Runtime 流恢复契约。
 func Prepare(ctx context.Context, g *pulse.Graph, in pulse.Inputs, codecs *Codecs) (out Preparation, err error) {
 	returned := false
 	defer func() {
@@ -124,7 +124,7 @@ func prepare(ctx context.Context, g *pulse.Graph, in pulse.Inputs, codecs *Codec
 	if codecs == nil {
 		return Preparation{}, fmt.Errorf("durable: codecs are required")
 	}
-	// Keep inspection, encoding and fingerprinting on one immutable codec snapshot.
+	// 检查、编码及指纹计算使用同一不可变编解码器快照。
 	snapshot := &Codecs{byType: codecs.snapshot()}
 	inspection, err := inspectForPreparation(g, snapshot)
 	if err != nil {
@@ -157,17 +157,17 @@ func prepare(ctx context.Context, g *pulse.Graph, in pulse.Inputs, codecs *Codec
 	if err != nil {
 		return Preparation{}, fmt.Errorf("durable: input envelope encoding failed")
 	}
-	// Reject non-deterministic codecs rather than attaching a mismatched fingerprint.
+	// 拒绝非确定性编解码器，而非附加不匹配的指纹。
 	if digest(payload) != fingerprint {
 		return Preparation{}, fmt.Errorf("durable: non-deterministic input encoding")
 	}
 	return Preparation{Inspection: inspection, Inputs: fingerprint, Payload: payload}, nil
 }
 
-// DecodeInputs reconstructs Inputs in a fresh process using registered typed keys.
-// keys must contain all root input keys (pulse.RegisterKey). Payload must be the
-// exact canonical bytes produced by Prepare. Callers must bound its length before
-// calling; distributed's wire format fixes that bound. No business code is started.
+// DecodeInputs 在新进程中使用已注册类型化键重建 Inputs。
+// keys 必须包含所有根输入键（pulse.RegisterKey）。Payload 必须是
+// Prepare 生成的精确规范字节。调用方须在调用前限制长度；
+// distributed 线格式固定此上限。不启动任何业务代码。
 func DecodeInputs(ctx context.Context, g *pulse.Graph, codecs *Codecs, keys *pulse.Registry, payload []byte) (in pulse.Inputs, err error) {
 	returned := false
 	defer func() {

@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// normalizeWire checks exact case-sensitive fields and presence before the Go
-// decoder can apply its permissive case aliases or null-to-zero rules.
+// normalizeWire 在 Go 解码器应用宽松的大小写别名或 null 转零规则之前，
+// 检查字段是否存在以及大小写是否精确匹配。
 func normalizeWire(data []byte, typ reflect.Type, payload bool, depth int) ([]byte, error) {
 	if depth > MaxChangeBatchDepth {
 		return nil, errInvalidChangeWire

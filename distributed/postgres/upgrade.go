@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// Old physical schemas are deliberately read-only to this release. No DDL or
-// record conversion is attempted, even if the old catalog is correctly signed.
+// 此版本有意只读旧物理模式。不尝试 DDL 或
+// 记录转换，即使旧目录签名正确。
 func upgradeV1(context.Context, pgx.Tx) error {
 	return errors.New("distributed postgres: unsupported physical schema; use a new database (old data unchanged)")
 }

@@ -14,7 +14,7 @@ import (
 
 func uint64ptr(v uint64) *uint64 { return &v }
 
-// Request bounds are actual database observations, never the test machine clock.
+// 请求边界取自实际数据库观测，绝不用测试机器时钟。
 func receiptQuery(t *testing.T, admin *pgxpool.Pool, i d.Identity, m d.Mutation, op string, epoch *int64, revision *uint64) d.MutationQuery {
 	t.Helper()
 	q := d.MutationQuery{Identity: i, Mutation: m, Operation: op, ExpectedEpoch: epoch, ExpectedRevision: revision}
@@ -153,7 +153,7 @@ func TestPostgresCancelExactRetryAndTerminalNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mut("cancel-committed")
-	// The actual database commits; discard its response to simulate transport loss.
+	// 真实数据库完成提交；丢弃其响应模拟传输丢失。
 	if _, err := c.Cancel(ctx, task.Identity(), m); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestPostgresCancelExactRetryAndTerminalNoOp(t *testing.T) {
 			t.Fatal("terminal identity conflict accepted", err)
 		}
 	}
-	// Both exact retry and fresh terminal no-op must serialize without writes.
+	// 精确重试与新的终态无操作均须串行化，且不写入。
 	done := make(chan error, 8)
 	for n := 0; n < 8; n++ {
 		retry := m
@@ -203,8 +203,8 @@ func TestPostgresCancelExactRetryAndTerminalNoOp(t *testing.T) {
 	if result, err := c.FindMutation(ctx, q); err != nil || result.State != d.AbsentWithinWindow {
 		t.Fatal("terminal no-op manufactured receipt", result, err)
 	}
-	// Race two fresh mutations across the terminal transition. Exactly one
-	// commits; the loser observes terminal state without acquiring a guard.
+	// 让两个新变更竞争终态转换。恰有一个
+	// 提交；失败方观察到终态，不获取保护记录。
 	raced := taskFixture(t, ns, "cancel-terminal-race")
 	if _, err := c.Submit(ctx, raced); err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestPostgresIndependentReceiptsAndCoverage(t *testing.T) {
 	if _, e := c.FindMutation(ctx, q); !errors.Is(e, d.ErrInvalid) {
 		t.Fatal("missing receipt not corruption", e)
 	}
-	// Emulate only the future GC's atomic floor contract; no collector is implemented.
+	// 仅模拟未来 GC 的原子下界契约；尚未实现收集器。
 	if _, e := admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET receipt_coverage_floor=$3 WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID, q.RequestedWindow.Through); e != nil {
 		t.Fatal(e)
 	}

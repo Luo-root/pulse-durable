@@ -137,7 +137,7 @@ func TestManagedHistoryRecoveryAcrossProcessExit(t *testing.T) {
 						t.Error(err)
 					}
 				})
-				// Deliberately persist an incomplete record; a healthy filestore did not lose data.
+				// 有意持久化不完整记录；健康 filestore 并未丢失数据。
 				for key, managed := range before.Managed {
 					if scenario == "managed-missing" {
 						delete(before.Managed, key)
@@ -218,8 +218,8 @@ func TestConfirmedManagedValuesAcrossProcessExit(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// Deliberate, individually valid record edits through public CAS; a
-				// healthy Runtime is not claimed to produce contradictory values.
+				// 通过公开 CAS 有意执行逐项有效的记录修改；
+				// 不声称健康 Runtime 会生成矛盾值。
 				scope := record.Scopes[record.RootScope]
 				if scenario == "node-skipped" || scenario == "before-reconcile" {
 					value := scope.Nodes["processor"]
@@ -233,8 +233,8 @@ func TestConfirmedManagedValuesAcrossProcessExit(t *testing.T) {
 					}
 				}
 				if strings.Contains(scenario, "reconcile") {
-					// Legacy format-2 shape: producer failed after its consumer
-					// confirmed, but its root failure still needs one reconcile Save.
+					// 旧格式 2 形状：生产者在消费者确认后失败，
+					// 但其根失败仍需一次协调 Save。
 					source := scope.Nodes["source"].Attempt
 					attempt := record.Attempts[source]
 					attempt.State = durable.AttemptActive
@@ -348,8 +348,8 @@ func confirmedManagedValuesProcess(t *testing.T, store durable.Store, dir, scena
 	}
 }
 
-// Each phase is a fresh process using the real filestore. Save may fail before
-// writing or after its real CAS succeeds; neither case may lose reliable classification.
+// 每个阶段均为使用真实 filestore 的新进程。Save 可在写入前
+// 或真实 CAS 成功后失败；两者均不得丢失可靠分类。
 func TestSharedRestoreFailureAcrossProcesses(t *testing.T) {
 	for _, scenario := range []string{"store-error", "cancel-error", "committed-cancel-error"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -366,8 +366,8 @@ func TestSharedRestoreFailureAcrossProcesses(t *testing.T) {
 					t.Fatal("seed was not complete generation 1")
 				}
 			}
-			// Continue to recovery even on a classification failure so the old-Core
-			// counterexample cannot be mistaken for record loss or an unjoined Save.
+			// 即使分类失败也继续恢复，避免将旧 Core 的反例
+			// 误认为记录丢失或未等待 Save 结束。
 			if err := streamRecoveryProcess(t, dir, name, "resume"); err != nil {
 				t.Errorf("classification: %v", err)
 			}
@@ -405,8 +405,8 @@ func TestSharedRestoreFailureAcrossProcesses(t *testing.T) {
 	}
 }
 
-// Cancellation of a restored child must leave the mount resumable. The host
-// consumes and explicitly Acks the original tail only on healthy recovery.
+// 取消已恢复子节点后，挂载必须仍可恢复。宿主仅在
+// 健康恢复时消费并显式 Ack 原始尾部。
 func TestNestedRestoredCancellationAcrossProcesses(t *testing.T) {
 	for _, scenario := range []string{"healthy", "cancel-child", "cancel-root"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -434,8 +434,8 @@ func TestNestedRestoredCancellationAcrossProcesses(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Logf("record phase=before-%s %s", phase, encoded)
-				// Keep the third process even if classification failed: its concrete
-				// Resume result distinguishes lost recovery eligibility from lost data.
+				// 即使分类失败也保留第三个进程：其具体 Resume
+				// 结果可区分恢复资格丢失与数据丢失。
 				if err := streamRecoveryProcess(t, dir, name, phase); err != nil {
 					t.Errorf("%s: %v", phase, err)
 				}
@@ -535,8 +535,8 @@ func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scen
 		close(holdStarted)
 		if canceled {
 			<-rc.Context().Done()
-			// The restored source must latch its result before this live node can
-			// return a separately classified cancellation.
+			// 已恢复源必须先锁存结果，此活跃节点才能
+			// 返回单独分类的取消。
 			select {
 			case <-sourceFinished:
 			case <-ctx.Done():
@@ -595,7 +595,7 @@ func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scen
 					if err == nil && (delivery.Value != 7 || delivery.Sequence != 1) {
 						err = fmt.Errorf("original tail=%d sequence=%d", delivery.Value, delivery.Sequence)
 					}
-					// A completed healthy control has already consumed its tail.
+					// 已完成的健康对照组已经消费其尾部。
 					if phase == "recover" && scenario == "nested-restore-healthy" {
 						if err == io.EOF {
 							reader <- nil
@@ -656,8 +656,8 @@ func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scen
 	}
 	nested := sharedRestoreAwait(t, ctx, childStarted)
 	saveCtx := sharedRestoreAwait(t, ctx, store.entered)
-	// Save holds Durable's record mutex; the active hold attempt may still be
-	// waiting to re-enter its body. Never wait for that body while Save is held.
+	// Save 持有 Durable 记录互斥锁；活跃的 hold 尝试可能仍在
+	// 等待重新进入节点体。Save 被暂停时，绝不等待该节点体。
 	if nested == nil || nested.Context().Err() != nil || execution.Context().Err() != nil || saveCtx.Err() != nil {
 		t.Fatal("shared restore Save was not admitted with a healthy root and live child")
 	}
@@ -711,8 +711,8 @@ func nestedRestoredCancellationProcess(t *testing.T, fs durable.Store, dir, scen
 	t.Logf("admitted Save succeeded=%t and joined; source_before_reply=%t root_status=%s source_calls=%d", store.succeeded.Load(), canceled, snapshot.Graph.Status, callCount(dir, "source"))
 }
 
-// A local Fork cancellation returned by a healthy node is a final business
-// failure. Real filestore records and fresh processes must retain that verdict.
+// 健康节点返回的本地 Fork 取消是最终业务
+// 失败。真实 filestore 记录与全新进程必须保留该结论。
 func TestForkWaitFailureAcrossProcesses(t *testing.T) {
 	for _, entry := range []string{"open", "receive"} {
 		t.Run(entry, func(t *testing.T) {
@@ -786,8 +786,8 @@ func TestForkWaitFailureAcrossProcesses(t *testing.T) {
 			} else if len(before.Attempts) != 1 {
 				t.Errorf("attempts=%d, want one final root attempt", len(before.Attempts))
 			}
-			// Always run the last process, including on old Core: an actual allowed
-			// Resume plus another body call is stronger evidence than classification alone.
+			// 始终运行最后一个进程，包括旧 Core：实际获准的
+			// Resume 加上额外节点体调用，比单独分类更能证明问题。
 			if err := streamRecoveryProcess(t, dir, scenario, "recover"); err != nil {
 				t.Errorf("failed-scope Resume: %v", err)
 			}
@@ -937,9 +937,9 @@ func forkWaitFailureProcess(t *testing.T, fs durable.Store, dir, scenario, phase
 		GraphStarted: func(site pulse.Site) {
 			starts.Add(1)
 			if site.Path == "mount" && injected {
-				// Out is already bound, so the parent consumer can enter Receive.
-				// Its Open must start before restored source submission; otherwise
-				// that Open's record mutex could block the consumer's OpenAttempt.
+				// Out 已绑定，因此父消费者可以进入 Receive。
+				// 其 Open 必须在提交已恢复源前启动；否则
+				// 该 Open 的记录互斥锁可能阻塞消费者的 OpenAttempt。
 				sharedRestoreAwait(t, ctx, childStart)
 			}
 			if site.Path == "" && !receive {
@@ -1000,8 +1000,8 @@ func forkWaitFailureProcess(t *testing.T, fs durable.Store, dir, scenario, phase
 	if !returned.ownerHealthy || !returned.executionHealthy || !errors.Is(returned.err, context.Canceled) || saveCtx.Err() != nil {
 		t.Fatalf("local cancellation escaped its owner or canceled shared Save: %+v Save=%v", returned, saveCtx.Err())
 	}
-	// Save holds the record mutex and FailAttempt needs it. Wait only for the
-	// business-return barrier, never Finished, before allowing the real CAS.
+	// Save 持有记录互斥锁，而 FailAttempt 需要该锁。在放行真实 CAS 前，
+	// 仅等待业务返回屏障，绝不等待 Finished。
 	for name, done := range map[string]<-chan error{"Runtime": result, "Wait": waited} {
 		select {
 		case err := <-done:
@@ -1226,8 +1226,8 @@ func sharedRestoreFailureProcess(t *testing.T, fs durable.Store, dir, scenario, 
 	sharedRestoreAwait(t, ctx, store.settled)
 	var checkpoint, finalCheckpoint *pulse.CheckpointError
 	final := execution.Wait()
-	// Runtime joins its session-close result; compare the reliable error identity
-	// within that chain and keep Core's own terminal values exactly identical.
+	// Runtime 合并会话关闭结果；在该错误链中比较可靠错误身份，
+	// 并保持 Core 自身终态值完全相同。
 	if !errors.As(err, &checkpoint) || !errors.As(final, &finalCheckpoint) || checkpoint != finalCheckpoint || execution.Err() != final || execution.Snapshot().Graph.Err != final || execution.Snapshot().Graph.Status != pulse.GraphStatusFailed || graphReason != pulse.NodeFailed || graphErr != final || graphFinished.Load() != 1 {
 		t.Errorf("accepted Save classification/observation lost: checkpoint=%t result=%v status=%s GraphFinished=%s/%d", checkpoint != nil, err, execution.Snapshot().Graph.Status, graphReason, graphFinished.Load())
 	}
@@ -1591,8 +1591,8 @@ type failedStreamCase struct {
 	Alias, HostCancel, Catch, Indirect bool
 }
 
-// The barrier is Session.Save's real return, never a sleep between Core calls.
-// New multi-output failures cross every terminal threshold in one atomic Save.
+// 屏障是 Session.Save 的真实返回，绝不是 Core 调用间的休眠。
+// 新的多输出失败在一次原子 Save 中跨过所有终态阈值。
 func TestFailedStreamRecoveryAcrossProcessExit(t *testing.T) {
 	cases := []failedStreamCase{
 		{Name: "root", Outputs: 1, At: 1, Fault: "root", Retries: 2},
@@ -1923,8 +1923,8 @@ func (s *failedStreamSession) observe(record durable.RunRecord, commit func() er
 			return failedStreamSaveError
 		}
 		if tc.Fault == "legacy" {
-			// Synthetic new-format typed history: a partial terminal set with
-			// active roots must reconcile without reviving exhausted budgets.
+			// 合成的新格式类型化历史：具有活跃根的部分终态集合
+			// 必须完成协调，且不恢复已耗尽预算。
 			for i, key := range sortedStreamKeys(record.Streams) {
 				stream := record.Streams[key]
 				if i >= tc.At {

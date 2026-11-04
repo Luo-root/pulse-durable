@@ -6,26 +6,25 @@ import (
 	"math"
 )
 
-// ChangeHeader binds a batch to one immutable run and one revision transition.
-// Namespace/ownership fencing belongs to the session, not caller-supplied fields.
+// ChangeHeader 将批次绑定到一次不可变运行和一次 revision 转换。
+// 命名空间/所有权栅栏属于 session，而不是调用方提供的字段。
 type ChangeHeader struct {
 	BatchFormat, LogicalFormat                                        int
 	RunID, BusinessVersion, DefinitionDigest, InputsDigest, RootScope string
 	ExpectedRevision, Revision                                        uint64
 }
 
-// CommitAck must exactly match the submitted header before runtime publication.
-// It is confirmation for this exclusive Session, not a distributed receipt.
+// CommitAck 在运行时发布前必须与提交的 header 完全匹配。
+// 它是此独占 Session 的确认，不是分布式回执。
 type CommitAck struct{ Header ChangeHeader }
 
-// ChangeBatch is an immutable, process-local, versioned typed operation envelope.
-// Its private tables contain put-attempt, create-scope, put-node, stream-header,
-// pending put/remove, message, managed-header and managed-entry put/remove ops.
-// Each captures Absent or an exact old typed value (including nil versus empty).
-// There is intentionally no JSON patch or mutable map escape hatch. Backend code
-// uses ApplyTo for the single shared precondition/apply algorithm. A future wire
-// format/exporter can be added without exposing runtime transaction aliases.
-// The zero value is invalid. Copies can be retained and applied independently.
+// ChangeBatch 是不可变、进程内、带版本的类型化操作封装。
+// 其私有表包含 put-attempt、create-scope、put-node、stream-header、
+// pending put/remove、message、managed-header 和 managed-entry put/remove 操作。
+// 每项记录 Absent 或精确的旧类型化值（包括 nil 与 empty 的区别）。
+// 这里有意不提供 JSON patch 或可变 map 的逃逸入口。后端代码使用 ApplyTo 执行统一的前置条件检查与应用算法。
+// 未来可以添加线格式/导出器，而不暴露运行时事务别名。
+// 零值无效。副本可以保留并独立应用。
 type ChangeBatch struct {
 	header ChangeHeader
 	tx     *recordTransaction
@@ -33,7 +32,7 @@ type ChangeBatch struct {
 
 func (b ChangeBatch) Header() ChangeHeader { return b.header }
 
-// OperationCount excludes unchanged history and counts coalesced object keys.
+// OperationCount 排除未改变的历史，并统计合并后的对象键数量。
 func (b ChangeBatch) OperationCount() int {
 	if b.tx == nil {
 		return 0
@@ -48,12 +47,9 @@ func changeHeader(r RunRecord) ChangeHeader {
 		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
 }
 
-// ApplyTo checks all preconditions before changing record in place. The caller
-// owns record exclusively and must provide atomic persistence around this call.
-// No callback/user code executes during application. Returned data never aliases
-// the batch, so a backend may retain/mutate its record without touching Runtime.
-// This validates the trusted runtime's typed mutations, not graph/codec schemas;
-// full graph validation remains on Runtime load and existing checkpoint hooks.
+// ApplyTo 在原地修改 record 前检查所有前置条件。调用方独占 record，必须围绕此调用提供原子持久化。
+// 应用期间不会执行回调或用户代码。返回数据不会与批次共享别名，因此后端可以保留/修改自己的 record，而不影响 Runtime。
+// 这里校验受信运行时的类型化变更，而不是图/codec schema；完整图校验仍由 Runtime 加载和现有检查点钩子执行。
 func (b ChangeBatch) ApplyTo(record *RunRecord) (CommitAck, error) {
 	if record == nil || b.tx == nil || record.Revision == math.MaxUint64 || b.header != changeHeader(*record) || b.header.ExpectedRevision != b.tx.baseRevision {
 		return CommitAck{}, fmt.Errorf("%w: invalid delta header", ErrConflict)
@@ -66,7 +62,7 @@ func (b ChangeBatch) ApplyTo(record *RunRecord) (CommitAck, error) {
 	return CommitAck{Header: b.header}, nil
 }
 
-// copy isolates every mutable staged value, not the unchanged RunRecord history.
+// copy 隔离每个可变的暂存值，但不复制未改变的 RunRecord 历史。
 func (tx *recordTransaction) copy() *recordTransaction {
 	out := newRecordTransaction(tx.baseRevision)
 	out.err = tx.err
@@ -157,8 +153,8 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	if ack.Header != batch.header {
 		return s.stop(fmt.Errorf("%w: delta acknowledgement mismatch", ErrConflict))
 	}
-	// All Initialize and Load boundary values are isolated, and batch owns a separate
-	// transaction copy. Only the private record is mutated after confirmation.
+	// 所有 Initialize 和 Load 边界值都已隔离，批次拥有独立的事务副本。
+	// 确认后只修改私有 record。
 	tx.apply(&s.record)
 	s.record.Format, s.record.Revision = RecordFormat, batch.header.Revision
 	return nil

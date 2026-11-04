@@ -14,8 +14,8 @@ import (
 
 var _ durable.Maintenance = (*Store)(nil)
 
-// Maintenance deliberately uses the same exclusive advisory lock as business
-// sessions. It does not build concurrently with a live business session.
+// 维护有意使用与业务会话相同的独占咨询锁。
+// 不与活跃业务会话并发构建。
 func (s *Store) maintenanceSession(ctx context.Context, id string) (*session, error) {
 	a, err := s.Acquire(ctx, id)
 	if err != nil {
@@ -55,8 +55,8 @@ func readState(ctx context.Context, q txQuerier, id string) (durable.StorageStat
 	if len(bc) != 32 {
 		return state, errCorrupt
 	}
-	// No retention exists: exactly one immutable batch must remain per revision
-	// after revision 1. This also detects orphan rows beyond the committed head.
+	// 尚无保留回收机制：修订 1 之后，每个修订必须恰好保留一个不可变批次。
+	// 这也能检测已提交头之后的孤立行。
 	var batchCount uint64
 	if err = q.QueryRow(ctx, `SELECT count(*) FROM pulse_durable.batches WHERE run_id=$1`, id).Scan(&batchCount); err != nil {
 		return state, scrubPGError(err)
@@ -69,8 +69,8 @@ func readState(ctx context.Context, q txQuerier, id string) (durable.StorageStat
 	return state, nil
 }
 
-// committedAnchor authenticates an exact target independently of the selected
-// snapshot. A missing retained component is corruption, never expired history.
+// committedAnchor 独立于所选快照验证精确目标。
+// 缺少保留组件属于损坏，绝非历史过期。
 func committedAnchor(ctx context.Context, q txQuerier, id string, revision uint64) ([32]byte, error) {
 	var chain [32]byte
 	var raw []byte
@@ -150,8 +150,8 @@ func readImage(ctx context.Context, q txQuerier, state durable.StorageState, tar
 	if err != nil || !bytes.Equal(canonical, data) || r.RunID != state.RunID || r.Revision != base || r.Format != durable.RecordFormat {
 		return fail(errCorrupt)
 	}
-	// Validate immutable identity against the retained initial snapshot, even when
-	// starting at a synthesized revision.
+	// 即使从合成修订开始，也对照保留的初始快照验证
+	// 不可变身份。
 	var initialData []byte
 	if err = q.QueryRow(ctx, `SELECT record FROM pulse_durable.snapshots WHERE run_id=$1 AND revision='1'`, state.RunID).Scan(&initialData); err != nil {
 		return fail(errors.Join(errCorrupt, scrubPGError(err)))
@@ -321,7 +321,7 @@ func (s *Store) CompactStorage(ctx context.Context, request durable.CompactStora
 	if state.Generation == math.MaxUint64 {
 		return durable.StorageState{}, durable.ErrLimitExceeded
 	}
-	// Validate the suffix too; synthesis must not bless an inconsistent head.
+	// 同时验证后缀；合成不得为不一致的头背书。
 	if _, _, _, err = readImage(ctx, tx, state, state.HeadRevision, state.BaseRevision); err != nil {
 		return durable.StorageState{}, err
 	}
@@ -337,7 +337,7 @@ func (s *Store) CompactStorage(ctx context.Context, request durable.CompactStora
 		return durable.StorageState{}, durable.ErrLimitExceeded
 	}
 	sum := sha256.Sum256(data)
-	// Same-base synthesis must preserve, not replace, an existing immutable row.
+	// 同基线合成必须保留已有不可变行，而非替换。
 	if request.ThroughRevision != state.BaseRevision {
 		if _, err = tx.Exec(ctx, `INSERT INTO pulse_durable.snapshots(run_id,revision,record,digest,chain) VALUES($1,$2,$3,$4,$5)`, state.RunID, fmt.Sprint(request.ThroughRevision), data, sum[:], image.Chain[:]); err != nil {
 			return durable.StorageState{}, scrubPGError(err)

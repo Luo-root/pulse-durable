@@ -64,7 +64,7 @@ func recoverCase(ctx context.Context, c config, dir string) result {
 			return r
 		}
 	}
-	// Independently load the persistent record/history in the parent with no worker started.
+	// 在未启动工作进程的父进程中独立加载持久化记录与历史。
 	s, err := prepare(ctx, c, dir, nil, 0)
 	if err != nil {
 		fail(&r, err)

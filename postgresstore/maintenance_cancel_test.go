@@ -41,8 +41,8 @@ func TestPGMaintenanceCancelPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Hold the publication row while the compactor reads/builds. The cancelled
-	// UPDATE must roll back the newly inserted snapshot and release its run lock.
+	// 压缩器读取或构建时锁住发布行。取消的 UPDATE
+	// 必须回滚新插入快照，并释放其运行锁。
 	blocker, err := s.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

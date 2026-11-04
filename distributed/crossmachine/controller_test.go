@@ -40,7 +40,7 @@ func (p *fakeProcess) Send(cmd string) error {
 	switch cmd {
 	case "start":
 		n := 0
-		// Stable task order, matching a deterministic fake DB claim queue.
+		// 稳定的任务顺序，与确定性的模拟数据库领取队列匹配。
 		for i := 0; i < 100; i++ {
 			id := fmt.Sprintf("run-%04d", i)
 			s, ok := p.db.tasks[id]
@@ -140,7 +140,7 @@ func fakeController(db *fakeStore) Controller {
 				id = args[i+1]
 			}
 		}
-		// Equal PIDs across different hosts are legal. Boot identity remains unique.
+		// 不同主机的 PID 相同是合法的。启动标识仍须唯一。
 		pid := 100 + len(db.ps)%(len(db.ps)/2+1)
 		p := &fakeProcess{db: db, id: id, pid: pid, cap: 2}
 		p.emit("ready", "", 0)
@@ -164,7 +164,7 @@ func TestNormalMatrix(t *testing.T) {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			db := newFake()
 			ctl := fakeController(db)
-			// PID uniqueness is host scoped; deliberately use the same worker offset on each side.
+			// PID 只在主机内唯一；有意在两端使用相同的工作进程偏移。
 			base := ctl.Launch
 			ctl.Launch = func(ctx context.Context, c Command, args, env []string) (Process, error) {
 				p, e := base(ctx, c, args, env)
@@ -276,12 +276,12 @@ func TestEnvironmentAndReportRedaction(t *testing.T) {
 	}
 }
 
-// A real child process exercises stdin/stdout JSON pipes without SSH or DB.
+// 使用真实子进程测试标准输入输出 JSON 管道，不使用 SSH 或数据库。
 func TestFakeProcessEntry(t *testing.T) {
 	if os.Getenv("CM_FAKE_PROCESS") != "yes" {
 		return
 	}
-	defer os.Exit(0) // suppress the Go test runner's non-JSON PASS trailer
+	defer os.Exit(0) // 抑制 Go 测试运行器附加的非 JSON PASS 尾行
 	_ = json.NewEncoder(os.Stdout).Encode(systemtest.Event{Kind: "ready", PID: os.Getpid(), Worker: d.Worker{ID: "fake", BootID: "fake-boot"}})
 	dec := json.NewDecoder(os.Stdin)
 	for {

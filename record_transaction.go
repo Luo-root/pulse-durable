@@ -6,13 +6,13 @@ import (
 	"reflect"
 )
 
-// recordTransaction stages only the objects changed by its callers. Construction,
-// staging and commit require runState.mu; this is not a concurrent Store protocol.
-// Every ordinary checkpoint submits only these staged typed operations.
+// recordTransaction 仅暂存调用方修改的对象。构造、
+// 暂存和提交要求持有 runState.mu；这不是并发 Store 协议。
+// 每个普通检查点仅提交这些暂存的类型化操作。
 type recordTransaction struct {
 	baseRevision   uint64
 	attempts       map[string]putAttempt
-	scopes         map[string]ScopeRecord // creation only; Nodes are always empty
+	scopes         map[string]ScopeRecord // 仅用于创建；Nodes 始终为空
 	nodes          map[nodeRecordKey]putNode
 	streams        map[string]putStreamHeader
 	pending        map[pendingKey]pendingOperation
@@ -32,9 +32,9 @@ func newRecordTransaction(baseRevision uint64) *recordTransaction {
 	return &recordTransaction{baseRevision: baseRevision}
 }
 
-// putAttempt copies both values; nil expected means the key must be absent.
-// Repeated puts with the same precondition coalesce to the final value. A
-// conflicting precondition invalidates the whole transaction, even if ignored.
+// putAttempt 复制两个值；expected 为 nil 表示键必须不存在。
+// 相同前置条件的重复写入合并为最终值。
+// 冲突前置条件使整个事务无效，即使被忽略。
 func (tx *recordTransaction) putAttempt(id string, expected *AttemptRecord, value AttemptRecord) error {
 	if tx.err != nil {
 		return tx.err
@@ -62,9 +62,9 @@ type putNode struct {
 	value    NodeRecord
 }
 
-// createScope has an Absent precondition. It stages only a scope header, never
-// a caller's Nodes map. Even empty nil/non-nil maps are not retained. Nodes for
-// the new scope must be staged separately with putNode.
+// createScope 的前置条件为 Absent。它仅暂存作用域头，绝不
+// 暂存调用方的 Nodes 映射。即使空的 nil 或非 nil 映射也不保留。
+// 新作用域的节点必须通过 putNode 单独暂存。
 func (tx *recordTransaction) createScope(id string, value ScopeRecord) error {
 	if tx.err != nil {
 		return tx.err
@@ -85,9 +85,9 @@ func (tx *recordTransaction) createScope(id string, value ScopeRecord) error {
 	return nil
 }
 
-// copyTransactionNode preserves nil versus empty slices for exact old-value
-// preconditions. cloneValues intentionally normalizes empty slices on the
-// existing full-record Save path; that must not weaken transaction comparison.
+// copyTransactionNode 保留 nil 与空切片的区别，以满足精确旧值
+// 前置条件。cloneValues 在现有完整记录 Save 路径中有意归一化
+// 空切片；这不得削弱事务比较。
 func copyTransactionNode(node NodeRecord) NodeRecord {
 	if node.Outputs != nil {
 		outputs := make([]ValueRecord, len(node.Outputs))
@@ -107,9 +107,9 @@ func copyTransactionNode(node NodeRecord) NodeRecord {
 	return node
 }
 
-// putNode captures an exact old value, or Absent when expected is nil. Repeated
-// writes coalesce only when their original preconditions agree. Scope and node
-// form the key, so equal node IDs in different scopes remain independent.
+// putNode 捕获精确旧值，expected 为 nil 时则为 Absent。重复
+// 写入仅在原始前置条件一致时合并。作用域和节点共同
+// 构成键，因此不同作用域的相同节点 ID 保持独立。
 func (tx *recordTransaction) putNode(scope, id string, expected *NodeRecord, value NodeRecord) error {
 	if tx.err != nil {
 		return tx.err
@@ -130,15 +130,15 @@ func (tx *recordTransaction) putNode(scope, id string, expected *NodeRecord, val
 	return nil
 }
 
-// commitRecordTransaction shares save's confirmed-before-publish and failure
-// sealing semantics. Preconditions are checked before allocating the full legacy
-// proposal; no staged change can modify the live record on failure.
+// commitRecordTransaction 与 save 共享确认后发布及失败封闭
+// 语义。在分配完整旧版提案前检查前置条件；
+// 失败时任何暂存变更都不能修改活跃记录。
 func (s *runState) commitRecordTransaction(ctx context.Context, tx *recordTransaction) error {
 	return s.commitRecordTransactionPrepared(ctx, tx, nil)
 }
 
-// prepare retains commit's existing stream validation/finish rules on the
-// isolated legacy proposal. It runs only after every overlay precondition passes.
+// prepare 在隔离的旧版提案上保留 commit 现有的流验证及完成规则。
+// 仅在所有覆盖层前置条件通过后运行。
 func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *recordTransaction, prepare func(*RunRecord) error) error {
 	if s.stopped != nil {
 		return s.stopped
@@ -195,8 +195,8 @@ func (s *runState) commitCheckedTransaction(ctx context.Context, tx *recordTrans
 		return nil
 	}
 	if prepare != nil {
-		// Final node validation may materialize a read-only proposal. It is never
-		// submitted as a full checkpoint; ordinary hooks remain incremental.
+		// 最终节点验证可能物化只读提案。绝不将其作为
+		// 完整检查点提交；普通钩子保持增量。
 		proposal := cloneRecord(s.record)
 		tx.apply(&proposal)
 		if err := prepare(&proposal); err != nil {
@@ -206,8 +206,8 @@ func (s *runState) commitCheckedTransaction(ctx context.Context, tx *recordTrans
 	return s.applyDelta(ctx, tx)
 }
 
-// apply is shared by legacy materialization, confirmed runtime publication and
-// ChangeBatch.ApplyTo. The caller must have checked all preconditions first.
+// apply 由旧版物化、已确认运行时发布及 ChangeBatch.ApplyTo 共享。
+// 调用方必须预先检查所有前置条件。
 func (tx *recordTransaction) apply(proposed *RunRecord) {
 	if len(tx.scopes) > 0 && proposed.Scopes == nil {
 		proposed.Scopes = make(map[string]ScopeRecord)

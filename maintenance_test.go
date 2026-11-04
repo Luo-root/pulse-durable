@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// buildGateContext pauses the first replay cancellation check, after capture
-// released the store lock. It is test-only and uses the normal context contract.
+// buildGateContext 在捕获阶段释放存储锁后，暂停第一次重放取消检查。
+// 仅供测试使用，并遵守正常上下文契约。
 type buildGateContext struct {
 	context.Context
 	calls   atomic.Int32
@@ -76,7 +76,7 @@ func TestMemorySynthesisUnlockedBuild(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("build did not reach replay")
 			}
-			// The build is paused: a writer must still finish before it is released.
+			// 构建已暂停：写入方必须仍能在放行构建前完成。
 			appendAttempt(2)
 			if cancelBuild {
 				cancel()
@@ -158,7 +158,7 @@ func TestMemorySynthesisPreservesHistoryAndBusinessChain(t *testing.T) {
 			t.Fatalf("revision %d changed: %v", i+1, err)
 		}
 	}
-	// A session anchored before synthesis can append without reseeding its chain.
+	// 合成前建立锚点的会话无须重新播种链即可追加。
 	tx := newRecordTransaction(r.Revision)
 	old := r.Attempts["a"]
 	if err := tx.putAttempt("a", &old, AttemptRecord{Index: 4}); err != nil {
@@ -254,7 +254,7 @@ func TestMemoryHistoryCorruptionFailsClosed(t *testing.T) {
 			if _, err := store.LoadRevision(context.Background(), "bad", 1); !errors.Is(err, ErrInvalidRecord) || errors.Is(err, ErrHistoryExpired) {
 				t.Fatalf("corruption: %v", err)
 			}
-			// Head corruption must fail before any mutation of shared maps.
+			// 头损坏必须在修改任何共享映射前失败。
 			if damage == "missing-history" || damage == "head-anchor" {
 				tx := newRecordTransaction(r.Revision)
 				old := r.Attempts["a"]

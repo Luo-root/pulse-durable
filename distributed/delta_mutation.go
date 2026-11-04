@@ -8,9 +8,8 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// DeltaMutationDigest returns the digest used by worker ApplyOwned calls.
-// The JSON shape and field ordering intentionally match the historical worker
-// implementation; changing either would make retries incompatible.
+// DeltaMutationDigest 返回 worker ApplyOwned 调用使用的 digest。
+// JSON 结构和字段顺序刻意与历史 worker 实现保持一致；修改任一项都会使重试不兼容。
 func DeltaMutationDigest(token Token, batch durable.ChangeBatch) (string, error) {
 	wire, err := durable.MarshalChangeBatch(batch)
 	if err != nil {

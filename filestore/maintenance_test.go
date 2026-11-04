@@ -106,7 +106,7 @@ func TestMaintenanceExactHistoryAndAppend(t *testing.T) {
 	if _, err = st.CompactStorage(ctx, durable.CompactStorageRequest{RunID: "history", ThroughRevision: 6, ExpectedGeneration: 4}); !errors.Is(err, durable.ErrInvalidRecord) {
 		t.Fatal(err)
 	}
-	// Current Load need not replay archived history.
+	// 当前 Load 无须重放归档历史。
 	ss = acquireTestSession(t, st, "history")
 	if _, err = ss.Load(ctx); err != nil {
 		t.Fatal(err)
@@ -153,8 +153,8 @@ func TestMaintenanceCancellationOverflowAndLegacy(t *testing.T) {
 	}
 }
 
-// A real process exit at the publication boundary must leave either complete
-// generation, never a synthesized snapshot adopted from directory enumeration.
+// 在发布边界真实退出进程后，必须留下任一完整代际，
+// 绝不能通过枚举目录采纳合成快照。
 func TestMaintenanceProcessPublication(t *testing.T) {
 	if dir := os.Getenv("PULSE_MAINTENANCE_CHILD_DIR"); dir != "" {
 		st, err := New(dir)

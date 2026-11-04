@@ -9,10 +9,10 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// Assembly is local code, never serialized. Keys registers typed root input keys.
-// Factory must only assemble fresh graphs, codecs and keys, without I/O or business
-// side effects. It and codecs may run during validation, but no node or host
-// BeforeStart callback is invoked here. Functions/aspects are versioned by host.
+// Assembly 是本地代码，绝不序列化。Keys 注册带类型的根输入键。
+// Factory 必须只组装新的图、编解码器和键，不得执行 I/O 或产生业务副作用。
+// Factory 和编解码器可能在验证期间运行，但此处不会调用任何节点，
+// 也不会调用宿主的 BeforeStart 回调。函数和切面由宿主管理版本。
 type Assembly struct {
 	Graph  *pulse.Graph
 	Codecs *durable.Codecs
@@ -20,8 +20,8 @@ type Assembly struct {
 }
 type Factory func() (Assembly, error)
 
-// Registry is safe for concurrent registration and lookup. Entries are exact;
-// no latest-version fallback or automatic code loading is performed.
+// Registry 支持并发安全的注册和查找。条目必须精确匹配；
+// 不会回退到最新版本，也不会自动加载代码。
 type Registry struct {
 	mu      sync.RWMutex
 	entries map[Route]Factory
@@ -58,8 +58,8 @@ func routeFor(taskType, version string, a Assembly) (Route, error) {
 	return Route{taskType, version, i.Definition, hash(m), Protocol, durable.RecordFormat, PayloadFormat}, nil
 }
 
-// Register invokes a pure assembly once to derive its capability. Repeated exact
-// routes are errors (even the same Factory). Different explicit versions coexist.
+// Register 调用一次纯组装过程以推导其能力。完全相同的路由重复注册会报错
+// （即使使用同一个 Factory 也是如此）。不同的显式版本可以共存。
 func (r *Registry) Register(taskType, version string, f Factory) (Route, error) {
 	if r == nil {
 		return Route{}, ErrInvalid
@@ -96,11 +96,11 @@ func (r *Registry) Capabilities() []Route {
 	return out
 }
 
-// Resolve validates canonical bytes first, then exact route and freshly assembled
-// definition/manifest, then decodes and recomputes input fingerprints. It returns
-// only validated graph/inputs. The later Runtime claimed entry MUST still validate
-// all stored RunRecord references and formats and ownership must be re-confirmed
-// before execution. Resolve neither asserts a lease nor starts an execution.
+// Resolve 先验证规范字节，再验证精确路由以及新组装的定义和清单，
+// 然后解码并重新计算输入指纹。它只返回通过验证的图和输入。
+// 后续 Runtime 的已认领入口仍必须验证所有已存储的 RunRecord 引用及格式，
+// 并且必须在执行前重新确认所有权。
+// Resolve 既不确认租约有效，也不启动执行。
 func (r *Registry) Resolve(ctx context.Context, t Task) (Assembly, pulse.Inputs, error) {
 	var in pulse.Inputs
 	validated, err := ParseTask(t.Bytes())

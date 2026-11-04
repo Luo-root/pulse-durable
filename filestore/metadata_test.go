@@ -14,8 +14,8 @@ import (
 	"testing"
 )
 
-// The full arbitrary-record metadata matrix is a codec boundary test: importing
-// a completed record through Initialize is deliberately no longer permitted.
+// 完整任意记录元数据矩阵属于编解码器边界测试：有意不再允许
+// 通过 Initialize 导入已完成记录。
 func TestRecordMetadataEveryStringAndMapKey(t *testing.T) {
 	for _, mutation := range metadataMutations(reflect.ValueOf(incrementalMetadataRecord()), "") {
 		t.Run(mutation.name, func(t *testing.T) {

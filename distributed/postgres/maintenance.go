@@ -18,9 +18,9 @@ import (
 	"github.com/Luo-root/pulse-durable/recordio"
 )
 
-// StorageState is namespace-qualified physical state. Generations are not business
-// revisions. Identity is supplied by the enclosing request; states cannot be
-// transferred between identities. This API requires maintain, not worker ownership.
+// StorageState 是受命名空间限定的物理状态。代际不是业务
+// 修订号。身份由外层请求提供；状态不能在
+// 不同身份间转移。此 API 要求 maintain 权限，而非工作进程所有权。
 type StorageState struct {
 	Generation   string `json:"generation"`
 	BaseRevision string `json:"base_revision"`
@@ -29,9 +29,9 @@ type StorageState struct {
 	HeadChain    string `json:"head_chain"`
 }
 
-// CompactStorageRequest reserves Mutation permanently, even if the build fails.
-// Use FindMaintenance after an unknown result; absence never proves nonpublication.
-// No implicit retention, pin renewal, semantic compaction or replay is provided.
+// CompactStorageRequest 永久预留 Mutation，即使构建失败也不释放。
+// 结果未知时使用 FindMaintenance；不存在绝不能证明未发布。
+// 不隐式提供保留、固定点续期、语义压缩或重放。
 type CompactStorageRequest struct {
 	Identity           d.Identity
 	ExpectedGeneration uint64
@@ -48,13 +48,13 @@ type MaintenanceReceipt struct {
 }
 
 type MaintenanceResult struct {
-	// absent, building, closed, expired or published. Only published is a receipt.
+	// 可为 absent、building、closed、expired 或 published。只有 published 是回执。
 	Status string              `json:"status"`
 	Result *MaintenanceReceipt `json:"result"`
 }
 
 func strictMaintenanceJSON(b []byte, out any) error {
-	// Token walk rejects duplicate keys at every depth before struct decoding.
+	// 在解码结构体前，遍历 token 拒绝任意深度的重复键。
 	dec := json.NewDecoder(bytes.NewReader(b))
 	var walk func() error
 	walk = func() error {
@@ -165,8 +165,8 @@ func validStorageState(s StorageState) bool {
 	return ok && base <= head && fingerprint(s.BaseChain) && fingerprint(s.HeadChain)
 }
 
-// CompactStorageDigest binds the permanent mutation guard to the exact plan.
-// Decimal lengths avoid delimiter ambiguity without exposing token credentials.
+// CompactStorageDigest 将永久变更保护绑定到精确计划。
+// 十进制长度避免分隔符歧义，且不暴露令牌凭据。
 func CompactStorageDigest(q CompactStorageRequest) string {
 	return digest([]byte(fmt.Sprintf("pulse-durable/maintenance/compact/v1\x00%d:%s%d:%s:%d:%d", len(q.Identity.Namespace), q.Identity.Namespace, len(q.Identity.RunID), q.Identity.RunID, q.ExpectedGeneration, q.ThroughRevision)))
 }
@@ -244,9 +244,9 @@ func (c *Coordinator) FindMaintenance(ctx context.Context, i d.Identity, m d.Mut
 	return decodeMaintenanceResult(b, m)
 }
 
-// CompactStorage materializes only verified batches outside the database lock.
-// Like the existing worker path, validation trusts the authenticated Go service;
-// maintain credentials are not an untrusted snapshot-upload sandbox.
+// CompactStorage 在数据库锁外仅物化已验证批次。
+// 与现有工作进程路径一样，验证信任经过认证的 Go 服务；
+// maintain 凭据不是用于上传不可信快照的沙箱。
 func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageRequest) (MaintenanceResult, error) {
 	a, e := maintenanceArgs(q)
 	if e != nil {
@@ -256,8 +256,8 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	if e != nil {
 		return MaintenanceResult{}, e
 	}
-	// Every definite local failure closes the pin using a separately bounded context.
-	// Unknown publication is never followed by an abort or automatic retry.
+	// 每次明确的本地失败都使用单独限时的上下文关闭固定点。
+	// 发布结果未知时，绝不随后中止或自动重试。
 	published := false
 	defer func() {
 		if !published {
@@ -296,7 +296,7 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	a["record"] = wire
 	a["snapshot_digest"] = digest(wire)
 	a["chain"] = chain
-	published = true // from this point publication may have an unknown outcome
+	published = true // 从此处开始，发布结果可能未知
 	b, e = c.maintenanceCall(ctx, "publish", a, true)
 	if e != nil {
 		return MaintenanceResult{}, e
@@ -304,8 +304,8 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	return decodeMaintenanceResult(b, q.Mutation)
 }
 
-// Legacy format-2 omitempty encoding cannot represent every nil/empty state.
-// Reject lossy materialization rather than publishing a subtly different record.
+// 旧格式 2 的 omitempty 编码无法表示所有 nil 与空值状态。
+// 拒绝有损物化，而不是发布细微不同的记录。
 func encodeMaintenanceRecord(r durable.RunRecord) ([]byte, error) {
 	b, e := recordio.EncodeSnapshot(r)
 	if e != nil {

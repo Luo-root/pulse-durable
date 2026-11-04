@@ -1,6 +1,6 @@
-// Package recordio encodes Durable records as JSON with lossless UTF-8 metadata
-// checks. Business Data remains opaque bytes. It does not validate runtime schemas,
-// run identity or revision transitions, which remain the caller's responsibility.
+// recordio 包将 Durable 记录编码为 JSON，并对 UTF-8 元数据进行无损检查。
+// 业务 Data 保持为不透明字节。它不验证运行时模式、
+// 运行身份或修订转换；这些仍由调用方负责。
 package recordio
 
 import (
@@ -12,7 +12,7 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// Encode validates metadata and preserves opaque Data bytes while encoding a record.
+// Encode 在编码记录时验证元数据，并保留不透明 Data 字节。
 func Encode(record durable.RunRecord) ([]byte, error) {
 	if !validMetadata(record) {
 		return nil, errors.New("recordio: record metadata is not UTF-8")
@@ -24,8 +24,8 @@ func Encode(record durable.RunRecord) ([]byte, error) {
 	return data, nil
 }
 
-// Decode checks JSON syntax and Unicode without exposing record contents in errors.
-// Store implementations remain responsible for run identity, revision and CAS checks.
+// Decode 检查 JSON 语法及 Unicode，不在错误中暴露记录内容。
+// Store 实现仍负责运行身份、修订号及 CAS 检查。
 func Decode(data []byte) (durable.RunRecord, error) {
 	if !json.Valid(data) {
 		return durable.RunRecord{}, errors.New("recordio: invalid record JSON")
@@ -40,7 +40,7 @@ func Decode(data []byte) (durable.RunRecord, error) {
 	return record, nil
 }
 
-// validMetadata checks metadata strings and map keys, not opaque business Data.
+// validMetadata 检查元数据字符串及映射键，不检查不透明业务 Data。
 func validMetadata(record durable.RunRecord) bool {
 	if !validStrings(record.RunID, record.Version, record.Definition, record.Inputs, record.RootScope) {
 		return false
@@ -122,7 +122,7 @@ func validStrings(values ...string) bool {
 	return true
 }
 
-// validJSONText requires syntactically valid JSON and rejects lossy Unicode repair.
+// validJSONText 要求 JSON 语法有效，并拒绝有损 Unicode 修复。
 func validJSONText(data []byte) bool {
 	if !utf8.Valid(data) {
 		return false

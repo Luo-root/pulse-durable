@@ -11,7 +11,7 @@ var counterProc = syscall.NewLazyDLL("kernel32.dll").NewProc("QueryPerformanceCo
 var frequencyProc = syscall.NewLazyDLL("kernel32.dll").NewProc("QueryPerformanceFrequency")
 var clockFrequency int64
 
-// These APIs always succeed on Windows XP and later.
+// 这些 API 在 Windows XP 及更高版本上始终成功。
 func init() { frequencyProc.Call(uintptr(unsafe.Pointer(&clockFrequency))) }
 func clockNS() int64 {
 	var counter int64

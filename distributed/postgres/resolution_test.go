@@ -43,9 +43,9 @@ func txCall(t *testing.T, tx pgx.Tx, op string, a map[string]any) []byte {
 	return out
 }
 
-// A prior receipt read is a durable lower bound for all later lease observations.
-// An administrator fixture simulates a future authoritative observation without
-// changing the host or database clock; ResolveClaim must fail before claim/closure.
+// 先前读取的回执是后续所有租约观测的持久下界。
+// 管理员夹具模拟未来的权威观测，不改变
+// 主机或数据库时钟；ResolveClaim 必须在领取或关闭前失败。
 func TestResolveClaimReceiptClockRegression(t *testing.T) {
 	c, admin, ns := integration(t)
 	ctx := context.Background()
@@ -82,7 +82,7 @@ func TestResolveClaimReceiptClockRegression(t *testing.T) {
 	if afterClosed != closed || afterEvents != events {
 		t.Fatal("regressed resolve published closure/event")
 	}
-	// The same regression must not publish a permanent closure either.
+	// 同样的时钟回退也不得发布永久关闭记录。
 	if _, err := admin.Exec(ctx, `UPDATE pulse_durable_distributed.runs SET lease_until=clock_timestamp()-interval '1 second' WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,8 @@ func TestResolveClaimBarriers(t *testing.T) {
 			}
 			defer tx.Rollback(ctx)
 			if claimFirst {
-				// Execute the actual API, hold its transaction before commit and
-				// deliberately discard its returned claim (lost-response simulation).
+				// 执行真实 API，在提交前暂停其事务，
+				// 并有意丢弃返回的领取结果（模拟响应丢失）。
 				txCall(t, tx, "claim", a)
 				type result struct {
 					r d.ClaimResolution

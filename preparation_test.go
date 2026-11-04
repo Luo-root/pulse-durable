@@ -123,7 +123,7 @@ func TestPreparationManagedStreamAndDirectStreamRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in pulse.Inputs
-	// Even a skipped stream declaration is not a portable finite value.
+	// 即使流声明被跳过，也不是可移植的有限值。
 	if err = pulse.SkipSeed(&in, k); err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,6 @@
-// Controller reads a credential-free config. External kill mode emits a JSON
-// request to stdout and accepts a matching confirmation on stdin; the parent is
-// responsible for PID/boot-checked remote death before confirming.
+// Controller 读取不含凭据的配置。外部终止模式向标准输出发送 JSON
+// 请求，并从标准输入接收匹配的确认；父进程负责在确认前，
+// 通过 PID 和启动标识核验远端进程确已终止。
 package main
 
 import (

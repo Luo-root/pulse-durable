@@ -1,6 +1,6 @@
-// Package worker runs experimental capacity-bounded distributed Durable workers.
-// The coordinator must enforce fencing in every owned operation. Unit tests of
-// this package are not evidence of database atomicity or cross-process safety.
+// worker 包运行实验性的、有容量上限的分布式 Durable 工作进程。
+// 协调器必须对每个所有者操作实施栅栏保护。本包单元测试
+// 不能证明数据库原子性或跨进程安全。
 package worker
 
 import (
@@ -15,15 +15,15 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// Renewer should use a dedicated backend pool/connection budget, independent of
-// Claim and checkpoint traffic. A goroutine alone cannot reserve database capacity.
+// Renewer 应使用独立于 Claim 和检查点流量的专用后端连接池或
+// 连接预算。仅靠 goroutine 无法预留数据库容量。
 type Renewer interface {
 	Renew(context.Context, d.Token, time.Duration) (time.Time, error)
 }
 
-// Event contains identities and fixed reason codes, never payloads or raw errors.
-// Observe is synchronous, must be fast and concurrency-safe, and must not call
-// Drain synchronously. No metrics or high-cardinality metric labels are installed.
+// Event 包含身份及固定原因码，绝不包含载荷或原始错误。
+// Observe 同步执行，必须快速且并发安全，不得同步调用
+// Drain。不安装指标或高基数指标标签。
 type Event struct {
 	Kind, Reason string
 	Worker       d.Worker
@@ -43,8 +43,8 @@ type Config struct {
 	Observe                                            func(Event)
 }
 
-// Worker is single-use. New creates an independent random 128-bit boot identity.
-// Pause/Resume affect admission only. Drain never issues business Cancel.
+// Worker 只能使用一次。New 创建独立随机的 128 位启动标识。
+// Pause/Resume 仅影响准入。Drain 绝不发出业务 Cancel。
 type Worker struct {
 	cfg                       Config
 	identity                  d.Worker
@@ -52,7 +52,7 @@ type Worker struct {
 	started, paused, draining bool
 	active                    int
 	changed                   chan struct{}
-	// pollTimer is an internal deterministic test seam; nil uses a real timer.
+	// pollTimer 是内部确定性测试接口；nil 使用真实定时器。
 	pollTimer func(time.Duration) (<-chan time.Time, func())
 }
 
@@ -98,7 +98,7 @@ func (w *Worker) signal() {
 }
 func (w *Worker) Pause() { w.mu.Lock(); w.paused = true; w.mu.Unlock(); w.signal() }
 
-// Resume cannot undo Drain or make a Worker reusable after Run returns.
+// Resume 不能撤销 Drain，也不能在 Run 返回后让 Worker 复用。
 func (w *Worker) Resume() {
 	w.mu.Lock()
 	if !w.draining {
@@ -109,15 +109,15 @@ func (w *Worker) Resume() {
 }
 func (w *Worker) Active() int { w.mu.Lock(); defer w.mu.Unlock(); return w.active }
 
-// Drain stops admission, retains renewal, and waits for every local reservation.
-// A deadline returns its error without canceling work. Unresolved claims and
-// non-cooperative code can keep reservations indefinitely; they are never reused.
+// Drain 停止准入、保持续租，并等待所有本地预留结束。
+// 截止时间到期返回错误但不取消任务。未解决的领取及
+// 不配合取消的代码可无限期占用预留容量；绝不复用它们。
 func (w *Worker) Drain(ctx context.Context) error {
 	w.mu.Lock()
 	w.draining = true
 	w.mu.Unlock()
 	w.signal()
-	// Do not consume Run's notification: separate bounded checks avoid lost wakeups.
+	// 不消耗 Run 的通知：独立的有界检查避免丢失唤醒。
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -158,10 +158,10 @@ func reason(err error) string {
 	}
 }
 
-// adjustSlots is synchronous admission bookkeeping, not a wakeup event.
+// adjustSlots 是同步的准入记账操作，不是唤醒事件。
 func (w *Worker) adjustSlots(n int) { w.mu.Lock(); w.active -= n; w.mu.Unlock() }
 
-// Asynchronous completions wake the poller only when capacity actually changes.
+// 只有容量实际变化时，异步完成才唤醒轮询器。
 func (w *Worker) releaseSlots(n int) {
 	if n == 0 {
 		return
@@ -177,7 +177,7 @@ func (w *Worker) reserve() (int, bool) {
 	return n, w.draining && w.active == 0
 }
 func (w *Worker) delay() time.Duration {
-	// Cryptographic bytes avoid shared PRNG state and correlated process polling.
+	// 加密随机字节避免共享伪随机数生成器状态及进程间相关轮询。
 	id, err := randomID()
 	if err != nil {
 		return w.cfg.PollMax
@@ -209,10 +209,10 @@ func (w *Worker) wait(ctx context.Context) bool {
 	}
 }
 
-// Run blocks until drained or canceled, and may be called only once. Cancellation
-// seals sessions through local contexts, not Coordinator.Cancel. Run can return
-// before non-cooperative business code exits; Active retains those reservations
-// and cleanup releases only after execution and all saves have actually returned.
+// Run 阻塞直至排空或取消，且只能调用一次。取消
+// 通过本地上下文封闭会话，而非 Coordinator.Cancel。Run 可在
+// 不配合取消的业务代码退出前返回；Active 保留这些预留容量，
+// 清理仅在执行和所有保存确实返回后释放它们。
 func (w *Worker) Run(ctx context.Context) error {
 	if ctx == nil {
 		return d.ErrInvalid
@@ -259,7 +259,7 @@ func (w *Worker) claim(ctx context.Context, n int) {
 	cancel()
 	w.emit(Event{Kind: "claim", Reason: reason(err), Duration: time.Since(start)})
 	if err != nil {
-		// Any transport failure may hide a commit, not only an explicit ErrUnknown.
+		// 任何传输失败都可能掩盖提交，并非只有显式 ErrUnknown 如此。
 		for _, id := range ids {
 			go w.resolve(ctx, id)
 		}
@@ -310,8 +310,8 @@ func (w *Worker) resolve(ctx context.Context, id string) {
 			}
 		}
 		w.emit(Event{Kind: "resolve_claim", Reason: "unresolved"})
-		// Unknown or malformed responses do not prove durable closure. Keep the
-		// reservation and resolve only this original ID; never replay Claim.
+		// 未知或畸形响应不能证明已持久关闭。保留
+		// 预留容量，仅解析此原始 ID；绝不重放 Claim。
 		t := time.NewTimer(w.delay())
 		select {
 		case <-ctx.Done():
@@ -320,7 +320,7 @@ func (w *Worker) resolve(ctx context.Context, id string) {
 		case <-t.C:
 		}
 	}
-	// No token known: neither Release nor freeing this reservation is safe.
+	// 未知令牌：无论 Release 还是释放此预留容量都不安全。
 }
 func (w *Worker) renew(ctx context.Context, token d.Token) error {
 	op, cancel := context.WithTimeout(ctx, w.cfg.RenewTimeout)
@@ -337,7 +337,7 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 	defer cancel()
 	s := &session{c: w.cfg.Coordinator, token: c.Token, timeout: w.cfg.OperationTimeout, ctx: ctx, cancel: cancel, observe: w.emit}
 	var claimed durable.ClaimedSession = s
-	// Authoritative renewal is required even after a successful Claim/ResolveClaim.
+	// 即使 Claim/ResolveClaim 成功，也要求权威续租。
 	renewSession := func() bool {
 		start := time.Now()
 		if w.renew(ctx, c.Token) != nil || !s.confirmed(start, w.cfg.TTL, w.cfg.RenewTimeout) {
@@ -374,8 +374,8 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 	defer func() { stopRenew(); _ = s.Close() }()
 	a, in, err := w.cfg.Registry.Resolve(ctx, c.Snapshot.Task)
 	outcome := durable.OutcomeRejected
-	// Registry exposes ErrInvalid for payload decoding and assembly validation,
-	// and ErrMismatch for exact route/definition/input incompatibility.
+	// Registry 对载荷解码及组装验证暴露 ErrInvalid，
+	// 对精确路由、定义或输入不兼容暴露 ErrMismatch。
 	blockReason := "incompatible"
 	if errors.Is(err, d.ErrInvalid) {
 		blockReason = "invalid_payload"
@@ -405,19 +405,19 @@ func (w *Worker) execute(parent context.Context, c d.Claim) {
 			}
 		}
 	}
-	// Join any renewal already in flight before deciding a terminal verdict. A
-	// late unknown renewal must not race the local uncertainty check below.
+	// 在判定终态前，等待所有已进行中的续租。迟来的
+	// 未知续租不得与下方本地不确定性检查竞争。
 	stopRenew()
-	// Runtime Wait has joined business/checkpoint work. Seal new local operations
-	// and explicitly join in-flight calls before any coordinated terminal/release.
+	// Runtime Wait 已等待业务和检查点工作结束。封闭新的本地操作，
+	// 并在任何协调终态或释放前显式等待进行中的调用。
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
 	s.inflight.Wait()
 	w.emit(Event{Kind: "execution", Token: c.Token, Reason: string(outcome)})
 	if s.uncertain() || ctx.Err() != nil {
-		// Shutdown interruption can Release once quiescent, but uncertain ownership
-		// or any failed Save must expire instead. Never manufacture terminal status.
+		// 停机中断可在静止后 Release，但所有权不确定
+		// 或任意 Save 失败时必须等待过期。绝不凭空生成终态。
 		if !s.uncertain() {
 			w.release(c.Token)
 		}

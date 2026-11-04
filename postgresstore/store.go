@@ -1,4 +1,4 @@
-// Package postgresstore implements a PostgreSQL-backed durable Store.
+// postgresstore 包实现基于 PostgreSQL 的持久化 Store。
 package postgresstore
 
 import (
@@ -23,7 +23,7 @@ const schemaVersion = 3
 const schemaName = "pulse_durable"
 const tableName = "runs"
 
-// Reserved only for serializing schema initialization across Store instances.
+// 仅预留用于串行化不同 Store 实例的模式初始化。
 const initAdvisoryKey int64 = 0x50554c5345445552
 
 var _ durable.Store = (*Store)(nil)
@@ -39,8 +39,8 @@ type Store struct {
 	closeDone chan struct{}
 }
 
-// New creates or validates the durable schema using dsn. Passwords are never
-// included in returned errors. Pool sizing follows pgxpool defaults.
+// New 使用 dsn 创建或验证持久化模式。返回错误绝不
+// 包含密码。连接池大小遵循 pgxpool 默认值。
 func New(ctx context.Context, dsn string) (*Store, error) {
 	if ctx == nil {
 		return nil, errors.New("postgresstore: nil context")
@@ -169,9 +169,9 @@ func validateSchema(ctx context.Context, q txQuerier) error {
 	if n != 1 {
 		return errors.New("postgresstore: incompatible schema indexes")
 	}
-	// The INSERT ... ON CONFLICT (run_id) contract requires an actual
-	// single-column primary key on runs.run_id, not merely some constraint
-	// and index with the expected counts.
+	// INSERT ... ON CONFLICT (run_id) 契约要求 runs.run_id 上存在真实的
+	// 单列主键，而非仅存在数量符合预期的某些约束
+	// 和索引。
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM pg_constraint con
 		JOIN pg_class c ON c.oid=con.conrelid
 		JOIN pg_namespace ns ON ns.oid=c.relnamespace
@@ -198,14 +198,14 @@ func scrubPGError(err error) error {
 	return err
 }
 
-// acquisitionTimeout bounds pool and network waits even with a background
-// context. A saturated local pool cannot determine whether another Store holds
-// the run lock: expiration returns context.DeadlineExceeded, not ErrBusy.
+// acquisitionTimeout 限制连接池及网络等待，即使使用后台
+// 上下文也如此。本地连接池饱和无法判定另一个 Store 是否持有
+// 运行锁：超时返回 context.DeadlineExceeded，而非 ErrBusy。
 const acquisitionTimeout = 30 * time.Second
 const cleanupTimeout = 5 * time.Second
 
-// Acquire rejects locally reserved/held run IDs immediately with ErrBusy.
-// Other acquisitions wait at most 30 seconds (or the caller's shorter deadline).
+// Acquire 对本地已预留或持有的运行 ID 立即返回 ErrBusy。
+// 其他获取最多等待 30 秒（或调用方更短的截止时间）。
 func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, error) {
 	if ctx == nil {
 		return nil, errors.New("postgresstore: nil context")
@@ -252,7 +252,7 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	key := advisoryKey(runID)
 	var locked bool
 	if err = conn.QueryRow(acquireCtx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
-		// The server may have acquired the lock before the response was lost.
+		// 响应丢失前，服务器可能已获取锁。
 		return nil, errors.Join(s.acquireError(err), discardConn(conn))
 	}
 	if !locked {
@@ -305,8 +305,8 @@ func (s *Store) Close() error {
 	for _, x := range sessions {
 		closeErr = errors.Join(closeErr, x.Close())
 	}
-	// No Add can occur after closed was set under mu. Acquirers clean up any
-	// connections/locks obtained concurrently before announcing completion.
+	// 在 mu 下设置 closed 后不再可能 Add。获取方先清理任何
+	// 并发获得的连接或锁，再通知完成。
 	s.inflight.Wait()
 	s.pool.Close()
 	s.mu.Lock()
@@ -379,9 +379,9 @@ func discardConn(c *pgxpool.Conn) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	err := conn.Close(ctx)
-	// Cancellation can mark pgx closed before its asynchronous cancel/Terminate
-	// finishes. Close is then a no-op; wait for cleanup before releasing the
-	// local run reservation so a new session cannot race the old backend lock.
+	// 取消可能在异步 cancel/Terminate 完成前将 pgx 标记为关闭。
+	// 此时 Close 无操作；释放本地运行预留前等待清理，
+	// 避免新会话与旧后端锁竞争。
 	return errors.Join(scrubPGError(err), waitConnCleanup(ctx, conn.PgConn().CleanupDone()))
 }
 

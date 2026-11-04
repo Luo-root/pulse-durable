@@ -39,7 +39,7 @@ func (s *runState) openMessage(ctx context.Context, req pulse.CheckpointMessageA
 	if req.Limit < 1 {
 		return pulse.CheckpointMessageAttempt{}, fmt.Errorf("durable: message retry limit must be positive")
 	}
-	// Validate through the shared staging rules; Open does not commit the ACK.
+	// 通过共享暂存规则验证；Open 不提交 ACK。
 	probe := newRecordTransaction(s.record.Revision)
 	if err := s.stageAcknowledgement(probe, s.record, req.Input); err != nil {
 		return pulse.CheckpointMessageAttempt{}, err

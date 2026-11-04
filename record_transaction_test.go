@@ -72,8 +72,8 @@ func TestRecordTransactionStagesValuesAndCoalesces(t *testing.T) {
 	if err := tx.putAttempt("old", &old, value); err != nil {
 		t.Fatal(err)
 	}
-	// Both caller-owned arguments may change after staging. Neither the base
-	// nor the captured precondition/final value may change with them.
+	// 调用方拥有的两个参数均可在暂存后改变。基线以及
+	// 捕获的前置条件和最终值都不得随之改变。
 	old.NodeID, value.NodeID = "caller mutation", "caller mutation"
 	if !reflect.DeepEqual(s.record, before) || session.calls != 0 {
 		t.Fatal("staging changed the live record or invoked Save")
@@ -190,8 +190,8 @@ func TestRecordTransactionSaveFailureDoesNotPublish(t *testing.T) {
 			before := cloneRecord(s.record)
 			tx := stageTransactionFailure(t, s)
 			session.after = func(r RunRecord) error {
-				// A hostile Store may retain/mutate its argument or commit before
-				// returning failure. It must not publish into runtime memory.
+				// 恶意 Store 可能保留或修改参数，或在返回失败前
+				// 完成提交。它不得将内容发布到运行时内存。
 				r.Scopes["root"].Nodes["result"].Outputs[0].Data[0] = 'X'
 				delete(r.Attempts, "old")
 				switch mode {
@@ -218,8 +218,8 @@ func TestRecordTransactionSaveFailureDoesNotPublish(t *testing.T) {
 
 func TestRecordTransactionConfirmedCopiesAreIsolated(t *testing.T) {
 	s, session := transactionState()
-	// Only externally published snapshots are isolation boundaries; the private
-	// runtime projection now updates in place after the exact acknowledgement.
+	// 只有对外发布的快照才是隔离边界；私有运行时投影
+	// 现在在收到精确确认后原地更新。
 	oldRecord := cloneRecord(s.record)
 	before := cloneRecord(oldRecord)
 	tx := stageTransactionFailure(t, s)
@@ -235,8 +235,8 @@ func TestRecordTransactionConfirmedCopiesAreIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmed := cloneRecord(s.record)
-	// The pre-transaction base, retained Save argument and transaction are all
-	// independently mutable after acknowledgement.
+	// 事务前基线、保留的 Save 参数及事务均可在
+	// 确认后独立修改。
 	oldRecord.Scopes["root"].Nodes["result"].Outputs[0].Data[0] = 'B'
 	session.saved.Scopes["root"].Nodes["result"].Outputs[0].Data[0] = 'S'
 	delete(session.saved.Attempts, "old")

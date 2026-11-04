@@ -1,6 +1,6 @@
-// Package runlock provides nonblocking, process-scoped local file locks.
-// It neither owns records nor cleans up temporary files. Callers must retain lock
-// files: removing a lock file can create two independent exclusive lock domains.
+// runlock 包提供非阻塞、进程范围的本地文件锁。
+// 它不拥有记录，也不清理临时文件。调用方必须保留锁
+// 文件：删除锁文件可能创建两个独立的独占锁域。
 package runlock
 
 import (
@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// Lock holds an OS lock until Close or process exit. It must not be copied.
+// Lock 持有操作系统锁，直到 Close 或进程退出。不得复制。
 type Lock struct {
 	mu     sync.Mutex
 	file   *os.File
@@ -19,9 +19,9 @@ type Lock struct {
 	err    error
 }
 
-// Acquire opens path with mode 0600 and nonblockingly locks its first byte on
-// Windows, or the file on Unix. Contention returns durable.ErrBusy. The parent
-// directory must exist. This is not a distributed lease or a fencing mechanism.
+// Acquire 以 0600 模式打开 path，并非阻塞地锁定 Windows 上的首字节，
+// 或 Unix 上的整个文件。竞争时返回 durable.ErrBusy。父
+// 目录必须存在。这不是分布式租约或栅栏机制。
 func Acquire(ctx context.Context, path string) (*Lock, error) {
 	if ctx == nil {
 		return nil, errors.New("runlock: context is nil")
@@ -43,7 +43,7 @@ func Acquire(ctx context.Context, path string) (*Lock, error) {
 	return lock, nil
 }
 
-// Close is concurrency-safe and idempotent, including its returned error.
+// Close 并发安全且幂等，包括其返回错误。
 func (l *Lock) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

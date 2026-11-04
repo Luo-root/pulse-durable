@@ -1,5 +1,5 @@
-// Package networktest exercises Issue #98 against a dedicated real PostgreSQL
-// instance. No mock SQL server, payload logging, schema drops or existing grants.
+// networktest 包使用专用真实 PostgreSQL 实例验证 Issue #98。
+// 不使用模拟 SQL 服务、不记录载荷、不删除模式或修改已有授权。
 package networktest
 
 import (
@@ -25,8 +25,8 @@ import (
 
 const allowEnv = "PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE"
 
-// The allowlist is deliberately not configurable: never point these tests at an
-// ordinary development database. The caller provisions the disposable Docker DB.
+// 允许列表有意不支持配置：绝不能将这些测试指向普通
+// 开发数据库。调用方负责创建一次性的 Docker 数据库。
 func allowed(host string, port uint16, user, database string) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback() && port == 55432 && user == "durable_test" && database == "durable_dist_security_20261025"
@@ -99,12 +99,12 @@ func setup(t *testing.T) *fixture {
 	}
 	id := opaqueID(t)
 	role, ns := "pulse_net_"+id, "network-"+id
-	// Identifiers and passwords below are generated hex, never supplied SQL.
+	// 下方标识符和密码均为生成的十六进制值，不接受外部 SQL。
 	password := opaqueID(t)
 	if _, err = admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD '"+password+"'"); err != nil {
 		t.Fatal("isolated worker role creation failed")
 	}
-	// Retain isolated namespace/role as evidence, never touch existing grants.
+	// 保留隔离的命名空间和角色作为证据，绝不触及已有授权。
 	if err = postgres.Migrate(ctx, dsn, postgres.Grant{Role: role, Namespace: ns, Permissions: []string{"query", "submit", "worker"}}); err != nil {
 		t.Fatalf("schema verification/grant failed: %v", err)
 	}
@@ -120,8 +120,8 @@ func setup(t *testing.T) *fixture {
 		q.Set("connect_timeout", "2")
 		q.Set("pool_max_conns", "1")
 		q.Set("pool_min_conns", "0")
-		// Warm List below prepares the shared api(text,jsonb) statement before
-		// fault injection. Simple protocol encodes []byte as bytea, not JSON.
+		// 下方预热 List 在故障注入前准备共享的 api(text,jsonb) 语句。
+		// 简单协议将 []byte 编码为 bytea，而非 JSON。
 		q.Set("default_query_exec_mode", "cache_statement")
 		u.RawQuery = q.Encode()
 		return u.String()
@@ -137,7 +137,7 @@ func setup(t *testing.T) *fixture {
 	}
 	t.Cleanup(remote.Close)
 	f := &fixture{ctx: ctx, admin: admin, direct: direct, remote: remote, proxy: p, ns: ns}
-	// New pings/checks the schema. List also warms the exact worker API connection.
+	// New 探活并检查模式。List 同时预热实际的工作进程 API 连接。
 	if _, err = remote.List(ctx, d.ListRequest{Namespace: ns, Limit: 1}); err != nil {
 		t.Fatalf("worker connection warmup failed: %v", err)
 	}
@@ -183,8 +183,8 @@ func mutation(t *testing.T) d.Mutation {
 	return d.Mutation{ID: id, Digest: hex.EncodeToString(h[:])}
 }
 
-// await polls authoritative state with an independent admin connection. Ticks
-// only pace queries: neither elapsed sleep nor proxy bytes prove a DB commit.
+// await 通过独立管理员连接轮询权威状态。定时信号
+// 仅控制查询频率：等待时长和代理字节数均不能证明数据库已提交。
 func (f *fixture) await(t *testing.T, task d.Task, predicate string, args ...any) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(f.ctx, 3*time.Second)
@@ -301,8 +301,8 @@ func TestSaveLostResponse(t *testing.T) {
 	}
 }
 
-// Coordinator-level transport and fencing checks complement the live Worker
-// lifecycle and recovery test in worker_test.go.
+// 协调器层的传输与栅栏检查补充 worker_test.go 中的真实 Worker
+// 生命周期与恢复测试。
 func TestRenewFaultFencesOldOwner(t *testing.T) {
 	for _, mode := range []string{"cut", "blackhole"} {
 		t.Run(mode, func(t *testing.T) {
@@ -322,7 +322,7 @@ func TestRenewFaultFencesOldOwner(t *testing.T) {
 			if !errors.Is(err, d.ErrUnknown) {
 				t.Fatalf("renew transport failure must be uncertain: %v", err)
 			}
-			// Expiration is sampled by PostgreSQL, not by the client clock.
+			// 过期时间由 PostgreSQL 采样，而非客户端时钟。
 			f.await(t, task, "status='running' AND lease_until<=clock_timestamp() AND epoch=1")
 			if _, err = f.proxy.Blackhole(faultproxy.ClientToServer, false); err != nil {
 				t.Fatal(err)
@@ -362,7 +362,7 @@ func TestDelayedDatabaseCalls(t *testing.T) {
 			if elapsed < delay || elapsed > 4*time.Second {
 				t.Fatal("delayed call outside bounded timing envelope")
 			}
-			// A stricter deadline must terminate a real database call, not hang.
+			// 更严格的截止时间必须终止真实数据库调用，不得挂起。
 			ctx, cancel = context.WithTimeout(f.ctx, delay/4)
 			start = time.Now()
 			_, err = f.remote.Get(ctx, task.Identity())

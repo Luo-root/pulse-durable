@@ -1,6 +1,6 @@
-// Package systemtest provides an opt-in process harness for #6, #88 and #90.
-// It is test infrastructure, not a production worker launcher. It never migrates
-// or grants database permissions; provisioning belongs to the test coordinator.
+// systemtest 包为 #6、#88 和 #90 提供显式启用的进程测试框架。
+// 它是测试基础设施，不是生产工作进程启动器。绝不迁移数据库
+// 或授予权限；环境准备由测试协调器负责。
 package systemtest
 
 import (
@@ -21,9 +21,9 @@ import (
 	"github.com/Luo-root/pulse-durable/distributed/worker"
 )
 
-// Config contains no credentials. DSN is supplied separately through environment.
-// Separate hosts may use the CLI with the same namespace and version, each with
-// a unique ID. Duration is a hard ceiling, not evidence of a soak run.
+// Config 不含凭据。DSN 通过环境单独提供。
+// 不同主机可用 CLI 指定相同命名空间和版本，但各自使用
+// 唯一 ID。Duration 是硬上限，不是耐久负载运行的证据。
 type Config struct {
 	Namespace  string        `json:"namespace"`
 	ID         string        `json:"worker_id"`
@@ -31,7 +31,7 @@ type Config struct {
 	Capacity   int           `json:"capacity"`
 	Duration   time.Duration `json:"duration"`
 	HoldFinish bool          `json:"hold_finish"`
-	// Timing values are nanoseconds in JSON; zero selects the local-test default.
+	// JSON 中的时间值单位为纳秒；零值选择本地测试默认值。
 	TTL              time.Duration `json:"ttl,omitempty"`
 	RenewInterval    time.Duration `json:"renew_interval,omitempty"`
 	RenewTimeout     time.Duration `json:"renew_timeout,omitempty"`
@@ -40,8 +40,8 @@ type Config struct {
 	PollMax          time.Duration `json:"poll_max,omitempty"`
 }
 
-// workerConfig only defaults omitted timings; negative values and invalid
-// combinations are preserved so worker.New rejects them rather than masking them.
+// workerConfig 仅为省略的时间值设置默认值；保留负数及非法
+// 组合，让 worker.New 拒绝它们，而不是将其掩盖。
 func (c Config) workerConfig(backend d.Coordinator, renew worker.Renewer, reg *d.Registry, observe func(worker.Event)) worker.Config {
 	value := func(v, fallback time.Duration) time.Duration {
 		if v == 0 {
@@ -56,8 +56,8 @@ func (c Config) workerConfig(backend d.Coordinator, renew worker.Renewer, reg *d
 		PollMin: value(c.PollMin, 20*time.Millisecond), PollMax: value(c.PollMax, 50*time.Millisecond), Observe: observe}
 }
 
-// Event is an allowlisted JSON-line result. Raw backend errors/payloads/DSNs are
-// intentionally omitted. Business counts describe attempts, not exactly-once I/O.
+// Event 是允许列表内的 JSON 行结果。有意省略原始后端错误、载荷及 DSN。
+// 业务计数描述尝试次数，不代表恰好一次的 I/O。
 type Event struct {
 	Kind   string   `json:"kind"`
 	PID    int      `json:"pid"`
@@ -82,8 +82,8 @@ func (e *emitter) emit(v Event) {
 	_ = json.NewEncoder(e.out).Encode(v)
 }
 
-// Assembly is shared by submitters and workers; callbacks are never invoked by
-// graph construction. The second node depends on a persisted first-node output.
+// 提交方与工作进程共享 Assembly；构建图时绝不调用
+// 回调。第二个节点依赖已持久化的第一个节点输出。
 func Assembly(body func(*pulse.RunCtx, string, string) error) (d.Assembly, error) {
 	g, err := pulse.New("distributed-systemtest", "checkpoint process recovery")
 	if err != nil {
@@ -178,9 +178,9 @@ func (o *observed) Finish(ctx context.Context, r d.FinishRequest) (d.Snapshot, e
 		o.finishHeld = &token
 		o.mu.Unlock()
 		o.emit.emit(Event{Kind: "before_finish", RunID: token.Identity.RunID, Epoch: token.Epoch})
-		// Deliberately non-cooperative fault injection: an operation deadline must
-		// not remove the kill window. Only process kill (or the unit-test gate)
-		// releases it. Parent cleanup always kills and waits for this process.
+		// 有意不配合取消的故障注入：操作截止时间不得
+		// 移除终止窗口。只有终止进程（或单元测试关卡）
+		// 才会释放它。父进程清理始终终止并等待此进程。
 		<-o.gate
 		o.mu.Lock()
 		o.finishHeld = nil
@@ -200,13 +200,13 @@ type drainer interface {
 func sealDrain(ctx context.Context, w drainer, emit *emitter) {
 	seal, cancel := context.WithCancel(ctx)
 	cancel()
-	_ = w.Drain(seal) // sets draining before checking the canceled wait context
+	_ = w.Drain(seal) // 先设置 draining，再检查已取消的等待上下文
 	emit.emit(Event{Kind: "draining", Active: w.Active()})
 }
 
-// Run uses stdin JSON strings: "start", "release", "drain", "probe_finish". EOF cancels the
-// process. Drain stops admission while retaining renewal until active work exits.
-// Both PULSE_DISTRIBUTED_TEST_DSN and PULSE_DISTRIBUTED_TEST_ALLOW=yes are required.
+// Run 接收标准输入 JSON 字符串："start"、"release"、"drain"、"probe_finish"。EOF 取消
+// 进程。Drain 停止准入，并在活跃任务退出前保持续租。
+// 必须同时设置 PULSE_DISTRIBUTED_TEST_DSN 和 PULSE_DISTRIBUTED_TEST_ALLOW=yes。
 func Run(parent context.Context, c Config, in io.Reader, out io.Writer) error {
 	if os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW") != "yes" || os.Getenv("PULSE_DISTRIBUTED_TEST_DSN") == "" {
 		return errors.New("systemtest: explicit opt-in required")
@@ -230,7 +230,7 @@ func Run(parent context.Context, c Config, in io.Reader, out io.Writer) error {
 	gate := make(chan struct{})
 	start := make(chan struct{})
 	var releaseOnce, startOnce sync.Once
-	finishGate := make(chan struct{}) // intentionally never opened: controller kills in this window
+	finishGate := make(chan struct{}) // 有意永不打开：控制器在此窗口内终止进程
 	o := &observed{Coordinator: backend, emit: emit, gate: finishGate, hold: c.HoldFinish, tokens: map[string]d.Token{}}
 	reg := &d.Registry{}
 	_, err = reg.Register("systemtest", c.Version, func() (d.Assembly, error) {
@@ -280,8 +280,8 @@ func Run(parent context.Context, c Config, in io.Reader, out io.Writer) error {
 				o.mu.Unlock()
 			case "drain":
 				drainOnce.Do(func() {
-					// Drain seals admission synchronously even with an expired wait
-					// context. ACK only after that call returns, never on receipt.
+					// 即使等待上下文已过期，Drain 仍同步封闭准入。
+					// 仅在调用返回后确认，绝不在收到请求时确认。
 					sealDrain(ctx, w, emit)
 					go func() {
 						err := w.Drain(ctx)
@@ -303,7 +303,7 @@ func Run(parent context.Context, c Config, in io.Reader, out io.Writer) error {
 		return ctx.Err()
 	}
 	err = w.Run(ctx)
-	if err == nil { // Run may return before the Drain goroutine emits its result.
+	if err == nil { // Run 可能在 Drain goroutine 发出结果前返回。
 		select {
 		case <-drainDone:
 		case <-ctx.Done():

@@ -13,9 +13,9 @@ import (
 	"github.com/Luo-root/pulse-durable/recordio"
 )
 
-// fullSnapshotObserver is an isolated test oracle for the former physical cost:
-// it persists every actual Runtime projection in another SQLite database. It is
-// not a Session implementation and cannot be selected as a product write path.
+// fullSnapshotObserver 是隔离的测试参考，用于衡量旧物理开销：
+// 它在另一个 SQLite 数据库中持久化每个真实 Runtime 投影。它
+// 不是 Session 实现，也不能被选作产品写入路径。
 type fullSnapshotObserver struct {
 	durable.Store
 	legacy  *Store
@@ -196,8 +196,8 @@ func TestSQLiteRuntime500AndStorageGrowth(t *testing.T) {
 			if e = reopened.db.QueryRow(`SELECT (SELECT sum(length(record)) FROM durable_snapshots)+(SELECT sum(length(wire)) FROM durable_batches)`).Scan(&payload); e != nil {
 				t.Fatal(e)
 			}
-			// dbstat measures allocated physical B-tree bytes; WAL frame counts measure
-			// real SQLite page writes, unlike multiplying the final record size.
+			// dbstat 测量分配的物理 B 树字节；WAL 帧数测量
+			// 真实 SQLite 页写入，而非用最终记录大小乘算。
 			var incrementalBytes, legacyBytes int64
 			if e = reopened.db.QueryRow(`SELECT sum(pgsize) FROM dbstat WHERE name IN ('durable_snapshots','durable_heads','durable_batches')`).Scan(&incrementalBytes); e != nil {
 				t.Fatal(e)

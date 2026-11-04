@@ -1,7 +1,7 @@
-// Command harness is a stdin-controlled worker for manual multi-host experiments.
-// Example: set DSN/ALLOW, then pipe JSON lines "start", "release", "drain".
-// Provision namespace permissions separately; this command does no DDL and does
-// not connect to any host unless the operator explicitly supplies its DSN.
+// harness 命令是由标准输入控制的工作进程，用于手动多主机实验。
+// 示例：设置 DSN/ALLOW，再通过管道输入 JSON 行："start"、"release"、"drain"。
+// 单独配置命名空间权限；此命令不执行 DDL，且除非
+// 操作员显式提供 DSN，否则不连接任何主机。
 package main
 
 import (

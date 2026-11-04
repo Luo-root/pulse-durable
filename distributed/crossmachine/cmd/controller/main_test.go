@@ -38,7 +38,7 @@ func TestExplicitOverrides(t *testing.T) {
 	}
 }
 func TestCLIJSONSHAWithoutOverride(t *testing.T) {
-	// No database access: kill without a callback is rejected before OpenPostgres.
+	// 不访问数据库：缺少回调的终止请求在 OpenPostgres 之前即被拒绝。
 	root := t.TempDir()
 	config := filepath.Join(root, "config.json")
 	output := filepath.Join(root, "report.json")

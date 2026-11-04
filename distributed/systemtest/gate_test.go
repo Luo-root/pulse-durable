@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// This fails against the prior select on ctx.Done: a one-second deadline used
-// to remove the window before the controller finished its authority query.
+// 此测试会使旧的 ctx.Done select 实现失败：过去一秒截止时间会在
+// 控制器完成权威查询前移除故障窗口。
 func TestFinishGateIgnoresOperationDeadline(t *testing.T) {
 	gate := make(chan struct{})
 	o := &observed{emit: &emitter{out: &bytes.Buffer{}}, gate: gate, hold: true}
@@ -47,7 +47,7 @@ func TestFinishGateIgnoresOperationDeadline(t *testing.T) {
 	if !held {
 		t.Fatal("Finish gate lost after cancellation")
 	}
-	// Release only after checking; canceled context never reaches a DB mutation.
+	// 仅在检查后释放；已取消上下文绝不进入数据库变更。
 	close(gate)
 	select {
 	case <-done:

@@ -10,8 +10,8 @@ import (
 	"github.com/Luo-root/pulse-durable/distributed/worker"
 )
 
-// Embedded interfaces provide non-nil dependencies for New's validation only;
-// these tests never Run a worker or call a backend.
+// 嵌入接口仅为 New 验证提供非 nil 依赖；
+// 这些测试绝不 Run 工作进程或调用后端。
 type timingBackend struct{ d.Coordinator }
 
 func timingConfig(c Config) worker.Config {

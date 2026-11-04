@@ -469,8 +469,8 @@ func TestRunIDBusyAndCancellationLeavesActiveRoot(t *testing.T) {
 	}
 }
 
-// Use the real Durable hooks while controlling the Core confirmation boundary.
-// These tests gate dependency upgrades; they do not substitute a second engine.
+// 控制 Core 确认边界时使用真实 Durable 钩子。
+// 这些测试约束依赖升级，不替换为另一套引擎。
 func testCheckpointState(t *testing.T, ctx context.Context, g *pulse.Graph) (*runState, Store) {
 	t.Helper()
 	store := NewMemoryStore()
@@ -518,7 +518,7 @@ func TestTimeoutCleanupDoesNotConsumeRootBudget(t *testing.T) {
 	store := NewMemoryStore()
 	g := testGraph(t, "timeout-cleanup")
 	testAdd(t, g, pulse.NewNode("work", "", nil, nil, func(rc *pulse.RunCtx) error {
-		defer rc.Cancel() // Local Fork cleanup, not the one-hour deadline.
+		defer rc.Cancel() // 本地 Fork 清理，而非一小时截止时间。
 		return nil
 	}, pulse.Timeout(time.Hour)))
 	e, err := testRuntime(t, store, NewCodecs()).Run(ctx, g, pulse.Inputs{}, testOptions("run"))
@@ -567,7 +567,7 @@ func TestCheckpointConfirmationFreezesSkippedConclusion(t *testing.T) {
 		if err := commit(ctx, req); err != nil {
 			return err
 		}
-		cause.confirmed.Store(true) // Save succeeded before the original error changes.
+		cause.confirmed.Store(true) // 原始错误改变前，Save 已成功。
 		return nil
 	}
 	e, err := g.NewExecution(ctx, pulse.Inputs{}, pulse.WithExecCheckpoint(s.record.RootScope, h))
@@ -645,7 +645,7 @@ func TestCheckpointAcceptedHostStopJoinsWait(t *testing.T) {
 			}
 			stopDone, waitDone := make(chan error, 1), make(chan error, 1)
 			go func() { stopDone <- sub.Stop(ctx) }()
-			testAwait(t, ctx, entered) // Stop accepted before Wait seals new work.
+			testAwait(t, ctx, entered) // Wait 封闭新工作前，Stop 已被接受。
 			go func() { waitDone <- e.Wait() }()
 			var first error
 			premature := false
@@ -830,7 +830,7 @@ func TestCheckpointHostReceiveCannotCancelSharedRestore(t *testing.T) {
 	result := make(chan error, 1)
 	observer := pulse.ObserverFunc{GraphStarted: func(pulse.Site) {
 		go func() { _, err := sub.Receive(callCtx); result <- err }()
-		openCtx := testAwait(t, ctx, entered) // Observer precedes all internal workers.
+		openCtx := testAwait(t, ctx, entered) // 观察器先于所有内部工作协程。
 		sharedOpenCtx = openCtx
 		deadline, hasDeadline := openCtx.Deadline()
 		wantDeadline, wantHasDeadline := ctx.Deadline()

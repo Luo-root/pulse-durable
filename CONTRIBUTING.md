@@ -4,6 +4,12 @@ Pulse Durable provides checkpoint storage and recovery for Pulse workflows. Docu
 
 English and Chinese sections are equivalent. If they disagree, the English text is the reference. Participation follows the [Code of Conduct](CODE_OF_CONDUCT.md); contributions are made under the repository's [MIT License](LICENSE).
 
+## 协作语言
+
+- 源码说明性注释统一使用中文；标识符、命令、协议名称保留原文。工具指令、许可证、测试 `Output:`、冻结历史夹具及参与持久签名的 SQL 内容不做纯语言改写。
+- Issue、PR 的标题和正文使用中文，按 `.github/ISSUE_TEMPLATE/` 和 `.github/pull_request_template.md` 填写。通过 CLI 指定正文时同样遵循模板，不绕过语言要求。
+- 对外文档继续中英文配对维护；以下双语贡献说明不改变上述源码与协作语言要求。
+
 ## English
 
 ### Before you start

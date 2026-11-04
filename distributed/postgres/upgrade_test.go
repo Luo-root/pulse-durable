@@ -19,19 +19,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Frozen verbatim SQL from 30f92f1, with check.sql assembled from that commit's
-// check.go and catalogSQL. This is the real pre-active-suffix schema4 layout.
+// 从 30f92f1 原样冻结的 SQL，check.sql 由该提交的
+// check.go 和 catalogSQL 组装。这是真实的活跃后缀引入前的 schema4 布局。
 //
 //go:embed testdata/schema4/*.sql
 var schema4Fixture embed.FS
 
-// Frozen minimal real schema5 business receipt layout; never regenerate from schemaSQL.
+// 冻结的最小真实 schema5 业务回执布局；绝不从 schemaSQL 重新生成。
 //
 //go:embed testdata/schema5/schema.sql
 var schema5Fixture string
 
-// Each legacy fixture is created in its own new database. Migrate must reject
-// before grants/DDL/data changes; the production schema is never downgraded.
+// 每份旧夹具都在独立的新数据库中创建。Migrate 必须在
+// 授权、DDL 或数据修改前拒绝；绝不降级生产模式。
 func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 	dsn := os.Getenv("PULSE_DISTRIBUTED_TEST_DSN")
 	if dsn == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE") != "yes" {
@@ -83,7 +83,7 @@ func TestMigrateRejectsOldSchemasWithoutChangingDDLACLOrData(t *testing.T) {
 						t.Fatal(scrub(err, false))
 					}
 				}
-				// A genuine old layout, not current DDL with a changed version.
+				// 真实的旧布局，而非只改了版本号的当前 DDL。
 				var suffixColumns int
 				if err := isolated.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='pulse_durable_distributed' AND table_name='runs' AND column_name IN ('active_log_bytes','active_log_count')`).Scan(&suffixColumns); err != nil || suffixColumns != 0 {
 					t.Fatalf("schema4 fixture has active suffix columns: %d, %v", suffixColumns, err)

@@ -1,6 +1,6 @@
-// Package postgres implements the experimental PostgreSQL 16+ coordinator.
-// Migrate is an explicit administrator operation; New never runs DDL. Worker
-// credentials must not own the schema, inherit its owner, or have table DML.
+// postgres 包实现实验性的 PostgreSQL 16+ 协调器。
+// Migrate 是显式管理员操作；New 绝不运行 DDL。工作进程
+// 凭据不得拥有模式、继承所有者角色或拥有表 DML 权限。
 package postgres
 
 import (
@@ -50,7 +50,7 @@ type Coordinator struct {
 	projectionMu sync.Mutex
 	closed       bool
 	projections  map[d.Token]*projection
-	// Test-only observer, installed before use; receives no raw database errors.
+	// 仅供测试的观察器，使用前安装；不接收原始数据库错误。
 	clockDiagnostic func(clockDiagnostic)
 }
 
@@ -108,7 +108,7 @@ func New(ctx context.Context, dsn string) (*Coordinator, error) {
 	return &Coordinator{pool: p, projections: make(map[d.Token]*projection)}, nil
 }
 
-// Close only closes local connections; it never releases a lease.
+// Close 仅关闭本地连接，绝不释放租约。
 func (c *Coordinator) Close() {
 	if c != nil && c.pool != nil {
 		c.projectionMu.Lock()
@@ -200,7 +200,7 @@ func (c *Coordinator) call(ctx context.Context, op string, a map[string]any, wri
 	if c == nil || c.pool == nil {
 		return nil, errors.New("distributed postgres: closed coordinator")
 	}
-	// A single function invocation is one implicit transaction, including its events.
+	// 一次函数调用构成一个隐式事务，包括其事件。
 	err = c.pool.QueryRow(ctx, "SELECT pulse_durable_distributed.api($1,$2::jsonb)", op, b).Scan(&result)
 	if err != nil {
 		c.observeClockDiagnostic(err)
@@ -278,19 +278,19 @@ func decodeSnapshot(b []byte) (d.Snapshot, d.Token, []byte, error) {
 			return d.Snapshot{}, d.Token{}, nil, d.ErrInvalid
 		}
 	}
-	// Scheduling observations (including Cancel/Block) do not validate checkpoint
-	// payloads: a corrupt checkpoint must not prevent an operator from stopping
-	// a run. Only LoadOwned grants a verified projection to the runtime.
+	// 调度观测（包括 Cancel/Block）不验证检查点
+	// 载荷：损坏检查点不得阻止操作员停止
+	// 运行。只有 LoadOwned 向运行时提供已验证投影。
 	return s, tok, w.Record, nil
 }
 func decodeRecord(t d.Task, n uint64, b []byte) (durable.RunRecord, error) {
 	if len(b) == 0 || len(b) > MaxRecordBytes {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
 	}
-	// Initial/legacy worker checkpoints are bare RunRecord JSON. A published
-	// maintenance representation is a lossless versioned snapshot envelope.
-	// Accept both at this boundary, but keep one identity/revision validation
-	// path below so compaction cannot weaken ordinary checkpoint checks.
+	// 初始或旧版工作进程检查点为裸 RunRecord JSON。已发布的
+	// 维护表示是无损、带版本的快照封装。
+	// 在此边界接受两者，但下方保持单一的身份及修订号验证
+	// 路径，确保压缩不能削弱普通检查点检查。
 	r, e := recordio.DecodeSnapshot(b)
 	if e != nil {
 		r, e = recordio.Decode(b)
@@ -506,8 +506,8 @@ func (c *Coordinator) Renew(ctx context.Context, t d.Token, extension time.Durat
 	return s.LeaseUntil, e
 }
 
-// Finish trusts the runtime's Outcome witness. This enum is not an unforgeable
-// capability: only the trusted Runtime may request a business terminal status.
+// Finish 信任运行时的 Outcome 证明。此枚举不是不可伪造的
+// 能力：只有可信 Runtime 才能请求业务终态。
 func (c *Coordinator) Finish(ctx context.Context, q d.FinishRequest) (d.Snapshot, error) {
 	defer c.discardProjection(q.Token)
 	if !token(q.Token) || !mutation(q.Mutation) || (q.Outcome != durable.OutcomeCompleted && q.Outcome != durable.OutcomeFailed) {

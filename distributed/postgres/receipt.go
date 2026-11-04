@@ -11,9 +11,9 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-// FindMutation resolves only the exact committed coordinator mutation. Absence
-// and expiry never authorize replay. Coverage is sampled by the database under
-// the run lock, independently of event retention and the caller's clock.
+// FindMutation 仅解析精确的已提交协调器变更。不存在
+// 或过期绝不授权重放。覆盖范围由数据库在运行锁内采样，
+// 独立于事件保留及调用方时钟。
 func (c *Coordinator) FindMutation(ctx context.Context, q d.MutationQuery) (d.MutationQueryResult, error) {
 	if q.Validate() != nil {
 		return d.MutationQueryResult{}, d.ErrInvalid
@@ -67,9 +67,9 @@ func decodeMutationResult(b []byte, q d.MutationQuery) (d.MutationQueryResult, e
 	return out, nil
 }
 
-// Required shape is deliberately receipt-specific: strictMaintenanceJSON rejects
-// duplicate/unknown/case-alias keys, but does not require fields or reject null
-// scalar values. Check those before accepting Go's zero-value defaults.
+// 必需字段有意按回执专门检查：strictMaintenanceJSON 拒绝
+// 重复键、未知键、大小写别名，但不要求字段存在，也不拒绝 null
+// 标量值。在接受 Go 零值默认值前先检查这些条件。
 func receiptRequiredShape(b []byte, state d.MutationQueryState) bool {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(b, &obj) != nil || len(obj) != 4 {
@@ -97,8 +97,8 @@ func receiptRequiredShape(b []byte, state d.MutationQueryState) bool {
 	return true
 }
 
-// encoding/json repairs malformed UTF-8 and isolated UTF-16 surrogates. Receipts
-// must reject both instead of comparing repaired identity strings.
+// encoding/json 会修复畸形 UTF-8 和孤立 UTF-16 代理项。回执
+// 必须拒绝两者，而非比较修复后的身份字符串。
 func receiptUnicode(b []byte) bool {
 	if !utf8.Valid(b) {
 		return false

@@ -8,8 +8,8 @@ import (
 	durable "github.com/Luo-root/pulse-durable"
 )
 
-// A coordinator's real session implements RunID plus fenced Load/Save. This
-// example only adds the identity binding to a local MemoryStore session.
+// 协调器的真实会话实现 RunID 和受栅栏保护的 Load/Save。此
+// 示例仅为本地 MemoryStore 会话添加身份绑定。
 type boundSession struct {
 	durable.Session
 	id string
@@ -22,14 +22,14 @@ func ExampleRuntime_RunClaimed() {
 	store := durable.NewMemoryStore()
 	runtime, _ := durable.New(store, durable.NewCodecs())
 	session, _ := store.Acquire(ctx, "invoice-42")
-	defer session.Close() // after the caller's terminal decision, not inside Runtime
+	defer session.Close() // 在调用方作出终态决策后执行，而非在 Runtime 内部执行
 	graph, _ := pulse.New("invoice", "")
 	_, outcome, err := runtime.RunClaimed(ctx, boundSession{session, "invoice-42"}, graph, pulse.Inputs{}, durable.RunOptions{RunID: "invoice-42", Version: "v1"})
 	if err != nil {
 		panic(err)
 	}
-	// A distributed caller now performs its fenced Finish while still owning
-	// session. Runtime does not declare or persist a coordinator task status.
+	// 分布式调用方此时仍持有会话所有权，并执行受栅栏保护的 Finish。
+	// Runtime 不声明或持久化协调器任务状态。
 	fmt.Println(outcome)
 	// Output: completed
 }

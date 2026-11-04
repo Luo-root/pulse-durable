@@ -154,8 +154,8 @@ func TestMaintenanceSQLBoundaryContract(t *testing.T) {
 	}
 }
 
-// This test is intentionally not executed by offline validation. It installs no
-// extra grants: a normal worker must be denied even with valid worker ownership.
+// 此测试有意不在离线验证中执行。不添加额外授权：
+// 普通工作进程即使持有有效所有权也必须被拒绝。
 func TestPostgresMaintenanceWorkerDenied(t *testing.T) {
 	c, _, ns := integration(t)
 	task := taskFixture(t, ns, "maintenance-denied")

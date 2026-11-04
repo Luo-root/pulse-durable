@@ -157,7 +157,7 @@ func TestIncrementalRuntimeFiveHundredAndResume(t *testing.T) {
 	if total != 125250 || calls != 500 || measured.commits < 1500 {
 		t.Fatalf("sum=%d calls=%d commits=%d", total, calls, measured.commits)
 	}
-	// Each immutable file contains only its atomic batch, not accumulated history.
+	// 每个不可变文件仅包含自身原子批次，而非累积历史。
 	var first, last int64
 	for i, n := range measured.sizes {
 		if i < 100 {
@@ -199,7 +199,7 @@ func TestIncrementalRuntimeFiveHundredAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A missing head-selected batch must fail; no recognition of another file.
+	// 缺少头所选择的批次必须失败；不能转而识别其他文件。
 	if err = os.Rename(path, path+".missing"); err != nil {
 		t.Fatal(err)
 	}

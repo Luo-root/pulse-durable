@@ -116,9 +116,9 @@ type ValueRecord struct {
 	Stream *StreamDescriptorRecord `json:"stream,omitempty"`
 }
 
-// CloneRecord returns an isolated deep copy, preserving nil versus empty maps,
-// slices and encoded Data. Backends must not use a JSON round trip for copies:
-// omitempty normalization would destroy exact ChangeBatch preconditions.
+// CloneRecord 返回隔离的深拷贝，保留 nil 与空映射、
+// 切片及已编码 Data 的区别。后端不得通过 JSON 往返复制：
+// omitempty 归一化会破坏精确的 ChangeBatch 前置条件。
 func CloneRecord(r RunRecord) RunRecord { return cloneRecord(r) }
 
 func cloneRecord(r RunRecord) RunRecord {

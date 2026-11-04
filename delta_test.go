@@ -12,8 +12,8 @@ import (
 	"github.com/Luo-root/pulse"
 )
 
-// Test-only authority. ApplyTo owns the precondition/state application; this
-// backend adds no business state machine and is not a production persistence claim.
+// 仅供测试的权威状态。ApplyTo 负责前置条件检查及状态应用；此
+// 后端不添加业务状态机，也不声称提供生产持久化能力。
 type deltaTestStore struct {
 	record    RunRecord
 	seeds     []evolutionSave
@@ -52,10 +52,10 @@ func (s *deltaTestSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck,
 	o.calls++
 	var legacy *runState
 	if o.oracle {
-		// Drive the actual legacy transaction consumer at every revision using the
-		// same captured typed changes and same persistent IDs, not a full-record diff.
+		// 每个修订都使用相同的已捕获类型化变更和持久化 ID，
+		// 驱动真实的旧事务消费逻辑，而非对完整记录求差异。
 		legacy = &runState{record: cloneRecord(o.record)}
-		// Test-only full-record materialization oracle, never a product backend.
+		// 仅供测试的完整记录物化参考实现，绝非产品后端。
 		if err := b.tx.check(legacy.record); err != nil {
 			return CommitAck{}, err
 		}
@@ -67,7 +67,7 @@ func (s *deltaTestSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck,
 		return CommitAck{}, err
 	}
 	if legacy != nil {
-		// Legacy clone normalizes empty slices; compare persisted projections.
+		// 旧克隆会归一化空切片；比较持久化投影。
 		a, _ := json.Marshal(legacy.record)
 		b, _ := json.Marshal(cloneRecord(o.record))
 		if string(a) != string(b) {
@@ -134,7 +134,7 @@ func TestDeltaRuntimeManaged500RevisionsAndResume(t *testing.T) {
 			t.Fatal("old Save argument aliased runtime")
 		}
 	}
-	// Retained immutable batches can rebuild exact revision history independently.
+	// 保留的不可变批次可独立重建精确的修订历史。
 	replay := cloneRecord(o.seeds[0].record)
 	for _, b := range o.batches {
 		if _, err := b.ApplyTo(&replay); err != nil {

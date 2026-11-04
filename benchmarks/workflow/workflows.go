@@ -58,7 +58,7 @@ func prepareWorkflows(ctx context.Context, c config, dir string, a *audit, crash
 	s := &workflowsRunner{c: c, dir: dir, path: path, persistIdentity: a != nil}
 	uriPath := filepath.ToSlash(path)
 	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath // A Windows drive is a URI path segment, not an authority.
+		uriPath = "/" + uriPath // Windows 盘符属于 URI 路径段，而非主机部分。
 	}
 	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_txlock=immediate"}).String()
 	if c.Backend == "memory" {
@@ -74,8 +74,8 @@ func prepareWorkflows(ctx context.Context, c config, dir string, a *audit, crash
 		}
 	}()
 	s.db.SetMaxOpenConns(1)
-	s.db.SetMaxIdleConns(1) // Retain the named shared-cache in-memory database.
-	// Match the native constructors. Do not relax synchronous for file measurements.
+	s.db.SetMaxIdleConns(1) // 保留具名、共享缓存的内存数据库。
+	// 与原生构造函数一致。文件测量不得放宽 synchronous 设置。
 	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
 		if _, err = s.db.ExecContext(ctx, q); err != nil {
 			return nil, err
@@ -96,7 +96,7 @@ func prepareWorkflows(ctx context.Context, c config, dir string, a *audit, crash
 	opts.ActivityPollers = 1
 	opts.MaxParallelWorkflowTasks = c.Parallelism
 	opts.MaxParallelActivityTasks = c.Parallelism
-	opts.SingleWorkerMode = true // The pinned Worker.New does not consume this field.
+	opts.SingleWorkerMode = true // 锁定版本的 Worker.New 不使用此字段。
 	s.worker = worker.New(s.backend, &opts)
 	if err = s.worker.RegisterWorkflow(chainWorkflow, registry.WithName("chain")); err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ func prepareWorkflows(ctx context.Context, c config, dir string, a *audit, crash
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
 	}
-	// A restarted worker must not execute remaining business during untimed setup.
+	// 重启后的工作进程不得在不计时的准备阶段执行剩余业务。
 	if c.Mode != "resume" && c.Mode != "reopen" && a == nil {
 		if err = s.start(); err != nil {
 			return nil, err
@@ -163,7 +163,7 @@ func (s *workflowsRunner) run(ctx context.Context, resume bool) (uint64, error) 
 			return 0, err
 		}
 	}
-	// Fixed low-latency completion polling; the native client's exponential waiter can reach 1s.
+	// 采用固定低延迟完成轮询；原生客户端的指数等待可达 1 秒。
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -243,7 +243,7 @@ func (s *workflowsRunner) close() error {
 	}
 	if s.db != nil {
 		err = errors.Join(err, s.db.Close())
-		// Context-triggered transaction rollback can still own a connection after Close.
+		// 由上下文触发的事务回滚在 Close 后仍可能占用连接。
 		deadline := time.Now().Add(5 * time.Second)
 		for s.db.Stats().OpenConnections > 0 && time.Now().Before(deadline) {
 			time.Sleep(time.Millisecond)
@@ -264,8 +264,8 @@ func completedActivities(events []*history.Event) int {
 	return n
 }
 
-// Hold activity pickup across the confirmation transaction and exit. This prevents
-// claiming the next activity and leaving its two-minute lease behind at the crash.
+// 在确认事务直至退出期间暂停领取活动，避免
+// 在崩溃时已领取下一个活动并遗留其两分钟租约。
 type crashBackend struct {
 	backend.Backend
 	mu            sync.Mutex

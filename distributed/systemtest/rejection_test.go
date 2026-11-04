@@ -16,8 +16,8 @@ import (
 	"github.com/Luo-root/pulse-durable/distributed/worker"
 )
 
-// Real coordinator integration, with only the task record deliberately corrupted
-// by the authorized administrator. No SQL allowlist or server clock is changed.
+// 真实协调器集成测试，仅由授权管理员有意破坏任务记录。
+// 不改变 SQL 允许列表或服务器时钟。
 func TestWorkerRejectionBlocks(t *testing.T) {
 	if os.Getenv("PULSE_DISTRIBUTED_TEST_DSN") == "" || os.Getenv("PULSE_DISTRIBUTED_TEST_ALLOW") != "yes" {
 		t.Skip("dedicated DSN and ALLOW=yes required")
@@ -106,8 +106,8 @@ func TestWorkerRejectionBlocks(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("worker did not stop")
 			}
-			// Wait on database time, not a fixed host sleep, until a full original TTL
-			// after blocking. Then explicitly attempt a fresh Claim with exact routing.
+			// 等待数据库时间，而非固定主机休眠，直到阻塞后已过一个完整原始 TTL。
+			// 随后以精确路由显式尝试新的 Claim。
 			if _, err = f.admin.Exec(ctx, "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz + interval '1 second' - clock_timestamp()))))", snapshot.UpdatedAt); err != nil {
 				t.Fatal("database time barrier failed")
 			}

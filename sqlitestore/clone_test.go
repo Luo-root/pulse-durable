@@ -49,8 +49,8 @@ func cloneDecodeWire(t *testing.T, w atomicWire) durable.ChangeBatch {
 	return b
 }
 
-// The trigger is valid public typed wire, not a claim about ordinary Codec
-// output. Empty Data must survive Load because it participates in exact expected.
+// 触发条件是合法公开类型化线格式，并非声称普通 Codec 会输出它。
+// Load 必须保留空 Data，因为它参与精确期望值比较。
 func TestSQLiteLoadPreservesTypedWireNilEmptyData(t *testing.T) {
 	initial, batches, second := atomicMessageFixture(t)
 	first := -1
@@ -137,8 +137,8 @@ func TestSQLiteLoadPreservesTypedWireNilEmptyData(t *testing.T) {
 					if !found || (expected.Data != nil) != empty {
 						t.Fatalf("Data nil=%t want empty=%t", expected.Data == nil, empty)
 					}
-					// Keep every explicit payload field from a real canonical operation; replace
-					// its exact expected using the value just returned by Load (not private cache).
+					// 保留真实规范操作的所有显式载荷字段；用刚从 Load 返回的值
+					// （而非私有缓存）替换其精确期望值。
 					next := cloneWire(t, batches[second])
 					for j := range next.Ops {
 						op := &next.Ops[j]
@@ -239,7 +239,7 @@ func TestCloneProjectionExactAndIsolated(t *testing.T) {
 			}
 		})
 	}
-	// Nonempty bytes need independent backing arrays too, at every value site.
+	// 非空字节在每个值位置也都需要独立底层数组。
 	v := durable.ValueRecord{Data: []byte{7}}
 	r := durable.RunRecord{Scopes: map[string]durable.ScopeRecord{"s": {Nodes: map[string]durable.NodeRecord{"n": {Outputs: []durable.ValueRecord{v}}}}}, Streams: map[string]durable.StreamRecord{"s": {Pending: []durable.StreamMessageRecord{{Value: v}}, Cursor: &v}}, Managed: map[string]durable.ManagedRecord{"m": {State: []durable.ValueRecord{v}, Values: []durable.ValueRecord{v}}}}
 	c := durable.CloneRecord(r)
