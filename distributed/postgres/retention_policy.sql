@@ -19,7 +19,7 @@ CREATE TABLE pulse_durable_distributed.retention_previews(
  observed_from timestamptz NOT NULL,
  observed_through timestamptz NOT NULL,
  cursor jsonb NOT NULL,
- limit integer NOT NULL CHECK(limit BETWEEN 1 AND 1000000),
+ "limit" integer NOT NULL CHECK("limit" BETWEEN 1 AND 1000000),
  receipt_digest text NOT NULL CHECK(receipt_digest ~ '^[0-9a-f]{64}$'),
  created_at timestamptz NOT NULL,
  FOREIGN KEY(namespace) REFERENCES pulse_durable_distributed.retention_policies(namespace)
@@ -62,9 +62,9 @@ BEGIN
  IF dg IS DISTINCT FROM encode(sha256(convert_to(replace(replace(proposed::text, ': ', ':'), ', ', ','),'UTF8')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention policy digest'; END IF;
  IF (a->>'policy_version')::numeric IS DISTINCT FROM p.policy_version THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='retention policy version'; END IF;
  rd:=encode(sha256(convert_to(id||':'||ns||':'||p.policy_version::text||':'||dg||':'||vf::text||':'||vt::text||':'||cur::text||':'||lim::text,'UTF8')),'hex');
- INSERT INTO retention_previews(dry_run_id,namespace,policy_version,policy,policy_digest,observed_from,observed_through,cursor,limit,receipt_digest,created_at) VALUES(id,ns,p.policy_version,proposed,dg,vf,vt,cur,lim,rd,t) ON CONFLICT(dry_run_id) DO NOTHING;
+ INSERT INTO retention_previews(dry_run_id,namespace,policy_version,policy,policy_digest,observed_from,observed_through,cursor,"limit",receipt_digest,created_at) VALUES(id,ns,p.policy_version,proposed,dg,vf,vt,cur,lim,rd,t) ON CONFLICT(dry_run_id) DO NOTHING;
  SELECT * INTO q FROM retention_previews WHERE dry_run_id=id FOR SHARE;
- IF q.namespace<>ns OR q.policy_version<>p.policy_version OR q.policy<>proposed OR q.policy_digest<>dg OR q.observed_from<>vf OR q.observed_through<>vt OR q.cursor<>cur OR q.limit<>lim THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention preview binding conflict'; END IF;
+ IF q.namespace<>ns OR q.policy_version<>p.policy_version OR q.policy<>proposed OR q.policy_digest<>dg OR q.observed_from<>vf OR q.observed_through<>vt OR q.cursor<>cur OR q."limit"<>lim THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention preview binding conflict'; END IF;
  RETURN jsonb_build_object('dry_run_id',id,'namespace',ns,'policy_version',p.policy_version::text,'policy',proposed,'policy_digest',dg,'observed_from',vf,'observed_through',vt,'summary',jsonb_build_object('candidates','[]'::jsonb,'protected','{}'::jsonb,'logical_rows','0','logical_bytes','0'),'cursor',cur,'next_cursor',jsonb_build_object('set',false,'value',''),'receipt_digest',rd);
 END $$;
 CREATE FUNCTION pulse_durable_distributed.retention_policy_update(a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$

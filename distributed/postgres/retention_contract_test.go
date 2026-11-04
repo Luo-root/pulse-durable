@@ -14,7 +14,7 @@ func TestRetentionPolicySQLContract(t *testing.T) {
 		"NOT retention_policy_validate(proposed)",
 		"jsonb_object_keys(p) AS keys(key)",
 		"cursor jsonb NOT NULL",
-		"limit integer NOT NULL CHECK(limit BETWEEN 1 AND 1000000)",
+		`"limit" integer NOT NULL CHECK("limit" BETWEEN 1 AND 1000000)`,
 		"cur::text||':'||lim::text",
 		"ON CONFLICT(dry_run_id) DO NOTHING",
 		"retention preview binding conflict",
