@@ -57,7 +57,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			begun, err := c.maintenanceCall(ctx, "begin", a, true)
+			begun, err := c.storageCall(ctx, "storage_compact_begin", a, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +127,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 				t.Fatal(err)
 			}
 			a["record"], a["snapshot_digest"], a["chain"] = snapshot, digest(snapshot), chain
-			published, err := c.maintenanceCall(ctx, "publish", a, true)
+			published, err := c.storageCall(ctx, "storage_compact_publish", a, true)
 			if err != nil {
 				t.Fatal(err)
 			}

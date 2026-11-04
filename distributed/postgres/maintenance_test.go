@@ -129,13 +129,9 @@ func TestMaintenanceBuildVerifiesChainAndCancellation(t *testing.T) {
 	}
 }
 func TestMaintenanceSQLBoundaryContract(t *testing.T) {
-	for _, guard := range []string{
-		"IF t<r.updated_at OR t<r.maintenance_watermark OR t<r.receipt_observed_through THEN",
-		"IF t<first_sample OR t<r.updated_at OR t<r.maintenance_watermark OR t<r.receipt_observed_through THEN",
-	} {
-		if strings.Count(maintenanceSQL, guard) != 1 {
-			t.Fatal("maintenance clock guard missing or ambiguous", guard)
-		}
+	guard := "IF t<first_sample OR t<r.updated_at OR t<r.maintenance_watermark OR t<r.receipt_observed_through THEN"
+	if strings.Count(maintenanceSQL, guard) != 1 || strings.Count(maintenanceSQL, "storage_clock(r,NULL)") != 5 || strings.Count(maintenanceSQL, "t:=storage_clock(r,first_sample)") != 1 {
+		t.Fatal("shared clock guard, entrypoint sample or publication resample missing")
 	}
 	for _, s := range []string{"CHECK(layout_marker='pulse-durable-distributed-layout-v1')", "'maintain','retain','replay'", "maintenance_receipts", "maintenance_guards", "build_pins", "storage_snapshots", "active_snapshot", "RETURN storage_image(r,r.revision,true)||snapshot_budget_summary(r)"} {
 		if !strings.Contains(schemaSQL, s) {

@@ -200,7 +200,24 @@ func decodeMaintenanceResult(b []byte, m d.Mutation) (MaintenanceResult, error) 
 	}
 	return out, nil
 }
-func (c *Coordinator) maintenanceCall(ctx context.Context, op string, a map[string]any, write bool) ([]byte, error) {
+
+// storageCall 只接受编译期白名单；函数名不参与 SQL 拼接。
+func (c *Coordinator) storageCall(ctx context.Context, function string, a map[string]any, write bool) ([]byte, error) {
+	var query string
+	switch function {
+	case "storage_inspect":
+		query = "SELECT pulse_durable_distributed.storage_inspect($1::jsonb)"
+	case "storage_compact_begin":
+		query = "SELECT pulse_durable_distributed.storage_compact_begin($1::jsonb)"
+	case "storage_compact_publish":
+		query = "SELECT pulse_durable_distributed.storage_compact_publish($1::jsonb)"
+	case "storage_compact_abort":
+		query = "SELECT pulse_durable_distributed.storage_compact_abort($1::jsonb)"
+	case "storage_compact_find":
+		query = "SELECT pulse_durable_distributed.storage_compact_find($1::jsonb)"
+	default:
+		return nil, d.ErrInvalid
+	}
 	ctx, cancel, e := bounded(ctx)
 	if e != nil {
 		return nil, e
@@ -215,14 +232,14 @@ func (c *Coordinator) maintenanceCall(ctx context.Context, op string, a map[stri
 		return nil, d.ErrInvalid
 	}
 	var out []byte
-	e = c.pool.QueryRow(ctx, "SELECT pulse_durable_distributed.maintenance($1,$2::jsonb)", op, b).Scan(&out)
+	e = c.pool.QueryRow(ctx, query, b).Scan(&out)
 	return out, scrub(e, write)
 }
 func (c *Coordinator) InspectStorage(ctx context.Context, i d.Identity) (StorageState, error) {
 	if !identity(i) {
 		return StorageState{}, d.ErrInvalid
 	}
-	b, e := c.maintenanceCall(ctx, "inspect", args(i), false)
+	b, e := c.storageCall(ctx, "storage_inspect", args(i), false)
 	if e != nil {
 		return StorageState{}, e
 	}
@@ -238,7 +255,7 @@ func (c *Coordinator) FindMaintenance(ctx context.Context, i d.Identity, m d.Mut
 	}
 	a := args(i)
 	mutate(a, m)
-	b, e := c.maintenanceCall(ctx, "find", a, false)
+	b, e := c.storageCall(ctx, "storage_compact_find", a, false)
 	if e != nil {
 		return MaintenanceResult{}, e
 	}
@@ -253,7 +270,7 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	if e != nil {
 		return MaintenanceResult{}, e
 	}
-	b, e := c.maintenanceCall(ctx, "begin", a, true)
+	b, e := c.storageCall(ctx, "storage_compact_begin", a, true)
 	if e != nil {
 		return MaintenanceResult{}, e
 	}
@@ -264,7 +281,7 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 		if !published {
 			cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_, _ = c.maintenanceCall(cleanup, "abort", a, true)
+			_, _ = c.storageCall(cleanup, "storage_compact_abort", a, true)
 		}
 	}()
 	var begin struct {
@@ -298,7 +315,7 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	a["snapshot_digest"] = digest(wire)
 	a["chain"] = chain
 	published = true // 从此处开始，发布结果可能未知
-	b, e = c.maintenanceCall(ctx, "publish", a, true)
+	b, e = c.storageCall(ctx, "storage_compact_publish", a, true)
 	if e != nil {
 		return MaintenanceResult{}, e
 	}
