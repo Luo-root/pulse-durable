@@ -9,6 +9,8 @@ import (
 
 func TestRetentionPolicySQLContract(t *testing.T) {
 	for _, fragment := range []string{
+		"retention_candidate_preview(a jsonb)",
+		"SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp",
 		"retention_policy_validate(p jsonb)",
 		"jsonb_object_keys(p)",
 		"NOT retention_policy_validate(proposed)",
@@ -19,6 +21,9 @@ func TestRetentionPolicySQLContract(t *testing.T) {
 		"ON CONFLICT(dry_run_id) DO NOTHING",
 		"retention preview binding conflict",
 		"coalesce(octet_length(cur->>'value'),0) NOT BETWEEN 1 AND 256",
+		"build_pins b WHERE b.namespace=ns AND b.run_id=r.run_id AND NOT b.closed",
+		"mutation_guards g WHERE g.namespace=ns AND g.run_id=r.run_id",
+		"ORDER BY x.run_id COLLATE \"C\"",
 	} {
 		if !strings.Contains(retentionPolicySQL, fragment) {
 			t.Fatalf("missing SQL contract %q", fragment)

@@ -93,7 +93,7 @@ func cloneRetentionCandidates(in []RetentionCandidate) []RetentionCandidate {
 	return out
 }
 func retentionCandidateKey(c RetentionCandidate) string {
-	return c.Namespace + "\x00" + c.Kind + "\x00" + c.ID + "\x00" + strconv.FormatUint(c.Revision, 10)
+	return c.Namespace + "\x1f" + c.Kind + "\x1f" + c.ID + "\x1f" + strconv.FormatUint(c.Revision, 10)
 }
 
 // RetentionCandidateSummary 是 dry-run 对候选的只读摘要。

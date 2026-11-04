@@ -106,7 +106,7 @@ func (c *Coordinator) retentionCall(ctx context.Context, fn string, a map[string
 	case "retention_policy_get":
 		q = "SELECT pulse_durable_distributed.retention_policy_get($1::jsonb)"
 	case "retention_policy_preview":
-		q = "SELECT pulse_durable_distributed.retention_policy_preview($1::jsonb)"
+		q = "SELECT pulse_durable_distributed.retention_candidate_preview($1::jsonb)"
 	case "retention_policy_update":
 		q = "SELECT pulse_durable_distributed.retention_policy_update($1::jsonb)"
 	default:
@@ -185,11 +185,17 @@ func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string,
 		return RetentionPolicyPreview{}, e
 	}
 	var r struct {
-		DryRunID, Namespace, PolicyVersion, PolicyDigest, ReceiptDigest string
-		Policy                                                          json.RawMessage
-		ObservedFrom, ObservedThrough                                   time.Time
-		Summary                                                         d.RetentionCandidateSummary
-		Cursor, NextCursor                                              d.RetentionCursor
+		DryRunID        string                      `json:"dry_run_id"`
+		Namespace       string                      `json:"namespace"`
+		PolicyVersion   string                      `json:"policy_version"`
+		PolicyDigest    string                      `json:"policy_digest"`
+		ReceiptDigest   string                      `json:"receipt_digest"`
+		Policy          json.RawMessage             `json:"policy"`
+		ObservedFrom    time.Time                   `json:"observed_from"`
+		ObservedThrough time.Time                   `json:"observed_through"`
+		Summary         d.RetentionCandidateSummary `json:"summary"`
+		Cursor          d.RetentionCursor           `json:"cursor"`
+		NextCursor      d.RetentionCursor           `json:"next_cursor"`
 	}
 	if json.Unmarshal(b, &r) != nil {
 		return RetentionPolicyPreview{}, d.ErrInvalid
