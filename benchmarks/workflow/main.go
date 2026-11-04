@@ -90,6 +90,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if r.Status != "ok" {
+		os.Exit(1)
+	}
 }
 
 func (c config) validate() error {

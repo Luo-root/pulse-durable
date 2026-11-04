@@ -9,7 +9,7 @@
 | 分组 | Durable | go-workflows |
 |---|---|---|
 | `memory` | MemoryStore 的隔离 Go 记录 | 命名 shared-cache SQLite 内存库，保留连接；并非 Go map |
-| `file` | filestore 完整 JSON 快照，文件 Sync 后替换 | SQLite 文件、请求 WAL、不覆盖 synchronous；实际 PRAGMA 随样本保存 |
+| `file` | filestore 初始快照、不可变增量批与原子 head；文件 Sync 后发布 | SQLite 文件、请求 WAL、不覆盖 synchronous；实际 PRAGMA 随样本保存 |
 
 两种持久后端完成相同业务任务，但存储事务、历史格式、重放与断电保证并不相同。filestore 不承诺断电持久性；MemoryStore 不证明进程重启后的恢复。内存组和文件组分别读，不与纯内存 DAG 排成同一张榜。
 
@@ -35,9 +35,9 @@
 
 SQLite 内存和文件组都通过公开 WithDB 构造器设置单连接并保留空闲连接。原生内存便捷构造器使用 2 连接；这里选择固定单连接的本机配置，实际值与 journal_mode、synchronous、busy_timeout、缓存、页大小随原始 JSON 保留在外部证据包。SingleWorkerMode 选项在固定版本的 Worker.New 中未产生实际效果，不把设置了该字段当成可靠性或性能保证。最大历史条数按规模提高，以免 10000 条默认上限提前终止大图。
 
-`growth` 是独立仪表化场景：Durable Store 包装器在每次 Save 前额外 JSON 编码，记录 Save 次数、成功 Save 的累计逻辑 JSON 字节和最终记录大小，并执行累计字节预算。这些额外成本不混入普通 `run` 成绩。SQLite 在计时结束后、连接关闭前报告历史事件条数及当前数据库/WAL 文件长度；关闭连接后的 WAL checkpoint 可能改变这两个长度。未取得等价的累计物理或逻辑写入计数，不能把两者直接当作相同的写放大指标。
+`growth` 是独立仪表化场景：Durable Store 包装器分别统计 Initialize/Apply 的调用和成功次数。`initial_snapshot_json_bytes` 为成功初始化记录的普通 JSON 长度，`canonical_batch_bytes` 为成功 Apply 的规范批次 wire 累计长度，`final_record_json_bytes` 为检查阶段的当前投影普通 JSON 长度；三者不是同一种快照编码，也不包括文件信封、head、Sync 或物理 I/O。累计字节预算针对前两项之和。这些额外成本不混入普通 `run` 成绩。SQLite 在计时结束后、连接关闭前报告历史事件条数及当前数据库/WAL 文件长度；关闭连接后的 WAL checkpoint 可能改变这两个长度。未取得等价的累计物理或逻辑写入计数，不能把两者直接当作相同的写放大指标。
 
-`resume` 由父进程启动子进程，在半数步骤已经持久确认后 `os.Exit(73)`；新进程加载同一记录/实例继续。Durable 钉在 Save 成功、下游发布前；go-workflows 钉在已确认历史事务，并临时挡住下一条 Activity 的领取，避免把下一条未完成租约的等待混入此场景。磁盘上的业务审计检查每个步骤在两个进程间总共只执行一次。worker 名字固定为 `workflow-bench-single-host`，衡量同宿主重启，不测跨机器领取/租约接管。该精确中断点不代表任意外部副作用的 exactly-once。
+`resume` 由父进程启动子进程，在半数步骤已经持久确认后 `os.Exit(73)`；新进程加载同一记录/实例继续。Durable 钉在 Apply 成功且权威 Load 确认之后、下游发布前；go-workflows 钉在已确认历史事务，并临时挡住下一条 Activity 的领取，避免把下一条未完成租约的等待混入此场景。磁盘上的业务审计检查每个步骤在两个进程间总共只执行一次。worker 名字固定为 `workflow-bench-single-host`，衡量同宿主重启，不测跨机器领取/租约接管。该精确中断点不代表任意外部副作用的 exactly-once。
 
 恢复结果分列子进程启动、后端/Graph 准备、恢复及剩余业务、检查/清理/IPC。业务审计每次 fsync，会增加剩余业务耗时，因此恢复测量只与同样启用审计的恢复场景比较。该模式不报告未采集的分配量。
 
@@ -73,6 +73,8 @@ python ../pulse/benchmarks/tools/summarize.py benchmarks/results/local-workflow/
 benchmarks/workflow/workflow.exe -engine durable -backend file -nodes 100 -rounds 1 -mode growth -warmup=false -max-write-bytes 1073741824 -timeout 60s -dir benchmarks/results/local-scratch
 benchmarks/workflow/workflow.exe -engine go-workflows -backend file -nodes 100 -rounds 1 -mode resume -timeout 60s -dir benchmarks/results/local-scratch
 ```
+
+CLI 总是先输出结果 JSON；`status=ok` 返回退出码 0，`error`、`timeout`、`resource_limit` 返回非零。采样器须同时保留失败 JSON 与退出码，不能因命令失败丢弃样本。
 
 正常 `run` 不额外编码计数，只有时间边界；1GiB 逻辑字节保护只用于 Durable `growth`。context 不能强行中断同步编码/落盘，统一采样器另设 65 秒父进程硬超时并清理整棵子进程树。超时、超预算与未测分别保存，未完成的 10000 步不补零、不从小规模外推。
 
