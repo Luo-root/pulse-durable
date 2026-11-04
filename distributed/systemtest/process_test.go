@@ -413,6 +413,13 @@ func TestDrainRetainsLease(t *testing.T) {
 	f := provision(t)
 	f.submit(t, "active", "v1")
 	p := start(t, f.dsn, f.ns, "drain-live", "v1", 1, false)
+	t.Cleanup(func() {
+		if t.Failed() {
+			for _, event := range p.snapshot() {
+				t.Logf("drain evidence kind=%s reason=%s active=%d epoch=%d run=%s", event.Kind, event.Reason, event.Active, event.Epoch, event.RunID)
+			}
+		}
+	})
 	p.send(t, "start")
 	await(t, func() bool { return p.has("suffix") }, "non-canceled active task")
 	before := f.status(t, "active")

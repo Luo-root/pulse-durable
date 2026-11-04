@@ -34,6 +34,7 @@ type clockDiagnostic struct {
 
 // 仅接受模式生成的固定语法，不接受任意错误文本。
 // 规范整数拒绝空白、加号、前导零和溢出。
+// delta_us 始终参考 updated_at；receipt_observed_through 单独触发 PD007 时，合法值可以是 0 或正数。
 func parseClockDiagnostic(detail string) (clockDiagnostic, bool) {
 	var result clockDiagnostic
 	if len(detail) > 160 || strings.ContainsAny(detail, "\r\n") {
@@ -67,7 +68,7 @@ func parseClockDiagnostic(detail string) (clockDiagnostic, bool) {
 	}
 	var ok bool
 	result.DeltaUS, ok = parse(parts[1], "delta_us=")
-	if !ok || result.DeltaUS >= 0 {
+	if !ok {
 		return clockDiagnostic{}, false
 	}
 	if result.Phase == clockOwnedFinal {
