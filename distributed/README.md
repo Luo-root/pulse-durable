@@ -30,6 +30,14 @@ go work init . ../pulse-durable ../pulse-durable/distributed
 
 `v0.0.0` 只是工作区模块的占位版本，不是下载地址。上述 Pulse 与 Durable 版本与当前 [go.mod](go.mod) 一致；当前根依赖是实际可下载的公开提交伪版本，包含精确大小 API，但不代表正式发版。源码联调时同时包含示例、仓库根模块和 `distributed/`；独立模块检查使用 `GOWORK=off`，按 go.mod 下载依赖。若已有 `go.work`，保留它并把需要的目录纳入现有工作区，令联调命令的 `GOWORK` 指向该文件，不覆盖已有配置。
 
+## 物理合成入口
+
+PostgreSQL 安装五个独立的 `jsonb` 入口：`storage_inspect`、`storage_compact_begin`、`storage_compact_publish`、`storage_compact_abort`、`storage_compact_find`，不再安装 `maintenance(text,jsonb)` 或兼容分派器。Go 仍提供 `InspectStorage`、`CompactStorage`、`FindMaintenance`；内部仅调用固定 SQL 白名单，不提供任意 SQL 执行。
+
+所有入口按 `session_user` 校验命名空间 `maintain` 权限，拒绝 worker token，按身份 advisory → run 行锁顺序执行，不锁 lease。内部锁定/时钟 helper 不授予客户端或 PUBLIC 执行权限，直接表 DML 仍禁止。构建在数据库锁外完成；发布验证 generation/CAS、保留并发 suffix 并重算预算。永久 guard 不因 abort/过期释放；find 的 building/closed/expired 不是发布回执。发布结果未知时只能查询回执，不自动 abort 或盲重试。
+
+`Migrate` 的签名覆盖全部新函数及 helper，授权覆盖五个入口；已有旧布局不会原地升级，签名不符时拒绝。这里没有恢复 schema 版本链，也不承诺旧 SQL 入口兼容。
+
 ## PostgreSQL 与最小程序
 
 先由数据库管理员创建数据库、独立的 schema owner 和登录角色 `pulse_app`，并授予二者数据库 CONNECT。owner 需要在目标库创建 schema；`pulse_app` 必须为非 owner、非超级用户，不得有 CREATEDB、CREATEROLE、BYPASSRLS、owner 角色成员关系或协调表直接访问权限。密码通过数据库的安全配置流程设置，不写入源码。

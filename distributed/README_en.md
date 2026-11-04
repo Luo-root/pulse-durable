@@ -30,6 +30,14 @@ go work init . ../pulse-durable ../pulse-durable/distributed
 
 `v0.0.0` is only a placeholder for the workspace module, not a downloadable release. The Pulse and Durable pins match the current [go.mod](go.mod). The root dependency is a downloadable public-commit pseudo-version containing the exact-size API; this does not establish a formal release. For source integration, include the demo, repository root, and `distributed/`; independent module checks use `GOWORK=off` and download the declared dependencies. If a `go.work` already exists, preserve it, add the required directories, and point integration commands at it without overwriting existing configuration.
 
+## Physical synthesis entrypoints
+
+PostgreSQL installs five independent `jsonb` entrypoints: `storage_inspect`, `storage_compact_begin`, `storage_compact_publish`, `storage_compact_abort`, and `storage_compact_find`. It no longer installs `maintenance(text,jsonb)` or a compatibility dispatcher. Go retains `InspectStorage`, `CompactStorage`, and `FindMaintenance`; internal calls use a fixed SQL allowlist, with no arbitrary SQL execution API.
+
+Every entrypoint checks namespace `maintain` permission against `session_user`, rejects worker tokens, and acquires identity advisory → run row locks without locking leases. Internal lock/clock helpers grant no execution to clients or PUBLIC; direct table DML remains forbidden. Building happens outside database locks; publication validates generation/CAS, preserves concurrent suffixes, and recounts the budget. Permanent guards survive abort/expiry; find's building/closed/expired states are not publication receipts. An unknown publication outcome must be resolved through receipt lookup, never automatic abort or blind retry.
+
+`Migrate` signatures cover every new function and helper, and grants cover all five entrypoints. Existing old layouts are not upgraded in place: a signature mismatch is rejected. No schema version chain or compatibility with the old SQL entrypoint is introduced.
+
 ## PostgreSQL and a minimal program
 
 Have a database administrator provision the database, a dedicated schema owner, and a separate login role named `pulse_app`, with database CONNECT for both. The owner needs permission to create a schema in the target database. `pulse_app` must not own the schema, be a superuser, have CREATEDB/CREATEROLE/BYPASSRLS, belong to the owner role, or have direct access to coordination tables. Set passwords through your secure database provisioning process, not in source code.
