@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	durable "github.com/Luo-root/pulse-durable"
+	"github.com/Luo-root/pulse-durable/filestore"
 	"github.com/Luo-root/pulse-durable/recordio"
 	"os"
 	"path/filepath"
@@ -67,9 +68,9 @@ func fixtureWireValue(v reflect.Value) any {
 	}
 }
 
-// installHistoryFixture 构造显式合成的类型化历史，而非
-// 存储适配器。保留 Initialize 的实际空快照；每个对象
-// 均由公开解码的类型化批次引入。仅用于 t.TempDir 数据。
+// installHistoryFixture 从原始 Initialize 快照构造类型化历史，
+// 通过生产 Initialize/Apply 生成完整布局，不复制物理格式编码规则。
+// 调用方须持有目标运行锁；只替换 t.TempDir 内的故障测试夹具。
 func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	t.Helper()
 	sum := sha256.Sum256([]byte(r.RunID))
@@ -80,20 +81,8 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 		t.Fatal(err)
 	}
 	var h struct {
-		Format         int      `json:"format"`
-		Generation     uint64   `json:"generation"`
-		BaseID         string   `json:"base_id"`
-		OriginID       string   `json:"origin_id"`
-		OriginDigest   [32]byte `json:"origin_digest"`
-		HistoryBytes   uint64   `json:"history_bytes"`
-		BaseRevision   uint64   `json:"base_revision"`
-		SnapshotDigest [32]byte `json:"snapshot_digest"`
-		ChainAnchor    [32]byte `json:"chain_anchor"`
-		HeadRevision   uint64   `json:"head_revision"`
-		HeadChain      [32]byte `json:"head_chain"`
-		BatchBytes     uint64   `json:"batch_bytes"`
-		SnapshotID     string   `json:"snapshot_id"`
-		HeadID         string   `json:"head_id"`
+		OriginID     string   `json:"origin_id"`
+		OriginDigest [32]byte `json:"origin_digest"`
 	}
 	if err = json.Unmarshal(data, &h); err != nil {
 		t.Fatal(err)
@@ -113,14 +102,6 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	if err = durable.ValidateInitialRecord(seed, r.RunID); err != nil {
 		t.Fatal(err)
 	}
-	// 替换选中的历史，保留不可变的 Initialize 快照。
-	h.Format = 2
-	h.Generation = 1
-	h.BaseID = ""
-	h.BaseRevision = seed.Revision
-	h.SnapshotID = h.OriginID
-	h.SnapshotDigest = h.OriginDigest
-	h.ChainAnchor = durable.SeedChain(h.SnapshotDigest)
 	ops := []map[string]any{}
 	add := func(kind, key, scope, name, seq string, state bool, value any) {
 		op := map[string]any{"kind": kind, "key": key, "expected": nil, "value": fixtureWireValue(reflect.ValueOf(value))}
@@ -193,37 +174,60 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 	if err != nil {
 		t.Fatalf("fixture typed decode: %v wire=%s", err, wire)
 	}
-	wire, err = durable.MarshalChangeBatch(batch)
+	fixtureDir := t.TempDir()
+	fixture, err := filestore.New(fixtureDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = batch.ApplyTo(&seed); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(wire)
-	chain, err := durable.NextChain(h.ChainAnchor, digest, 2)
+	ss, err := fixture.Acquire(t.Context(), seed.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	idbytes := sha256.Sum256(append([]byte("fixture"), wire...))
-	id := hex.EncodeToString(idbytes[:16])
-	env, err := json.Marshal(map[string]any{"parent_revision": 1, "parent_chain": h.ChainAnchor, "parent_id": "", "digest": digest, "chain": chain, "wire": wire})
+	t.Cleanup(func() { _ = ss.Close() })
+	if err = ss.Initialize(t.Context(), seed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ss.Apply(t.Context(), batch); err != nil {
+		t.Fatal(err)
+	}
+	if err = ss.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fixture.AuditHistory(t.Context(), durable.AuditHistoryRequest{RunID: seed.RunID}); err != nil {
+		t.Fatal(err)
+	}
+	// 先复制不可变对象，最后替换测试 head；不动调用方持有的锁文件。
+	entries, err := os.ReadDir(fixtureDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(dir, base+".batch-"+id), env, 0600); err != nil {
-		t.Fatal(err)
+	var head []byte
+	for _, entry := range entries {
+		if entry.Name() == base+".lock" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(fixtureDir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if entry.Name() == base+".head" {
+			head = data
+			continue
+		}
+		f, err := os.OpenFile(filepath.Join(dir, entry.Name()), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil || closeErr != nil {
+			t.Fatalf("fixture copy: write=%v close=%v", writeErr, closeErr)
+		}
 	}
-	h.HeadRevision = 2
-	h.HeadChain = chain
-	h.HeadID = id
-	h.BatchBytes = uint64(len(env))
-	h.HistoryBytes = h.BatchBytes
-	data, err = json.Marshal(h)
-	if err != nil {
-		t.Fatal(err)
+	if len(head) == 0 {
+		t.Fatal("fixture head missing")
 	}
-	if err = os.WriteFile(headPath, data, 0600); err != nil {
+	if err = os.WriteFile(headPath, head, 0600); err != nil {
 		t.Fatal(err)
 	}
 }

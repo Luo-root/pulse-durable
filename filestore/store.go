@@ -44,6 +44,9 @@ func New(dir string) (*Store, error) {
 }
 
 func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, error) {
+	return s.acquire(ctx, runID, true)
+}
+func (s *Store) acquire(ctx context.Context, runID string, cleanTemporaries bool) (durable.Session, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -61,9 +64,11 @@ func (s *Store) Acquire(ctx context.Context, runID string) (durable.Session, err
 	ss := &session{dir: s.dir, path: filepath.Join(s.dir, base+".head"), runID: runID, lock: lock}
 	// 绝不修改不支持或损坏的布局，甚至不清理临时文件。
 	// Load/Initialize 报告格式错误，不采纳不可变孤立对象。
-	if _, headErr := ss.readHead(); headErr == nil || errors.Is(headErr, durable.ErrNotFound) {
-		if err = removeStaleTemporaries(s.dir, base); err != nil {
-			return nil, errors.Join(err, lock.Close())
+	if cleanTemporaries {
+		if _, headErr := ss.readHead(); headErr == nil || errors.Is(headErr, durable.ErrNotFound) {
+			if err = removeStaleTemporaries(s.dir, base); err != nil {
+				return nil, errors.Join(err, lock.Close())
+			}
 		}
 	}
 	return ss, nil
@@ -113,28 +118,24 @@ const maxChainBatches uint64 = 100000
 const maxChainBytes uint64 = 256 << 20
 
 type manifest struct {
-	Format         int      `json:"format"`
-	Generation     uint64   `json:"generation"`
-	BaseID         string   `json:"base_id"`
-	OriginID       string   `json:"origin_id"`
-	OriginDigest   [32]byte `json:"origin_digest"`
-	HistoryBytes   uint64   `json:"history_bytes"`
-	BaseRevision   uint64   `json:"base_revision"`
-	SnapshotDigest [32]byte `json:"snapshot_digest"`
-	ChainAnchor    [32]byte `json:"chain_anchor"`
-	HeadRevision   uint64   `json:"head_revision"`
-	HeadChain      [32]byte `json:"head_chain"`
-	BatchBytes     uint64   `json:"batch_bytes"`
-	SnapshotID     string   `json:"snapshot_id"`
-	HeadID         string   `json:"head_id"`
-}
-type envelope struct {
-	ParentRevision uint64   `json:"parent_revision"`
-	ParentID       string   `json:"parent_id"`
-	ParentChain    [32]byte `json:"parent_chain"`
-	Digest         [32]byte `json:"digest"`
-	Chain          [32]byte `json:"chain"`
-	Wire           []byte   `json:"wire"`
+	Format              int      `json:"format"`
+	Generation          uint64   `json:"generation"`
+	BaseID              string   `json:"base_id"`
+	OriginID            string   `json:"origin_id"`
+	OriginDigest        [32]byte `json:"origin_digest"`
+	HistoryBytes        uint64   `json:"history_bytes"`
+	BaseRevision        uint64   `json:"base_revision"`
+	SnapshotDigest      [32]byte `json:"snapshot_digest"`
+	ChainAnchor         [32]byte `json:"chain_anchor"`
+	HeadRevision        uint64   `json:"head_revision"`
+	HeadChain           [32]byte `json:"head_chain"`
+	BatchBytes          uint64   `json:"batch_bytes"`
+	SnapshotID          string   `json:"snapshot_id"`
+	HeadID              string   `json:"head_id"`
+	HeadIndexDigest     [32]byte `json:"head_index_digest"`
+	BaseIndexDigest     [32]byte `json:"base_index_digest"`
+	SnapshotIndexID     string   `json:"snapshot_index_id"`
+	SnapshotIndexDigest [32]byte `json:"snapshot_index_digest"`
 }
 type session struct {
 	mu               sync.Mutex
@@ -173,23 +174,31 @@ func (s *session) legacy() error {
 func (s *session) readHead() (manifest, error) {
 	var h manifest
 	if err := s.legacy(); err != nil {
-		return h, err
+		return h, invalidRecord(err)
 	}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return h, durable.ErrNotFound
 	}
 	if err != nil {
-		return h, err
+		return h, invalidRecord(err)
 	}
 	if err = json.Unmarshal(data, &h); err != nil {
-		return h, err
+		return h, invalidRecord(err)
 	}
-	if !validID(h.SnapshotID) || !validID(h.OriginID) || h.Generation == 0 || (h.BaseRevision > 1 && !validID(h.BaseID)) || (h.BaseRevision == 1 && h.BaseID != "") || (h.HeadRevision > 1 && !validID(h.HeadID)) || (h.HeadRevision == 1 && h.HeadID != "") || h.Format != 2 || h.BaseRevision == 0 || h.HeadRevision < h.BaseRevision || h.HeadRevision-h.BaseRevision > maxChainBatches || h.BatchBytes > maxChainBytes || h.HistoryBytes < h.BatchBytes {
-		return h, errors.New("filestore: invalid or unsupported manifest")
+	if h.Format != manifestFormat {
+		return h, indexError("unsupported manifest format; use a new directory")
 	}
-	if h.BaseRevision == 1 && (h.ChainAnchor != durable.SeedChain(h.SnapshotDigest) || h.SnapshotID != h.OriginID || h.SnapshotDigest != h.OriginDigest) {
-		return h, errors.New("filestore: invalid snapshot chain anchor")
+	if !validID(h.SnapshotID) || !validID(h.OriginID) || h.Generation == 0 || (h.BaseRevision > 1 && !validID(h.BaseID)) || (h.BaseRevision == 1 && h.BaseID != "") || (h.HeadRevision > 1 && !validID(h.HeadID)) || (h.HeadRevision == 1 && h.HeadID != "") || h.BaseRevision == 0 || h.HeadRevision < h.BaseRevision || h.HeadRevision-h.BaseRevision > maxChainBatches || h.BatchBytes > maxChainBytes || h.HistoryBytes < h.BatchBytes || !validSnapshotRef(currentSnapshotRef(h)) {
+		return h, indexError("invalid manifest")
+	}
+	if h.BaseRevision == 1 && (h.ChainAnchor != durable.SeedChain(h.SnapshotDigest) || h.SnapshotID != h.OriginID || h.SnapshotDigest != h.OriginDigest || h.HistoryBytes != h.BatchBytes || h.BaseIndexDigest != [32]byte{}) {
+		return h, indexError("invalid snapshot chain anchor")
+	}
+	// 同一修订必须只有一个链及文件引用；精确读取和同 base 快捷路径
+	// 可能不再读取批，因此在权威头内完成常量时间的闭合校验。
+	if h.HeadRevision == h.BaseRevision && headBatch(h) != baseSnapshot(h).Base {
+		return h, indexError("head and base references disagree at the same revision")
 	}
 	return h, nil
 }
@@ -212,84 +221,21 @@ func (s *session) batchPath(id string) string {
 }
 
 // load 仅验证头选中的文件，绝不使用排序后的目录条目。
-func (s *session) load() (durable.RunRecord, error) {
+func (s *session) load(ctx context.Context) (durable.RunRecord, error) {
 	h, err := s.readHead()
 	if err != nil {
 		return durable.RunRecord{}, err
 	}
-	data, err := os.ReadFile(s.snapshotPath(h.SnapshotID))
+	snapshot, err := s.selectSnapshot(ctx, h, h.HeadRevision)
 	if err != nil {
 		return durable.RunRecord{}, err
 	}
-	if sha256.Sum256(data) != h.SnapshotDigest {
-		return durable.RunRecord{}, errors.New("filestore: snapshot digest mismatch")
-	}
-	r, err := recordio.DecodeSnapshot(data)
+	image, err := s.replay(ctx, h, snapshot, headBatch(h))
 	if err != nil {
-		return r, err
+		return durable.RunRecord{}, err
 	}
-	if r.RunID != s.runID || r.Revision != h.BaseRevision || r.Format != durable.RecordFormat {
-		return r, errors.New("filestore: snapshot identity mismatch")
-	}
-	if h.BaseRevision == 1 {
-		if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
-			return r, err
-		}
-	}
-	// 沿经过认证的父指针反向遍历，再连续重放。
-	batches := make([]durable.ChangeBatch, int(h.HeadRevision-h.BaseRevision))
-	chain := h.HeadChain
-	id := h.HeadID
-	var total uint64
-	for rev := h.HeadRevision; rev > h.BaseRevision; rev-- {
-		if !validID(id) {
-			return r, errors.New("filestore: invalid batch file identity")
-		}
-		bytes, err := os.ReadFile(s.batchPath(id))
-		if err != nil {
-			return r, err
-		}
-		total += uint64(len(bytes))
-		if total > maxChainBytes {
-			return r, errors.New("filestore: chain byte budget exceeded")
-		}
-		var e envelope
-		if err = json.Unmarshal(bytes, &e); err != nil {
-			return r, err
-		}
-		digest := sha256.Sum256(e.Wire)
-		next, err := durable.NextChain(e.ParentChain, digest, rev)
-		if err != nil {
-			return r, err
-		}
-		if e.ParentRevision != rev-1 || e.Digest != digest || e.Chain != chain || next != chain {
-			return r, errors.New("filestore: batch chain mismatch")
-		}
-		b, err := durable.UnmarshalChangeBatch(e.Wire)
-		if err != nil {
-			return r, err
-		}
-		canonical, err := durable.MarshalChangeBatch(b)
-		if err != nil || string(canonical) != string(e.Wire) {
-			return r, errors.New("filestore: noncanonical batch")
-		}
-		if b.Header().Revision != rev {
-			return r, errors.New("filestore: batch revision mismatch")
-		}
-		batches[int(rev-h.BaseRevision-1)] = b
-		chain = e.ParentChain
-		id = e.ParentID
-	}
-	if id != h.BaseID || chain != h.ChainAnchor || total != h.BatchBytes {
-		return r, errors.New("filestore: incomplete chain")
-	}
-	for _, b := range batches {
-		if _, err = b.ApplyTo(&r); err != nil {
-			return r, err
-		}
-	}
-	s.head, s.record, s.loaded = h, r, true
-	return r, nil
+	s.head, s.record, s.loaded = h, image.Record, true
+	return image.Record, nil
 }
 func isolate(r durable.RunRecord) (durable.RunRecord, error) {
 	return durable.CloneRecord(r), nil
@@ -301,7 +247,7 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 		return durable.RunRecord{}, err
 	}
 	// 即使此会话已有投影，公开 Load 仍从权威状态读取。
-	r, err := s.load()
+	r, err := s.load(ctx)
 	if err != nil {
 		s.loaded = false
 		return durable.RunRecord{}, err
@@ -341,7 +287,7 @@ func (s *session) Initialize(ctx context.Context, r durable.RunRecord) error {
 	if err != nil {
 		return err
 	}
-	h := manifest{Format: 2, Generation: 1, OriginID: id, OriginDigest: digest, BaseRevision: 1, SnapshotDigest: digest, ChainAnchor: anchor, HeadRevision: 1, HeadChain: anchor, SnapshotID: id}
+	h := manifest{Format: manifestFormat, Generation: 1, OriginID: id, OriginDigest: digest, BaseRevision: 1, SnapshotDigest: digest, ChainAnchor: anchor, HeadRevision: 1, HeadChain: anchor, SnapshotID: id}
 	if err = s.writeImmutable(ctx, s.snapshotPath(id), data); err != nil {
 		return err
 	}
@@ -370,7 +316,7 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 		}
 	}()
 	if !s.loaded {
-		if _, err = s.load(); err != nil {
+		if _, err = s.load(ctx); err != nil {
 			return ack, err
 		}
 	}
@@ -393,31 +339,33 @@ func (s *session) Apply(ctx context.Context, b durable.ChangeBatch) (ack durable
 	if err != nil {
 		return ack, err
 	}
-	e := envelope{ParentRevision: h.HeadRevision, ParentChain: h.HeadChain, ParentID: h.HeadID, Digest: digest, Chain: next, Wire: wire}
-	data, err := json.Marshal(e)
+	if uint64(len(wire))+batchIndexSize > maxChainBytes-h.BatchBytes {
+		return ack, errors.New("filestore: chain byte budget exceeded; explicit compaction required")
+	}
+	if uint64(len(wire))+batchIndexSize > ^uint64(0)-h.HistoryBytes {
+		return ack, durable.ErrLimitExceeded
+	}
+	parent := headBatch(h)
+	skip, err := s.locateBatch(ctx, h, parent, b.Header().Revision-lowbit(b.Header().Revision-1))
 	if err != nil {
 		return ack, err
 	}
-	if uint64(len(data)) > maxChainBytes-h.BatchBytes {
-		return ack, errors.New("filestore: chain byte budget exceeded; explicit compaction required")
+	id, err := newID()
+	if err != nil {
+		return ack, err
 	}
+	data := encodeBatch(id, batchIndex{Parent: parent, Skip: skip, WireDigest: digest, WireSize: uint64(len(wire))}, wire)
 	// ApplyTo 在修改任何对象前验证精确的类型化前置条件。
 	ack, err = b.ApplyTo(&s.record)
 	if err != nil {
 		return durable.CommitAck{}, err
 	}
 	touched = true
-	id, err := newID()
-	if err != nil {
-		return durable.CommitAck{}, err
-	}
 	if err = s.writeImmutable(ctx, s.batchPath(id), data); err != nil {
 		return durable.CommitAck{}, err
 	}
 	h.HeadRevision, h.HeadChain, h.HeadID = b.Header().Revision, next, id
-	if uint64(len(data)) > ^uint64(0)-h.HistoryBytes {
-		return durable.CommitAck{}, durable.ErrLimitExceeded
-	}
+	h.HeadIndexDigest = sha256.Sum256(data[:batchIndexSize])
 	h.BatchBytes += uint64(len(data))
 	h.HistoryBytes += uint64(len(data))
 	if err = s.publish(ctx, h); err != nil {
