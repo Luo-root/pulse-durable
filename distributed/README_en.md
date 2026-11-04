@@ -38,6 +38,14 @@ Every entrypoint checks namespace `maintain` permission against `session_user`, 
 
 `Migrate` signatures cover every new function and helper, and grants cover all five entrypoints. Existing old layouts are not upgraded in place: a signature mismatch is rejected. No schema version chain or compatibility with the old SQL entrypoint is introduced.
 
+## History reference pins
+
+`postgres.Coordinator` separately implements `distributed.HistoryPinner` and `HistoryPinMutationReader`, without expanding the Coordinator interface. Fixed SQL entrypoints are `pin_create`, `pin_renew`, `pin_release`, `pin_find`, and `pin_find_mutation`; internal helpers grant no execution to application roles or PUBLIC.
+
+Finite creation requires `replay`; long-lived creation requires `maintain`. Renewal requires the original `session_user` holder with current permission; long-lived operations require `maintain`. `HolderDigest` is a binding digest, not a credential. `maintain` can release on behalf of a holder but still requires version CAS. Current-state and immutable-receipt lookup require `query`. PinIDs are never reused, Mutation.ID is shared across all pin writes within an Identity, and SQL recomputes the complete canonical digest. A nil renewal TTL preserves the policy; expired/released pins cannot be revived. Resolve unknown outcomes through exact receipts; absent never authorizes blind replay.
+
+History pins protect existing revision+chain references only, not GC, retention, summary, or replay. The current development layout adds three tables and the entrypoints; `Migrate` only installs a new layout or validates an exact match, without upgrading old layouts or deleting databases. Real-test filter: `go test -count=1 -v ./postgres -run '^TestPostgresHistoryPin$'`, with a dedicated `PULSE_DISTRIBUTED_TEST_DSN` and `PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE=yes` explicitly configured. Without them the test skips, which is not database acceptance.
+
 ## PostgreSQL and a minimal program
 
 Have a database administrator provision the database, a dedicated schema owner, and a separate login role named `pulse_app`, with database CONNECT for both. The owner needs permission to create a schema in the target database. `pulse_app` must not own the schema, be a superuser, have CREATEDB/CREATEROLE/BYPASSRLS, belong to the owner role, or have direct access to coordination tables. Set passwords through your secure database provisioning process, not in source code.

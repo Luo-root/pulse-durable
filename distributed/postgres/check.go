@@ -11,6 +11,10 @@ BEGIN
  IF n<>1 OR marker<>'pulse-durable-distributed-layout-v1' THEN RETURN false; END IF;
  SELECT encode(sha256(convert_to(s,'UTF8')),'hex') INTO actual FROM (` + catalogSQL + `) AS catalog(s);
  IF actual IS DISTINCT FROM expected THEN RETURN false; END IF;
+ -- 当前开发布局必须具备历史 pin 表与五个独立入口，不接受旧布局自签名。
+ IF to_regclass('pulse_durable_distributed.history_pins') IS NULL OR to_regclass('pulse_durable_distributed.pin_guards') IS NULL OR to_regclass('pulse_durable_distributed.pin_receipts') IS NULL OR
+ (SELECT count(*) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname IN ('pin_create','pin_renew','pin_release','pin_find','pin_find_mutation') AND proargtypes='3802'::oidvector AND prosecdef)<>5 THEN RETURN false; END IF;
+ IF EXISTS(SELECT 1 FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname LIKE 'pin_%' AND proname NOT IN ('pin_create','pin_renew','pin_release','pin_find','pin_find_mutation') AND has_function_privilege(session_user,oid,'EXECUTE')) THEN RETURN false; END IF;
  IF NOT (` + layoutSafetySQL + `) THEN RETURN false; END IF;
  IF pg_is_in_recovery() OR current_setting('transaction_isolation')<>'read committed' THEN RETURN false; END IF;
  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname=session_user AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolbypassrls))
