@@ -157,5 +157,6 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	// 确认后只修改私有 record。
 	tx.apply(&s.record)
 	s.record.Format, s.record.Revision = RecordFormat, batch.header.Revision
+	s.updateMessageIndex(tx)
 	return nil
 }

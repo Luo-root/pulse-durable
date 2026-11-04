@@ -15,7 +15,7 @@ Both persistent backends complete the same business task, but differ in transact
 
 ## Current dependencies and historical experiment
 
-The reproducible source now pins Go `1.26.0`, Pulse `v0.5.0` and Durable `v0.1.0`. This legacy two-framework module retains go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`. Aligning source dependencies with official releases does not mean the historical data below was rerun with those versions or Go 1.26.
+The reproducible source requires Go `1.26.0+` and pins Pulse `v0.5.2` and Durable `v0.1.1-0.20261029022550-ce30b655d639`. This legacy two-framework module retains go-workflows `v1.4.2`, with pure-Go `modernc.org/sqlite v1.27.0`. `GOWORK=off` uses these public dependencies; source integration must identify its workspace separately. Updating dependencies does not rerun the historical measurements below.
 
 The sampling versions of the 2026-10-17 historical experiment remain unchanged:
 

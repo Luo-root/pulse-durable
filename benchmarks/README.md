@@ -15,7 +15,7 @@
 
 ## 当前依赖与历史实验
 
-当前可复跑源码固定 Go `1.26.0`、Pulse `v0.5.0`、Durable `v0.1.0`；旧双框架模块的对照仍保留 go-workflows `v1.4.2`，其 pure-Go SQLite 依赖为 `modernc.org/sqlite v1.27.0`。这只是源码依赖对齐正式版本，不表示下面的历史数据已在这些版本或 Go 1.26 上重跑。
+当前可复跑源码要求 Go `1.26.0+`，固定 Pulse `v0.5.2`、Durable `v0.1.1-0.20261029022550-ce30b655d639`；旧双框架模块的对照仍保留 go-workflows `v1.4.2`，其 pure-Go SQLite 依赖为 `modernc.org/sqlite v1.27.0`。`GOWORK=off` 使用这些公开依赖；源码联调须另行注明 workspace，不能混称公开依赖验收。下面的历史数据未因依赖更新而重跑。
 
 2026-10-17 历史实验的采样版本保持不变：
 

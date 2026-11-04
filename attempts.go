@@ -21,6 +21,9 @@ type runState struct {
 	// 同一 Resume 的各层恢复计划共用首次核验的权威描述符，后续 Open 升代际
 	// 不得为晚装配的子图别名制造另一份本地消息账。
 	restoreStreams map[string]StreamDescriptorRecord
+	// 消息索引只定位各组最新尝试，record.Messages 始终是事实源。
+	messageIndex      map[messageGroupKey]messageIndexEntry
+	messageIndexReady bool
 }
 
 func (s *runState) hooks() pulse.CheckpointHooks {
@@ -41,6 +44,8 @@ func checkCheckpointContext(ctx context.Context) error {
 
 // initialize 只在业务启动前调用；确认成功后发布，未知结果封闭本次运行。
 func (s *runState) initialize(ctx context.Context, proposed RunRecord) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.stopped != nil {
 		return s.stopped
 	}
@@ -67,6 +72,9 @@ func (s *runState) initialize(ctx context.Context, proposed RunRecord) (err erro
 		return s.stop(&operationError{op: "store initialize", cause: err})
 	}
 	s.record = cloneRecord(proposed)
+	if err := s.rebuildMessageIndex(); err != nil {
+		return s.stop(err)
+	}
 	return nil
 }
 
