@@ -23,11 +23,16 @@ var historyPinSQL string
 //go:embed snapshot_budget.sql
 var snapshotBudgetSQL string
 
+//go:embed retention_policy.sql
+var retentionPolicySQL string
+
 // Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
 // 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
 // 授权物理合成与长期历史 pin；replay 授权有限历史 pin，retain 仍为预留权限。
 // 普通工作进程的恢复查询还需授予 query。
 // 调用方必须配置独立的非所有者、非超级用户登录角色。
+var ErrUnsupportedCapability = errors.New("distributed postgres: unsupported retention capability")
+
 type Grant struct {
 	Role        string
 	Namespace   string
@@ -74,7 +79,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		return scrub(e, false)
 	}
 	if !exists {
-		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL+historyPinSQL); e != nil {
+		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL+historyPinSQL+retentionPolicySQL); e != nil {
 			return scrub(e, false)
 		}
 		if _, e = tx.Exec(ctx, checkSQL); e != nil {
@@ -88,6 +93,13 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return scrub(e, false)
 		}
 	} else {
+		var retentionReady bool
+		if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+			return scrub(e, false)
+		}
+		if !retentionReady {
+			return ErrUnsupportedCapability
+		}
 		if e = validate(ctx, tx, false); e != nil {
 			return e
 		}
@@ -95,7 +107,14 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return e
 		}
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	var retentionReady bool
+	if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+		return scrub(e, false)
+	}
+	if !retentionReady {
+		return ErrUnsupportedCapability
+	}
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -108,7 +127,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return errors.New("distributed postgres: grant requires isolated non-owner role")
 		}
 		role := pgx.Identifier{g.Role}.Sanitize()
-		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
+		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
 			return scrub(e, false)
 		}
 		for _, permission := range g.Permissions {
