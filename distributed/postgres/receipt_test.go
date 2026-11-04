@@ -25,7 +25,7 @@ func receiptQuery(t *testing.T, admin *pgxpool.Pool, i d.Identity, m d.Mutation,
 }
 
 func TestReceiptLayoutAndDecoder(t *testing.T) {
-	for _, fragment := range []string{"CHECK(version=7)", "mutation_guards", "mutation_receipts", "receipt_coverage_floor", "receipt_observed_through", "receipt missing inside coverage"} {
+	for _, fragment := range []string{"CHECK(layout_marker='pulse-durable-distributed-layout-v1')", "mutation_guards", "mutation_receipts", "receipt_coverage_floor", "receipt_observed_through", "receipt missing inside coverage"} {
 		if !strings.Contains(schemaSQL, fragment) {
 			t.Fatal("missing", fragment)
 		}

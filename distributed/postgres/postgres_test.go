@@ -113,9 +113,9 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 		t.Fatalf("migrate: %v", e)
 	}
 	t.Logf("migrate ok ns=%s role=%s", ns, role)
-	var schemaVersion int
-	if e = admin.QueryRow(ctx, "SELECT version FROM pulse_durable_distributed.meta").Scan(&schemaVersion); e != nil || schemaVersion != 7 {
-		t.Fatalf("migration version=%d err=%v", schemaVersion, e)
+	var layoutMarker string
+	if e = admin.QueryRow(ctx, "SELECT layout_marker FROM pulse_durable_distributed.meta").Scan(&layoutMarker); e != nil || layoutMarker != "pulse-durable-distributed-layout-v1" {
+		t.Fatalf("migration layout marker=%q err=%v", layoutMarker, e)
 	}
 	cfg, e := pgxpool.ParseConfig(dsn)
 	if e != nil {
@@ -166,11 +166,11 @@ func TestPostgresProtocol(t *testing.T) {
 	var port int
 	var db, ver string
 	var pid int
-	var meta int
-	if e := admin.QueryRow(ctx, "SELECT coalesce(inet_server_addr()::text,''),inet_server_port(),current_database(),version(),pg_backend_pid(),(SELECT version FROM pulse_durable_distributed.meta)").Scan(&addr, &port, &db, &ver, &pid, &meta); e != nil {
+	var layoutMarker string
+	if e := admin.QueryRow(ctx, "SELECT coalesce(inet_server_addr()::text,''),inet_server_port(),current_database(),version(),pg_backend_pid(),(SELECT layout_marker FROM pulse_durable_distributed.meta)").Scan(&addr, &port, &db, &ver, &pid, &layoutMarker); e != nil {
 		t.Fatal(e)
 	}
-	t.Logf("db instance addr=%s port=%d db=%s version=%s pid=%d meta=%d", addr, port, db, ver, pid, meta)
+	t.Logf("db instance addr=%s port=%d db=%s version=%s pid=%d layout_marker=%s", addr, port, db, ver, pid, layoutMarker)
 	t.Run("concurrent claims and uint64 revision", func(t *testing.T) {
 		task := taskFixture(t, ns, "concurrent")
 		if _, e := c.Submit(ctx, task); e != nil {

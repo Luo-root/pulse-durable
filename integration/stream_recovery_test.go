@@ -1589,6 +1589,7 @@ type failedStreamCase struct {
 	Retries                            int
 	Always, Nested                     bool
 	Alias, HostCancel, Catch, Indirect bool
+	ApplyDelay                         time.Duration
 }
 
 // 屏障是 Session.Save 的真实返回，绝不是 Core 调用间的休眠。
@@ -1606,6 +1607,8 @@ func TestFailedStreamRecoveryAcrossProcessExit(t *testing.T) {
 		{Name: "legacy-second", Outputs: 3, At: 2, Fault: "legacy", Retries: 2},
 		{Name: "constant", Outputs: 3, At: 1, Fault: "exit", Retries: 2, Always: true},
 		{Name: "constant-control", Outputs: 1, Retries: 2, Always: true},
+		// 慢存储仍必须耗尽业务重试并跨进程恢复，不能撞上旧的 8 秒宿主预算。
+		{Name: "constant-control-slow-store", Outputs: 1, Retries: 2, Always: true, ApplyDelay: 600 * time.Millisecond},
 		{Name: "no-retry", Outputs: 1, At: 1, Fault: "exit", Always: true},
 		{Name: "nested", Outputs: 2, At: 1, Fault: "uncertain", Retries: 2, Always: true, Nested: true},
 		{Name: "confirmed-alias", Outputs: 1, At: 1, Fault: "exit", Retries: 2, Alias: true},
@@ -1688,13 +1691,14 @@ func TestFailedStreamRecoveryAcrossProcessExit(t *testing.T) {
 
 func failedStreamProcess(t *testing.T, dir string, tc failedStreamCase, phase string) error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	// 宿主预算覆盖多轮同步文件发布及 race 开销；进程与测试超时逐层留出清理余量。
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	data, err := json.Marshal(tc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStreamProcessHelper$", "-test.count=1", "-test.timeout=10s")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFailedStreamProcessHelper$", "-test.count=1", "-test.timeout=45s")
 	cmd.Env = append(os.Environ(), "PULSE_FAILED_DIR="+dir, "PULSE_FAILED_CASE="+string(data), "PULSE_FAILED_PHASE="+phase)
 	output, err := boundedProcessOutput(cmd)
 	t.Logf("%s/%s: %s", tc.Name, phase, output)
@@ -1723,7 +1727,7 @@ func TestFailedStreamProcessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	g := failedStreamGraph(t, dir, tc, aliasSaved, cancel)
 	opts := durable.RunOptions{RunID: "stream-run", Version: "failed-stream/1"}
@@ -1903,7 +1907,21 @@ func (s *failedStreamStore) Acquire(ctx context.Context, id string) (durable.Ses
 }
 
 func (s *failedStreamSession) Apply(ctx context.Context, batch durable.ChangeBatch) (durable.CommitAck, error) {
-	return observeApply(ctx, s.Session, batch, s.observe)
+	if delay := s.owner.test.ApplyDelay; delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return durable.CommitAck{}, ctx.Err()
+		}
+	}
+	ack, err := observeApply(ctx, s.Session, batch, s.observe)
+	if err != nil {
+		// 运行时刻意隐藏底层错误文本，测试日志需保留存储及超时原因。
+		s.owner.t.Logf("failed-stream Apply: %v; context=%v", err, ctx.Err())
+	}
+	return ack, err
 }
 func (s *failedStreamSession) observe(record durable.RunRecord, commit func() error) error {
 	tc := s.owner.test
