@@ -438,7 +438,7 @@ func TestPostgresSnapshotRejectsUnknownMalformedDuplicateAndOldClient(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"unknown_kind", "unknown_field", "wrong_type", "duplicate_op", "duplicate_json", "old_client", "old_maintenance"} {
+	for _, kind := range []string{"unknown_kind", "unknown_field", "wrong_type", "duplicate_op", "duplicate_json", "old_client", "storage_missing_budget"} {
 		t.Run(kind, func(t *testing.T) {
 			var obj map[string]any
 			dec := json.NewDecoder(strings.NewReader(string(wire)))
@@ -465,15 +465,15 @@ func TestPostgresSnapshotRejectsUnknownMalformedDuplicateAndOldClient(t *testing
 				mutated = []byte(strings.Replace(string(mutated), `"version":1`, `"version":1,"version":1`, 1))
 			}
 			state := h.publication(t)
-			if kind == "old_client" || kind == "old_maintenance" {
-				// 绕过 Go 的新协议信封，模拟已打开连接的旧二进制。
-				api, opname := "api", "get"
-				if kind == "old_maintenance" {
-					api, opname = "maintenance", "inspect"
-				}
+			if kind == "old_client" || kind == "storage_missing_budget" {
+				// 直接调用现行 SQL 入口，验证缺少预算协议信封时拒绝且不发布。
 				a, _ := json.Marshal(args(h.token.Identity))
 				var response []byte
-				err = c.pool.QueryRow(context.Background(), "SELECT pulse_durable_distributed."+api+"($1,$2::jsonb)", opname, a).Scan(&response)
+				if kind == "storage_missing_budget" {
+					err = c.pool.QueryRow(context.Background(), "SELECT pulse_durable_distributed.storage_inspect($1::jsonb)", a).Scan(&response)
+				} else {
+					err = c.pool.QueryRow(context.Background(), "SELECT pulse_durable_distributed.api($1,$2::jsonb)", "get", a).Scan(&response)
+				}
 				err = scrub(err, false)
 			} else {
 				err = h.rawApply(t, mutated)
