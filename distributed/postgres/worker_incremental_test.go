@@ -204,7 +204,7 @@ func TestPostgresWorker500MessagesUnknownResponseRecovery(t *testing.T) {
 	}
 	var count, receiptsCount int
 	var snapshotRevision int
-	if e = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts m JOIN pulse_durable_distributed.mutation_guards g USING(namespace,run_id,mutation_id) WHERE namespace=$1 AND run_id=$2 AND g.operation='apply'),(convert_from(record,'UTF8')::jsonb->>'revision')::int FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&count, &receiptsCount, &snapshotRevision); e != nil {
+	if e = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts m JOIN pulse_durable_distributed.mutation_guards g USING(namespace,run_id,mutation_id) WHERE namespace=$1 AND run_id=$2 AND g.operation='apply'),(convert_from(record,'UTF8')::jsonb->'record'->>'revision')::int FROM pulse_durable_distributed.runs WHERE namespace=$1 AND run_id=$2`, ns, task.Identity().RunID).Scan(&count, &receiptsCount, &snapshotRevision); e != nil {
 		t.Fatal(scrub(e, false))
 	}
 	if count < 1500 || count != receiptsCount || snapshotRevision != 1 {

@@ -32,6 +32,7 @@ func waitBlocked(t *testing.T, admin *pgxpool.Pool, blocker uint32) {
 
 func txCall(t *testing.T, tx pgx.Tx, op string, a map[string]any) []byte {
 	t.Helper()
+	a["snapshot_budget_version"] = snapshotBudgetVersion
 	b, e := json.Marshal(a)
 	if e != nil {
 		t.Fatal(e)

@@ -22,13 +22,13 @@ mkdir distributed-demo
 cd distributed-demo
 go mod init example.com/distributed-demo
 go mod edit -go=1.26.0
-go mod edit -require=github.com/Luo-root/pulse@v0.5.0
-go mod edit -require=github.com/Luo-root/pulse-durable@v0.1.1-0.20261024124930-5296b17b7011
+go mod edit -require=github.com/Luo-root/pulse@v0.5.2
+go mod edit -require=github.com/Luo-root/pulse-durable@v0.1.1-0.20261103072421-d01fdac67b4f
 go mod edit -require=github.com/Luo-root/pulse-durable/distributed@v0.0.0
-go mod edit -replace=github.com/Luo-root/pulse-durable/distributed=../pulse-durable/distributed
+go work init . ../pulse-durable ../pulse-durable/distributed
 ```
 
-`v0.0.0` is only a placeholder for the local replacement, not a downloadable release. The Pulse and Durable pins match the current [go.mod](go.mod); the checkout must contain `distributed/`. If a parent directory already has `go.work`, add the demo and `distributed/` to it, or set `GOWORK=off` for these commands.
+`v0.0.0` is only a placeholder for the workspace module, not a downloadable release. The Pulse and Durable pins match the current [go.mod](go.mod). The root dependency is a downloadable public-commit pseudo-version containing the exact-size API; this does not establish a formal release. For source integration, include the demo, repository root, and `distributed/`; independent module checks use `GOWORK=off` and download the declared dependencies. If a `go.work` already exists, preserve it, add the required directories, and point integration commands at it without overwriting existing configuration.
 
 ## PostgreSQL and a minimal program
 
@@ -179,7 +179,7 @@ go build -o demo .
 
 Run `./demo query` in another terminal; the completed task should be `succeeded`. The worker keeps polling; press Ctrl+C to drain and exit. Use `demo.exe` on Windows. To observe `canceled`, run `./demo cancel` before a new task is claimed; canceling a completed task returns its existing terminal state. Use a new RunID for another run.
 
-`Migrate` explicitly installs or verifies physical schema version 6 in the separate `pulse_durable_distributed` schema and grants namespace permissions. Old v1–v5 or incompatible schemas are explicitly rejected without writing, deleting, or migrating old data; use a new database. Logical records remain format 2 and coordination protocol remains 1, independently of the physical schema version. Checkpoints use mandatory InitializeOwned/ApplyOwned with one initial snapshot, immutable batches and a fenced revision/chain head CAS. `New` validates and connects without DDL. The demo uses one application role for simplicity; deploy separate submit/query/worker/cancel roles with multiple `postgres.Grant` entries as needed. Give workers query permission too, for recovery queries. Do not call `New` with administrator credentials or use legacy `postgresstore` tables or sessions for these tasks.
+`Migrate` explicitly installs or verifies physical schema version 7 in the separate `pulse_durable_distributed` schema and grants namespace permissions. Old v1–v6 or incompatible schemas are explicitly rejected without writing, deleting, or migrating old data; use a new database. Logical records remain format 2 and coordination protocol remains 1, independently of the physical schema version. Checkpoints use mandatory InitializeOwned/ApplyOwned with one initial snapshot, immutable batches and a fenced revision/chain head CAS. `New` validates and connects without DDL. The demo uses one application role for simplicity; deploy separate submit/query/worker/cancel roles with multiple `postgres.Grant` entries as needed. Give workers query permission too, for recovery queries. Do not call `New` with administrator credentials or use legacy `postgresstore` tables or sessions for these tasks.
 
 ## Routing and upgrades
 
@@ -189,7 +189,9 @@ Run `./demo query` in another terminal; the completed task should be `succeeded`
 - Install matching contracts on producers and workers. Keep old registrations available during rolling upgrades to process old tasks. Tasks without compatible workers stay queued; validation failures after claiming can become blocked. The current API has no general unblock/requeue administration operation; do not edit tables directly.
 - Resubmitting the same canonical task under `(Namespace, RunID)` returns `Deduplicated=true` without resetting checkpoints or terminal status. Different content returns `ErrSubmitConflict`. Terminal identities are not automatically reclaimed; do not reuse RunIDs.
 
-Inputs must have a finite encoding: payloads are limited to 4 MiB, envelopes to 8 MiB, Codec manifests to 4096 entries, and checkpoints to 16 MiB. Do not submit functions, channels, or process-local addresses.
+Inputs must have a finite encoding: payloads are limited to 4 MiB, envelopes to 8 MiB, Codec manifests to 4096 entries, and checkpoints to 16 MiB. PostgreSQL measures its 16 MiB limit against the current complete `EncodeSnapshot` representation, including nil/empty containers, base64, JSON escaping, and revision digits. Each Apply counts only changed objects; the database independently derives sizes from the actual wire and its current object/container ledger, publishing the ledger, head, batch, guard, receipt, and event atomically. An oversized candidate returns `postgres.ErrSnapshotLimit` (also matching `durable.ErrLimitExceeded` via `errors.Is`) without publishing those changes. History compaction does not reset the current snapshot budget; the separate active-log limits remain 256 MiB and 100000 batches. Load verifies the ledger against the replayed snapshot and rejects inconsistencies without repair. Do not submit functions, channels, or process-local addresses.
+
+The PostgreSQL budget protocol is `snapshot_budget_version=1`, required by every API and maintenance request, including requests from already connected older clients. Before connecting, `New` checks that the root module provides `ChangeBatch.SnapshotSizeDelta`; otherwise it returns `ErrSnapshotBudgetUnsupported`. The current go.mod pins the downloadable root version `v0.1.1-0.20261103072421-d01fdac67b4f`, which includes this capability and supports independent module checks with `GOWORK=off`. To regress the current root sources together, use a Go 1.26 `go.work` explicitly including the repository root and `distributed`. Logical format 2, batch wire 1, and snapshot version 1 remain unchanged.
 
 ## Lifecycle and queries
 
@@ -224,4 +226,11 @@ Coordination uses one authoritative PostgreSQL write primary. Operations lock th
 
 ## Validation entry points
 
-Use `go test -run '^$' .` to compile the demo without connecting to a database. The module's [systemtest](systemtest), [networktest](networktest), [crossmachine](crossmachine), and [soaktest](soaktest) packages provide real-database, fault, and cross-process validation entry points; check each test's configuration and observed results. Performance and acceptance data belong on the single [Scale and performance](../site/en/guide/performance.md) page. A demo run or compile check is not deployment acceptance. This page does not claim the complete distributed real-database suite passed this round; local strict-clock checks remain a risk requiring separate validation closure.
+Use `go test -run '^$' .` to compile the demo without connecting to a database. The module's [systemtest](systemtest), [networktest](networktest), [crossmachine](crossmachine), and [soaktest](soaktest) packages provide real-database, fault, and cross-process validation entry points; check each test's configuration and observed results. Keep current comparisons on [Production performance comparison](../site/en/guide/production-comparison.md), with historical scale and versions on [Scale and performance](../site/en/guide/performance.md). A demo run or compile check is not deployment acceptance. This page does not claim the complete distributed real-database suite passed this round; local strict-clock checks remain a risk requiring separate validation closure.
+
+Independent PG tests use the current public dependency with explicit `GOWORK=off`; joint root-source regression uses a workspace containing both the root module and distributed. Set `PULSE_DISTRIBUTED_TEST_DSN` to a dedicated disposable database and `PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE=yes`, then run both groups below from distributed. Missing-DSN skips do not establish database acceptance. The two 16 MiB payload cases run separately without race instrumentation; protocol, concurrency, recovery, and small-object checks retain race instrumentation. This prevents per-byte validation overhead from exhausting the package budget without changing clock, lease, or recovery assertions.
+
+```sh
+go test -mod=readonly -race -count=1 -timeout=240s -skip '^(TestPostgresSnapshotOriginalCapacitySequence|TestPostgresSnapshotExactBoundaryAndOneByte)$' -v ./postgres
+go test -mod=readonly -count=1 -timeout=240s -run '^(TestPostgresSnapshotOriginalCapacitySequence|TestPostgresSnapshotExactBoundaryAndOneByte)$' -v ./postgres
+```
