@@ -38,6 +38,14 @@ PostgreSQL 安装五个独立的 `jsonb` 入口：`storage_inspect`、`storage_c
 
 `Migrate` 的签名覆盖全部新函数及 helper，授权覆盖五个入口；已有旧布局不会原地升级，签名不符时拒绝。这里没有恢复 schema 版本链，也不承诺旧 SQL 入口兼容。
 
+## 历史引用 pin
+
+`postgres.Coordinator` 另行实现独立的 `distributed.HistoryPinner` 与 `HistoryPinMutationReader`，不扩张 Coordinator 接口。固定 SQL 入口为 `pin_create`、`pin_renew`、`pin_release`、`pin_find`、`pin_find_mutation`；内部 helper 不授权应用角色或 PUBLIC。
+
+有限创建需要 `replay`，长期创建需要 `maintain`；续期必须是原 `session_user` holder 且仍有当前权限，长期相关操作需要 `maintain`。`HolderDigest` 是绑定摘要，不是凭证；`maintain` 可代释放但仍须版本 CAS。当前状态与不可变 receipt 查询需要 `query`。PinID 永久不复用，Mutation.ID 在同 Identity 的所有 pin 写操作中共享，完整规范摘要由 SQL 重算。nil 续期 TTL 保留原策略，过期/释放不复活；未知结果只能通过精确 receipt 裁决，absent 不授权盲重放。
+
+历史 pin 仅保护已存在 revision+chain 引用，不实现 GC、retention、summary 或 replay。当前开发布局增加三张表与入口；`Migrate` 仅新库安装或精确验证，不升级旧布局、不自动删库。真实测试过滤器为 `go test -count=1 -v ./postgres -run '^TestPostgresHistoryPin$'`，必须显式设置专用 `PULSE_DISTRIBUTED_TEST_DSN` 与 `PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE=yes`；未配置时 skip，不算实库验收。
+
 ## PostgreSQL 与最小程序
 
 先由数据库管理员创建数据库、独立的 schema owner 和登录角色 `pulse_app`，并授予二者数据库 CONNECT。owner 需要在目标库创建 schema；`pulse_app` 必须为非 owner、非超级用户，不得有 CREATEDB、CREATEROLE、BYPASSRLS、owner 角色成员关系或协调表直接访问权限。密码通过数据库的安全配置流程设置，不写入源码。
