@@ -18,6 +18,7 @@ func TestRetentionPolicySQLContract(t *testing.T) {
 		"cur::text||':'||lim::text",
 		"ON CONFLICT(dry_run_id) DO NOTHING",
 		"retention preview binding conflict",
+		"coalesce(octet_length(cur->>'value'),0) NOT BETWEEN 1 AND 256",
 	} {
 		if !strings.Contains(retentionPolicySQL, fragment) {
 			t.Fatalf("missing SQL contract %q", fragment)
