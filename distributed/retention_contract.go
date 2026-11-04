@@ -33,7 +33,12 @@ type RetentionCursor struct {
 	Value string `json:"value,omitempty"`
 }
 
-func (c RetentionCursor) valid() bool { return !c.Set || text(c.Value) }
+func (c RetentionCursor) valid() bool {
+	if !c.Set {
+		return c.Value == ""
+	}
+	return text(c.Value)
+}
 
 // RetentionCandidate 是稳定排序和执行绑定所使用的候选身份及摘要，不是删除命令。
 type RetentionCandidate struct {
@@ -199,21 +204,51 @@ func (q RetentionDryRun) Validate() error {
 	return nil
 }
 func (r RetentionDryRunResult) Validate(q RetentionDryRun) error {
-	if q.Validate() != nil || !text(r.DryRunID) || r.Namespace != q.Namespace || r.PolicyVersion != q.PolicyVersion || r.ObservedFrom.Equal(q.ObservedFrom) == false || r.ObservedThrough.Equal(q.ObservedThrough) == false || !r.Cursor.valid() || !r.NextCursor.valid() || !fingerprint(r.PolicyDigest) || !fingerprint(r.ReceiptDigest) {
+	if q.Validate() != nil || !text(r.DryRunID) || r.Namespace != q.Namespace || r.PolicyVersion != q.PolicyVersion || r.ObservedFrom.Equal(q.ObservedFrom) == false || r.ObservedThrough.Equal(q.ObservedThrough) == false || r.Cursor.Set != q.Cursor.Set || r.Cursor.Value != q.Cursor.Value || !r.Cursor.valid() || !r.NextCursor.valid() || !fingerprint(r.PolicyDigest) || !fingerprint(r.ReceiptDigest) {
 		return ErrInvalid
 	}
-	pd, e := retentionPolicyDigest(r.Policy)
-	if e != nil || pd != r.PolicyDigest {
+	qd, e := retentionPolicyDigest(q.Policy)
+	if e != nil || qd != r.PolicyDigest {
 		return ErrInvalid
 	}
 	if e := r.Summary.validate(); e != nil {
 		return e
+	}
+	for _, c := range r.Summary.Candidates {
+		if c.Namespace != r.Namespace {
+			return ErrInvalid
+		}
 	}
 	return nil
 }
 func (s RetentionCandidateSummary) validate() error {
 	if s.Candidates == nil || len(s.Candidates) > maxRetentionCandidates {
 		return ErrInvalid
+	}
+	candidateKeys := make(map[string]bool, len(s.Candidates))
+	candidateProtected := make(map[string][]RetentionProtectedReason, len(s.Candidates))
+	for _, c := range s.Candidates {
+		key := retentionCandidateKey(c)
+		candidateKeys[key] = true
+		candidateProtected[key] = append([]RetentionProtectedReason(nil), c.Protected...)
+	}
+	for key, reasons := range s.Protected {
+		if !candidateKeys[key] {
+			return ErrInvalid
+		}
+		for _, reason := range reasons {
+			if !reason.valid() {
+				return ErrInvalid
+			}
+		}
+		if !sameRetentionReasons(reasons, candidateProtected[key]) {
+			return ErrInvalid
+		}
+	}
+	for key, reasons := range candidateProtected {
+		if len(reasons) > 0 && !sameRetentionReasons(s.Protected[key], reasons) {
+			return ErrInvalid
+		}
 	}
 	sorted := cloneRetentionCandidates(s.Candidates)
 	sort.Slice(sorted, func(i, j int) bool { return retentionCandidateLess(sorted[i], sorted[j]) })
@@ -269,13 +304,36 @@ func (r RetentionReceipt) Validate() error {
 	}
 	return nil
 }
+func sameRetentionReasons(a, b []RetentionProtectedReason) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[RetentionProtectedReason]int, len(a))
+	for _, reason := range a {
+		seen[reason]++
+	}
+	for _, reason := range b {
+		seen[reason]--
+	}
+	for _, count := range seen {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (r RetentionReceipt) CandidatesSummary() RetentionCandidateSummary {
 	var rows, bytes uint64
+	protected := make(map[string][]RetentionProtectedReason)
 	for _, c := range r.Candidates {
 		rows += c.Rows
 		bytes += c.Bytes
+		if len(c.Protected) > 0 {
+			protected[retentionCandidateKey(c)] = append([]RetentionProtectedReason(nil), c.Protected...)
+		}
 	}
-	return RetentionCandidateSummary{Candidates: cloneRetentionCandidates(r.Candidates), LogicalRows: rows, LogicalBytes: bytes}
+	return RetentionCandidateSummary{Candidates: cloneRetentionCandidates(r.Candidates), Protected: protected, LogicalRows: rows, LogicalBytes: bytes}
 }
 func (r RetentionDryRunResult) Clone() RetentionDryRunResult {
 	r.Summary.Candidates = cloneRetentionCandidates(r.Summary.Candidates)

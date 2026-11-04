@@ -17,8 +17,12 @@ func retentionContractQuery() RetentionDryRun {
 func retentionContractCandidates() []RetentionCandidate {
 	return []RetentionCandidate{{Namespace: "ns", Kind: "run", ID: "b", Revision: 1, Rows: 2, Bytes: 20}, {Namespace: "ns", Kind: "run", ID: "a", Revision: 1, Rows: 1, Bytes: 10, Protected: []RetentionProtectedReason{RetentionProtectedPin}}}
 }
+func retentionContractSummary() RetentionCandidateSummary {
+	candidates := retentionContractCandidates()
+	return RetentionCandidateSummary{Candidates: candidates, Protected: map[string][]RetentionProtectedReason{retentionCandidateKey(candidates[1]): {RetentionProtectedPin}}, LogicalRows: 3, LogicalBytes: 30}
+}
 func TestRetentionContractStableSortAndDuplicate(t *testing.T) {
-	s := RetentionCandidateSummary{Candidates: retentionContractCandidates(), LogicalRows: 3, LogicalBytes: 30}
+	s := retentionContractSummary()
 	if err := s.validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +38,7 @@ func TestRetentionContractStableSortAndDuplicate(t *testing.T) {
 func TestRetentionContractBindingAndReceipt(t *testing.T) {
 	q := retentionContractQuery()
 	pd, _ := retentionPolicyDigest(q.Policy)
-	r := RetentionDryRunResult{DryRunID: "dry", Namespace: q.Namespace, PolicyVersion: q.PolicyVersion, Policy: q.Policy, PolicyDigest: pd, ObservedFrom: q.ObservedFrom, ObservedThrough: q.ObservedThrough, Summary: RetentionCandidateSummary{Candidates: retentionContractCandidates(), LogicalRows: 3, LogicalBytes: 30}, ReceiptDigest: strings.Repeat("a", 64)}
+	r := RetentionDryRunResult{DryRunID: "dry", Namespace: q.Namespace, PolicyVersion: q.PolicyVersion, Policy: q.Policy, PolicyDigest: pd, ObservedFrom: q.ObservedFrom, ObservedThrough: q.ObservedThrough, Summary: retentionContractSummary(), ReceiptDigest: strings.Repeat("a", 64)}
 	if err := r.Validate(q); err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +74,12 @@ func TestRetentionContractCursorAndBudgets(t *testing.T) {
 func TestRetentionContractCloneIsolation(t *testing.T) {
 	q := retentionContractQuery()
 	pd, _ := retentionPolicyDigest(q.Policy)
-	r := RetentionDryRunResult{DryRunID: "dry", Namespace: "ns", PolicyVersion: 2, Policy: q.Policy, PolicyDigest: pd, ObservedFrom: q.ObservedFrom, ObservedThrough: q.ObservedThrough, Summary: RetentionCandidateSummary{Candidates: retentionContractCandidates(), Protected: map[string][]RetentionProtectedReason{"x": {RetentionProtectedGuard}}, LogicalRows: 3, LogicalBytes: 30}, ReceiptDigest: strings.Repeat("a", 64)}
+	r := RetentionDryRunResult{DryRunID: "dry", Namespace: "ns", PolicyVersion: 2, Policy: q.Policy, PolicyDigest: pd, ObservedFrom: q.ObservedFrom, ObservedThrough: q.ObservedThrough, Summary: RetentionCandidateSummary{Candidates: retentionContractCandidates(), Protected: map[string][]RetentionProtectedReason{retentionCandidateKey(retentionContractCandidates()[1]): {RetentionProtectedPin}}, LogicalRows: 3, LogicalBytes: 30}, ReceiptDigest: strings.Repeat("a", 64)}
 	c := r.Clone()
 	c.Summary.Candidates[0].ID = "changed"
-	c.Summary.Protected["x"][0] = RetentionProtectedPin
-	if r.Summary.Candidates[0].ID == "changed" || r.Summary.Protected["x"][0] == RetentionProtectedPin {
+	key := retentionCandidateKey(c.Summary.Candidates[1])
+	c.Summary.Protected[key][0] = RetentionProtectedGuard
+	if r.Summary.Candidates[0].ID == "changed" || r.Summary.Protected[key][0] == RetentionProtectedGuard {
 		t.Fatal("clone aliases result")
 	}
 	receipt := RetentionReceipt{DryRunID: "dry", PlanDigest: strings.Repeat("a", 64), Namespace: "ns", PolicyVersion: 1, PolicyDigest: strings.Repeat("b", 64), Candidates: retentionContractCandidates(), Guards: []string{"permanent"}}
