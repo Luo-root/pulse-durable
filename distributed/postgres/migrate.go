@@ -92,7 +92,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return e
 		}
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -105,7 +105,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return errors.New("distributed postgres: grant requires isolated non-owner role")
 		}
 		role := pgx.Identifier{g.Role}.Sanitize()
-		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.maintenance(text,jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
+		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
 			return scrub(e, false)
 		}
 		for _, permission := range g.Permissions {
