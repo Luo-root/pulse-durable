@@ -150,6 +150,8 @@ Load 校验完整性后返回隔离完整投影；仅无检查点时返回 `ErrN
 
 Apply 是唯一普通写入口：typed ChangeBatch 原子核对身份、业务版本、expected/next revision 严格加一及精确对象前置条件，成功返回与批头精确匹配的 CommitAck。前置条件或 CAS 冲突返回 `ErrConflict`，不发布部分变更；uint64 修订号耗尽必须拒绝。没有兼容 Save、可选 DeltaSession、RequireDelta 或全量回退。
 
+`ChangeBatch.SnapshotSizeDelta(before RunRecord) (int64, error)` 为后端提供无损快照格式 1 的精确字节差额。它验证与 ApplyTo 相同的批头和对象前置条件，不修改记录，也不克隆全量状态。大小编码只处理变更对象；对象前置条件检查仍可能线性查找同组 State/Values 条目。调用方须独占且已完整验证 before；初始化/Load 时建立完整大小，确认后累加差额。nil/空容器、JSON 转义、base64 与 revision 位数均参与计数。字节差额不代表磁盘、WAL 或网络开销，不授予提交权，也不替代后端的服务端限额与 CAS。
+
 耐久后端保存初始快照、连续不可变批及权威 head。快照摘要、批 wire 摘要、父修订号和链锚点由后端验证与维护；物理链不属于 ChangeHeader。新会话必须权威加载并校验链，普通 Apply 不得每次重放整个历史或重写完整快照。Initialize 可以写完整初始快照；显式快照合成属于单独维护能力，不是普通提交的回退。
 
 `durable.Maintenance` 是 Store 级接口，MemoryStore、FileStore、SQLite 与独立 PostgreSQL 已实现；第三方 Store 可不提供：
