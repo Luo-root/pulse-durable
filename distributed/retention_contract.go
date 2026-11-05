@@ -191,7 +191,15 @@ func retentionPolicyDigest(p RetentionPolicy) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	return retentionDigest(q)
+	// 使用按 key 排序的对象，而不是依赖结构体字段顺序；PostgreSQL jsonb
+	// 的文本摘要也按同一稳定表示计算，避免跨后端摘要不一致。
+	return retentionDigest(map[string]any{
+		"Enabled":            q.Enabled,
+		"EventTTL":           q.EventTTL,
+		"ReceiptTTL":         q.ReceiptTTL,
+		"ReplayHistoryTTL":   q.ReplayHistoryTTL,
+		"TerminalPayloadTTL": q.TerminalPayloadTTL,
+	})
 }
 
 func (q RetentionDryRun) Validate() error {
