@@ -496,9 +496,7 @@ func TestPostgresSnapshotCompactionKeepsCurrentLedger(t *testing.T) {
 	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); err != nil {
-		t.Fatal(err)
-	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
 	h := newSnapshotTestRun(t, c, admin, ns, "snapshot-compaction")
 	h.apply(t, snapshotNodeBatch(t, h.r, snapshotDataNode("prefix", 100), nil))
 	h.apply(t, snapshotNodeBatch(t, h.r, snapshotDataNode("suffix", 1000), nil))

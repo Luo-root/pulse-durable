@@ -22,9 +22,7 @@ func TestPostgresActiveSuffixBudgetCompaction(t *testing.T) {
 			if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); err != nil {
-				t.Fatal(err)
-			}
+			setTestPermission(t, admin, ctx, role, ns, "maintain", true)
 			task := taskFixture(t, ns, "budget-"+boundary)
 			id := task.Identity()
 			if _, err := c.Submit(ctx, task); err != nil {

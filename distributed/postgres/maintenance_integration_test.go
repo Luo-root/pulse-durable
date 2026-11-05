@@ -18,9 +18,7 @@ func TestPostgresMaintenanceReceiptObservationRegression(t *testing.T) {
 	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); err != nil {
-		t.Fatal(err)
-	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
 	task := taskFixture(t, ns, "maintenance-receipt-clock")
 	if _, err := c.Submit(ctx, task); err != nil {
 		t.Fatal(err)
@@ -101,9 +99,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 	if e := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); e != nil {
-		t.Fatal(e)
-	}
+	setTestPermission(t, admin, context.Background(), role, ns, "maintain", true)
 	task := taskFixture(t, ns, "maintenance-suffix")
 	if _, e := c.Submit(ctx, task); e != nil {
 		t.Fatal(e)

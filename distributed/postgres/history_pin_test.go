@@ -58,15 +58,7 @@ func TestPostgresHistoryPin(t *testing.T) {
 	}
 	permission := func(perm string, enabled bool) {
 		t.Helper()
-		var e error
-		if enabled {
-			_, e = admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,$3) ON CONFLICT DO NOTHING", role, ns, perm)
-		} else {
-			_, e = admin.Exec(ctx, "DELETE FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission=$3", role, ns, perm)
-		}
-		if e != nil {
-			t.Fatal(e)
-		}
+		setTestPermission(t, admin, ctx, role, ns, perm, enabled)
 	}
 	permission("replay", true)
 	task := taskFixture(t, ns, "pin<>&\u2028\u2029")
