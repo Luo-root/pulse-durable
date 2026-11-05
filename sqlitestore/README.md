@@ -2,6 +2,8 @@
 
 ## 中文
 
+当前开发版固定根依赖 `v0.1.1-0.20261105231954-53869c8267d5`，无需本地 replace 即可独立构建。读取与历史快照校验支持逻辑 Format3 的摘要、连续 CommitIndex 和 Provenance，并拒绝证据损坏；普通 Initialize 仍只创建 Format2，物理 schema 不变。Format3 首次物化与语义删除尚未提供，读取测试的显式注入夹具不等于压缩执行验收。
+
 可选的本机 SQLite 后端，实现 Durable `Store` / `Session` 契约；独立模块使用纯 Go `modernc.org/sqlite v1.60.1`（内嵌 SQLite 3.53.4）。目标 API 基线为 **v0.1.0**，要求 **Go 1.26+**、**Pulse v0.5.0**。
 
 这是发版准备，不代表已发布。状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；根 `v0.1.0` 与子模块 `sqlitestore/v0.1.0` tag 发布前，以下命令尚不可用：
@@ -18,6 +20,8 @@ go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
 仅支持有 OS 文件锁的本机文件系统；不支持 SQLite URI、`:memory:`、网络共享、分布式 lease/fencing、迁移或 exactly-once 外部副作用。使用专用数据库；构造严格校验 schema，设置并读回 WAL、FULL、5000ms busy timeout。保留 `.init.lock`、`.runlocks/` 与运行中的 WAL/SHM 文件，不删锁解锁。schema 3 使用按 revision 的 lossless snapshot、不可变批、head 和 generation manifest；旧 schema 1/2 明确拒绝，不修改或删除旧数据，也不自动迁移。逻辑 RecordFormat 仍为 2。普通提交仅用 Apply，不重写快照；新会话首次 Load 在单一事务中校验并重放链，此后 Apply 只校验 head 和受影响对象。未合成后缀上限为 100000 批 / 256 MiB canonical wire，达到后明确停止；可通过 `durable.Maintenance` 的 `InspectStorage`、`LoadRevision` 和 `CompactStorage` 显式读取历史及合成快照，操作与限制见 [SQLite 教程](../site/guide/sqlite.md)。合成保留原业务链锚与全部历史，不执行 GC；活跃 Session 持有 runlock 时合成返回 `ErrBusy`。Initialize/Apply 报错后须等待原调用结束和所有权释放，重新 Acquire/Load 权威状态，不盲目重试。投影更新后的写入失败或未知提交会封闭原会话。关闭前先停止并等待业务运行。备份不能只复制运行中的主数据库；断电、备份恢复与迁移未完成单独验收。
 
 ## English
+
+The development module pins root `v0.1.1-0.20261105231954-53869c8267d5` and builds independently without a local replace. Loads and historical snapshot validation support logical Format3 summaries, consecutive CommitIndex entries, and Provenance, rejecting corrupt evidence. Ordinary Initialize still creates Format2, and the physical schema is unchanged. First materialization and semantic deletion remain unavailable; explicitly injected read fixtures do not establish compression execution acceptance.
 
 This optional local SQLite backend implements Durable `Store` / `Session` using pure-Go `modernc.org/sqlite v1.60.1` (embedded SQLite 3.53.4). The target API baseline is **v0.1.0**, requiring **Go 1.26+**, **Pulse v0.5.0**.
 

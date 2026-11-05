@@ -21,7 +21,10 @@ func validateSnapshot(r durable.RunRecord, id string, rev uint64) error {
 	}
 	text := func(s string) bool { return s != "" && utf8.ValidString(s) }
 	root, ok := r.Scopes[r.RootScope]
-	if r.RunID != id || r.Revision != rev || rev == 0 || r.Format != durable.RecordFormat || !text(r.Version) || !digest(r.Definition) || !digest(r.Inputs) || !ok || root.Graph == "" || root.Inputs != r.Inputs {
+	if r.RunID != id || r.Revision != rev || rev == 0 || !durable.IsLogicalRecordFormat(r.Format) || !text(r.Version) || !digest(r.Definition) || !digest(r.Inputs) || !ok || root.Graph == "" || root.Inputs != r.Inputs {
+		return bad()
+	}
+	if err := durable.ValidateSemanticEvidence(r); err != nil {
 		return bad()
 	}
 	validValues := func(values []durable.ValueRecord) bool {

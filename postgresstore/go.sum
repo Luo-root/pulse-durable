@@ -1,7 +1,7 @@
 github.com/Luo-root/pulse v0.5.2 h1:qxIYwx4j/vIPEgFQrwJrgAe6FCqblyGlVvEvGJkNHSQ=
 github.com/Luo-root/pulse v0.5.2/go.mod h1:DPHAayLFyqLJujcrkzRnmhKwGQCzArW7aQ1330y/bu0=
-github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639 h1:DzEhlTOJbqpzVVKNiTFWsvxeGjH94zHdD7h06QsjU8U=
-github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261105231954-53869c8267d5 h1:NxSqMLVVUhc5/G+8OL2xVE4j7GiuKzcEELaUxqcdod8=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261105231954-53869c8267d5/go.mod h1:hf4m5xNjowll0LEhZA4zHXvU/Dv7SiS1ZCWFNJXZeQg=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
