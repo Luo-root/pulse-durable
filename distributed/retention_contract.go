@@ -30,7 +30,7 @@ const (
 // RetentionCursor 明确区分首页（Set=false）与已提供的分页游标；空游标不能冒充首页。
 type RetentionCursor struct {
 	Set   bool   `json:"set"`
-	Value string `json:"value,omitempty"`
+	Value string `json:"value"`
 }
 
 func (c RetentionCursor) valid() bool {
