@@ -26,13 +26,15 @@ var snapshotBudgetSQL string
 //go:embed retention_policy.sql
 var retentionPolicySQL string
 
-// Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
-// 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
-// 授权物理合成与长期历史 pin；replay 授权有限历史 pin，retain 仍为预留权限。
-// 普通工作进程的恢复查询还需授予 query。
-// 调用方必须配置独立的非所有者、非超级用户登录角色。
+// ErrUnsupportedCapability 表示当前布局缺少必须的保留策略入口；不会自动迁移。
 var ErrUnsupportedCapability = errors.New("distributed postgres: unsupported retention capability")
 
+// Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
+// 包括 query、submit、worker、cancel、maintain、retain、replay。仅 maintain
+// 授权物理合成与长期历史 pin；replay 授权有限历史 pin。query 授权 pin
+// 与回执查询，不因此获得 pin 写权限；retain 授权策略及候选预览入口。
+// 普通工作进程的恢复查询还需授予 query。
+// 调用方必须配置独立的非所有者、非超级用户登录角色。
 type Grant struct {
 	Role        string
 	Namespace   string
@@ -130,7 +132,11 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		functions := "pulse_durable_distributed.check_schema()"
 		for _, permission := range g.Permissions {
 			switch permission {
-			case "query", "worker", "submit", "cancel":
+			case "query":
+				// pin 查询在 SQL 内按 namespace query 授权；读取者无须
+				// 额外取得 replay/maintain 的 pin 写入能力。
+				functions += ",pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
+			case "worker", "submit", "cancel":
 				functions += ",pulse_durable_distributed.api(text,jsonb)"
 			case "maintain":
 				functions += ",pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"

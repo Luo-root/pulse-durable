@@ -234,7 +234,9 @@ PostgreSQL 的 `Coordinator.FindMutation(ctx, MutationQuery)` 使用独立 `muta
 
 Coverage.From 来自数据库持久 `receipt_coverage_floor`，Coverage.Through 是持运行锁后采样的数据库观察上界，并持久到 `receipt_observed_through`，不使用客户端时间。仍保留的回执可早于 coverage floor；覆盖内应有却缺失的回执会报错，不冒充正常缺席。该查询会写 observation watermark，必须连接可读写主库，不能使用只读事务或副本；权限仍是 namespace `query`，应用无直接表 DML 权限。缺回执、缺席或 Expired 均不授权业务重放。
 
-RetentionPolicy 目前仅有可选 TTL 与校验/CAS 请求契约：nil TTL 表示无限保留，guard/运行身份不受 TTL 回收；不代表已实现策略落库、实际 retention 删除或 GC。业务 replay、语义历史压缩仍未完成。
+历史 pin 由独立 `HistoryPinner` 能力提供：`PinHistory` 的有限 TTL 需要 `replay`，长期 pin 需要 `maintain`；`FindPin` / `FindPinMutation` 只需目标 namespace 的 `query`。query-only 角色可以查询 pin 和回执，不获得 pin 创建、续期、释放或物理维护权限。pin 查询会在运行锁下采样并保存观测水位，仍需可读写主库；`HolderDigest` 不是凭据，可信主体来自数据库 `session_user`。
+
+PostgreSQL 已提供保留策略持久化与版本 CAS：`GetRetentionPolicy` 在首次读取时初始化默认策略，`PreviewRetentionPolicy` 登记供 `UpdateRetentionPolicy` 校验的拟议策略绑定，这两条初始化/策略预览路径需要可写事务。独立的 `PreviewRetentionCandidates` 只读当前候选、逻辑行数/字节数、保护原因与分页游标，不创建策略或预览记录，可在已初始化策略的 PostgreSQL READ ONLY 事务中执行。它只提供观察结果，不是固定数据快照或删除授权；后续执行必须重新锁定、采样并复验。以上保留入口需要 namespace `retain` 权限，无应用表 DML 权限。nil TTL 仍表示无限保留，guard/运行身份不受 TTL 回收。实际 retention 删除、GC、业务 replay 和语义历史压缩仍未实现。
 
 ## 部署前提
 

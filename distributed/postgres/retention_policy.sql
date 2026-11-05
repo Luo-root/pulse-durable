@@ -65,14 +65,16 @@ BEGIN
  INSERT INTO retention_previews(dry_run_id,namespace,policy_version,policy,policy_digest,observed_from,observed_through,cursor,"limit",receipt_digest,created_at) VALUES(id,ns,p.policy_version,proposed,dg,vf,vt,cur,lim,rd,t) ON CONFLICT(dry_run_id) DO NOTHING;
  SELECT * INTO q FROM retention_previews WHERE dry_run_id=id FOR SHARE;
  IF q.namespace<>ns OR q.policy_version<>p.policy_version OR q.policy<>proposed OR q.policy_digest<>dg OR q.observed_from<>vf OR q.observed_through<>vt OR q.cursor<>cur OR q."limit"<>lim THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention preview binding conflict'; END IF;
- RETURN jsonb_build_object('dry_run_id',id,'namespace',ns,'policy_version',p.policy_version::text,'policy',proposed,'policy_digest',dg,'observed_from',vf,'observed_through',vt,'summary',jsonb_build_object('candidates','[]'::jsonb,'protected','{}'::jsonb,'logical_rows','0','logical_bytes','0'),'cursor',cur,'next_cursor',jsonb_build_object('set',false,'value',''),'receipt_digest',rd);
+ RETURN jsonb_build_object('dry_run_id',id,'namespace',ns,'policy_version',p.policy_version::text,'policy',proposed,'policy_digest',dg,'observed_from',vf,'observed_through',vt,'summary',jsonb_build_object('candidates','[]'::jsonb,'protected','{}'::jsonb,'logical_rows',0,'logical_bytes',0),'cursor',cur,'next_cursor',jsonb_build_object('set',false,'value',''),'receipt_digest',rd);
 END $$;
 CREATE FUNCTION pulse_durable_distributed.retention_candidate_preview(a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE ns text:=retention_policy_auth(a); p retention_policies; id text:=a->>'dry_run_id'; proposed jsonb:=a->'policy'; dg text:=a->>'policy_digest'; vf timestamptz:=(a->>'observed_from')::timestamptz; vt timestamptz:=(a->>'observed_through')::timestamptz; cur jsonb:=a->'cursor'; lim integer:=(a->>'limit')::integer; after_id text:=''; rd text; candidates jsonb:='[]'::jsonb; protected jsonb:='{}'::jsonb; rows bigint:=0; bytes bigint:=0; batch_rows bigint; batch_bytes bigint; r record; reasons jsonb; key text; more boolean:=false;
 BEGIN
  IF coalesce(octet_length(id),0) NOT BETWEEN 1 AND 256 OR NOT retention_policy_validate(proposed) OR coalesce(dg,'') !~ '^[0-9a-f]{64}$' OR vf IS NULL OR vt IS NULL OR vt<vf OR jsonb_typeof(cur) IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(cur) AS keys(key))<>2 OR jsonb_typeof(cur->'set') IS DISTINCT FROM 'boolean' OR jsonb_typeof(cur->'value') IS DISTINCT FROM 'string' OR ((cur->>'set')::boolean=false AND cur->>'value'<>'') OR ((cur->>'set')::boolean=true AND coalesce(octet_length(cur->>'value'),0) NOT BETWEEN 1 AND 256) OR lim IS NULL OR lim NOT BETWEEN 1 AND 1000000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid retention candidate preview'; END IF;
  IF cur->>'set'='true' THEN after_id:=cur->>'value'; END IF;
- SELECT * INTO STRICT p FROM retention_policies WHERE namespace=ns FOR SHARE;
+ -- 候选预览只观察当前策略，不登记执行计划；普通 SELECT 才能
+ -- 在 READ ONLY 事务执行。后续执行入口仍须重新锁定并复验策略。
+ SELECT * INTO STRICT p FROM retention_policies WHERE namespace=ns;
  IF dg IS DISTINCT FROM encode(sha256(convert_to(replace(replace(proposed::text, ': ', ':'), ', ', ','),'UTF8')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention policy digest'; END IF;
  IF (a->>'policy_version')::numeric IS DISTINCT FROM p.policy_version THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='retention policy version'; END IF;
  rd:=encode(sha256(convert_to(id||':'||ns||':'||p.policy_version::text||':'||dg||':'||vf::text||':'||vt::text||':'||cur::text||':'||lim::text,'UTF8')),'hex');

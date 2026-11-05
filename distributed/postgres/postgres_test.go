@@ -170,13 +170,14 @@ func setTestPermission(t *testing.T, admin *pgxpool.Pool, ctx context.Context, r
 		t.Fatal(err)
 	}
 
-	var api, maintain, replay, retain bool
+	var api, query, maintain, replay, retain bool
 	if err := admin.QueryRow(ctx, `
 SELECT
  EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission IN ('query','worker','submit','cancel')),
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='query'),
  EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='maintain'),
  EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='replay'),
- EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='retain')`, role, ns).Scan(&api, &maintain, &replay, &retain); err != nil {
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='retain')`, role, ns).Scan(&api, &query, &maintain, &replay, &retain); err != nil {
 		t.Fatal(err)
 	}
 	roleSQL := pgx.Identifier{role}.Sanitize()
@@ -192,7 +193,8 @@ SELECT
 	}
 	setFunctions("pulse_durable_distributed.api(text,jsonb)", api)
 	setFunctions("pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb)", maintain)
-	setFunctions("pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)", maintain || replay)
+	setFunctions("pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb)", maintain || replay)
+	setFunctions("pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)", query || maintain || replay)
 	setFunctions("pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb)", retain)
 }
 
