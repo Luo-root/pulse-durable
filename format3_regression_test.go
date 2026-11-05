@@ -27,10 +27,10 @@ func format3Fixture(t *testing.T) (RunRecord, ChangeBatch) {
 	}
 	base.Provenance.Digest = provenanceDigest(base.Provenance.OriginRunID, base.Provenance.OriginRevision, base.Provenance.OriginRecordDigest, base.Provenance.CompressionID)
 	payload := []byte(`{"through":1,"kind":"retry"}`)
-	base.HistorySummaries = []HistorySummary{{Kind: "retry_prefix", ID: "root/node/retry", SourceRevision: 1, SourceDigest: strings.Repeat("1", 64), Payload: []byte("old"), Digest: digest([]byte("old"))}}
+	base.HistorySummaries = []HistorySummary{{Kind: "fixture", ID: "root/node/retry", SourceRevision: 1, SourceDigest: strings.Repeat("1", 64), Payload: []byte("old"), Digest: digest([]byte("old"))}}
 	base.CommitIndex = []CommitIndexEntry{{Revision: 1, ParentRevision: 0, BatchDigest: strings.Repeat("0", 64)}}
 	summary := HistorySummary{
-		Kind:           "retry_prefix",
+		Kind:           "fixture",
 		ID:             "root/node/retry",
 		SourceRevision: 1,
 		SourceDigest:   strings.Repeat("c", 64),
@@ -116,7 +116,7 @@ func TestFormat3ApplyAndRecoveryEvidence(t *testing.T) {
 	}
 
 	base.HistorySummaries[0].Payload[0] = 'X'
-	stored := batch.tx.summaries[historySummaryKey{kind: "retry_prefix", id: "root/node/retry"}].value.Payload
+	stored := batch.tx.summaries[historySummaryKey{kind: "fixture", id: "root/node/retry"}].value.Payload
 	if string(stored) != `{"through":1,"kind":"retry"}` {
 		t.Fatal("summary transaction retained an alias")
 	}
@@ -176,7 +176,7 @@ func TestFormat3PreconditionsAndStrictRecordValidation(t *testing.T) {
 
 	legacy := CloneRecord(base)
 	legacy.Format = RecordFormat
-	legacy.HistorySummaries = []HistorySummary{{Kind: "retry_prefix", ID: "id"}}
+	legacy.HistorySummaries = []HistorySummary{{Kind: "fixture", ID: "id"}}
 	if err := validateSemanticEvidence(legacy); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("format2 evidence was not rejected: %v", err)
 	}
@@ -184,11 +184,11 @@ func TestFormat3PreconditionsAndStrictRecordValidation(t *testing.T) {
 	proposal := CloneRecord(base)
 	bad := batch
 	bad.tx = batch.tx.copy()
-	key := historySummaryKey{kind: "retry_prefix", id: "root/node/retry"}
+	key := historySummaryKey{kind: "fixture", id: "root/node/retry"}
 	op := bad.tx.summaries[key]
 	op.absent = false
 	op.expected = HistorySummary{
-		Kind:           "retry_prefix",
+		Kind:           "fixture",
 		ID:             "root/node/retry",
 		SourceRevision: 1,
 		SourceDigest:   strings.Repeat("0", 64),

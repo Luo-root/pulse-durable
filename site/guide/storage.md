@@ -28,7 +28,11 @@ SQLite 初始化与示例见仓库 [`sqlitestore/README.md`](https://github.com/
 
 Format3 的 `HistorySummaries` 以 `(Kind, ID)` 唯一标识摘要，Payload 有独立 SHA-256；`CommitIndex` 保存从 revision 1 到 head 的连续批次承诺；`Provenance` 保存来源身份与摘要。普通 Format3 事务恰好追加下一条索引，禁止改写或删除旧索引。索引摘要绑定同一规范批次中去掉 `commit_index` 操作后的内容，避免自引用；提交前校验与字节预算仅处理变化对象，完整证据在加载边界校验。`CloneRecord` 隔离摘要 Payload 并保留 nil/空形状。自定义后端解码后应调用 `ValidateSemanticEvidence`，并继续执行身份、图、Codec 与引用校验。
 
-这些字段是完整性元数据，不是授权凭据，也不单凭自身证明历史来源真实。当前 CommitIndex 只承诺批次内容，尚未包含指定位置消息回放所需的输入、输出及 State 因果引用。Format2 首次证据物化、语义对象删除、恢复预算高水位、压缩 floor/永久回执和派生回放执行仍未完成；不能通过修改记录的 `Format` 字段获得这些能力。
+这些字段是完整性元数据，不是授权凭据，也不单凭自身证明历史来源真实。当前 CommitIndex 只承诺批次内容，尚未包含指定位置消息回放所需的输入、输出及 State 因果引用。Format2 首次证据物化、语义对象删除、压缩 floor/永久回执和派生回放执行仍未完成；不能通过修改记录的 `Format` 字段获得这些能力。
+
+`PlanHistoryCompression(record, request)` 是只读候选规划：要求 Format3 且 ThroughRevision 等于当前 head，重新验证 Retry 失败前缀、消息完整重试组、ACK 与引用闭包；未知 Kind、缺口、活跃对象或来源变化均拒绝。请求显式限制删除与保护对象总数，Bytes 计源记录无损快照加规范计划的字节，不是可回收空间或 WAL。计划始终 `Executable=false`，即使自行改字段并重算 PlanDigest 也不能开启执行。`ValidateHistoryCompressionEquivalence` 只复验候选删除与保留字段，是必要预检，不能替代完整图/Codec恢复等价或锁后授权。
+
+Runtime 对带有已应用标记的 Retry/Message 摘要提供恢复前提：Retry 从已消费高水位继续计数，保留原 Limit 与耗尽身份，拒绝前缀重现及后缀缺口；Message 的已结算前沿仍受 ACK 约束，旧 Open/Fail/ACK 被拒绝，Managed 当前 State/Values 有摘要与后续确认见证。候选摘要不改变预算；普通 Apply 不能创建、改写或删除已应用高水位。相关恢复测试显式安装逻辑夹具，不证明后端删除已原子提交。压缩执行入口仍不可用。
 
 ## 2. 设置文件目录
 

@@ -252,6 +252,22 @@ func (s *runState) validateLoaded() error {
 	if _, collision := r.Attempts[r.RootScope]; collision {
 		return fmt.Errorf("durable: root scope collides with an attempt")
 	}
+	index, err := buildRecoverySummaryIndex(r)
+	if err != nil {
+		return err
+	}
+	s.summaryIndex = index
+	for _, prefix := range index.messages {
+		root, _, err := s.rootAttempt(prefix.ProcessingAttempt)
+		if err != nil || root.Parent != prefix.ProcessingScope || root.NodeID != prefix.NodeID || !s.nodeReadsStream(prefix.ProcessingScope, prefix.NodeID, prefix.Input) {
+			return fmt.Errorf("%w: message recovery summary owner or input mismatch", ErrInvalidRecord)
+		}
+	}
+	for _, prefix := range index.retries {
+		if err := s.validateAncestry(prefix.Parent); err != nil {
+			return err
+		}
+	}
 	type groupKey struct{ parent, node, boundary string }
 	groups := make(map[groupKey]map[int]AttemptRecord)
 	for _, id := range sortedKeys(r.Attempts) {
@@ -293,10 +309,17 @@ func (s *runState) validateLoaded() error {
 			return err
 		}
 	}
-	for _, attempts := range groups {
-		for i := 1; i <= len(attempts); i++ {
-			a, ok := attempts[i]
-			if !ok || a.Limit != attempts[1].Limit || (i < len(attempts) && a.State != AttemptFailed) {
+	for key, attempts := range groups {
+		start, limit := 1, attempts[1].Limit
+		if prefix, ok := index.retries[retrySummaryGroup{key.parent, key.node, key.boundary}]; ok {
+			if prefix.ThroughIndex > prefix.Limit-len(attempts) {
+				return fmt.Errorf("durable: compressed retry suffix exceeds its budget")
+			}
+			start, limit = prefix.ThroughIndex+1, prefix.Limit
+		}
+		for offset := 0; offset < len(attempts); offset++ {
+			a, ok := attempts[start+offset]
+			if !ok || a.Limit != limit || (offset < len(attempts)-1 && a.State != AttemptFailed) {
 				return fmt.Errorf("durable: invalid persisted attempt sequence")
 			}
 		}

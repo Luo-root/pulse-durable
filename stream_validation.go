@@ -196,7 +196,10 @@ func (s *runState) validateStreams() error {
 			}
 		}
 		if !confirmed {
-			return fmt.Errorf("durable: managed state has no confirmed message")
+			index, err := s.recoverySummaries()
+			if err != nil || !index.managed[key] {
+				return fmt.Errorf("durable: managed state has no confirmed message or applied summary")
+			}
 		}
 		if _, err := s.decodeManagedState(managed.State); err != nil {
 			return err
