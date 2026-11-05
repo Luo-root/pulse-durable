@@ -85,12 +85,23 @@ VALUES($1,$2,$3,$4,'{}'::jsonb,'succeeded',1,$5,$6,$7,$8,$8,$8)`, ns, "run-reten
 	if err != nil {
 		t.Fatal("parse policy version", err)
 	}
-	preview, err := c.PreviewRetentionPolicy(ctx, "dry-retention-1", ns, policyVersion, policy.Policy, d.RetentionCursor{}, 10, now.Add(-time.Minute), now.Add(time.Minute))
+	var beforePolicies, beforePreviews int
+	if err = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.retention_policies WHERE namespace=$1)::int,(SELECT count(*) FROM pulse_durable_distributed.retention_previews WHERE namespace=$1)::int`, ns).Scan(&beforePolicies, &beforePreviews); err != nil {
+		t.Fatal("count retention metadata before preview", scrub(err, false))
+	}
+	preview, err := c.PreviewRetentionCandidates(ctx, "dry-retention-1", ns, policyVersion, policy.Policy, d.RetentionCursor{}, 10, now.Add(-time.Minute), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal("preview retention candidates", err)
 	}
 	if preview.Namespace != ns || preview.PolicyVersion != policyVersion || preview.Cursor.Set || preview.NextCursor.Set {
 		t.Fatalf("unexpected preview binding/cursor: %+v", preview)
+	}
+	var afterPolicies, afterPreviews int
+	if err = admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.retention_policies WHERE namespace=$1)::int,(SELECT count(*) FROM pulse_durable_distributed.retention_previews WHERE namespace=$1)::int`, ns).Scan(&afterPolicies, &afterPreviews); err != nil {
+		t.Fatal("count retention metadata after preview", scrub(err, false))
+	}
+	if beforePolicies != afterPolicies || beforePreviews != afterPreviews {
+		t.Fatalf("candidate preview mutated retention metadata: before=%d/%d after=%d/%d", beforePolicies, beforePreviews, afterPolicies, afterPreviews)
 	}
 	if len(preview.Summary.Candidates) != 1 {
 		t.Fatalf("candidate count=%d", len(preview.Summary.Candidates))

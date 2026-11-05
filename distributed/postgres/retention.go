@@ -106,6 +106,8 @@ func (c *Coordinator) retentionCall(ctx context.Context, fn string, a map[string
 	case "retention_policy_get":
 		q = "SELECT pulse_durable_distributed.retention_policy_get($1::jsonb)"
 	case "retention_policy_preview":
+		q = "SELECT pulse_durable_distributed.retention_policy_preview($1::jsonb)"
+	case "retention_candidate_preview":
 		q = "SELECT pulse_durable_distributed.retention_candidate_preview($1::jsonb)"
 	case "retention_policy_update":
 		q = "SELECT pulse_durable_distributed.retention_policy_update($1::jsonb)"
@@ -172,6 +174,15 @@ type RetentionPolicyPreview struct {
 }
 
 func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string, ver uint64, p d.RetentionPolicy, cursor d.RetentionCursor, limit uint64, from, through time.Time) (RetentionPolicyPreview, error) {
+	return c.previewRetention(ctx, "retention_policy_preview", id, ns, ver, p, cursor, limit, from, through)
+}
+
+// PreviewRetentionCandidates 只读取候选及保护原因，不创建策略或预览绑定记录。
+func (c *Coordinator) PreviewRetentionCandidates(ctx context.Context, id, ns string, ver uint64, p d.RetentionPolicy, cursor d.RetentionCursor, limit uint64, from, through time.Time) (RetentionPolicyPreview, error) {
+	return c.previewRetention(ctx, "retention_candidate_preview", id, ns, ver, p, cursor, limit, from, through)
+}
+
+func (c *Coordinator) previewRetention(ctx context.Context, fn, id, ns string, ver uint64, p d.RetentionPolicy, cursor d.RetentionCursor, limit uint64, from, through time.Time) (RetentionPolicyPreview, error) {
 	if !validText(id) || !validText(ns) || ver == 0 || !cursorValid(cursor) || limit == 0 || limit > 1000000 || from.IsZero() || through.Before(from) {
 		return RetentionPolicyPreview{}, d.ErrInvalid
 	}
@@ -180,7 +191,7 @@ func (c *Coordinator) PreviewRetentionPolicy(ctx context.Context, id, ns string,
 		return RetentionPolicyPreview{}, e
 	}
 	a := map[string]any{"dry_run_id": id, "namespace": ns, "policy_version": strconv.FormatUint(ver, 10), "policy": w, "policy_digest": dg, "observed_from": from, "observed_through": through, "cursor": cursor, "limit": limit}
-	b, e := c.retentionCall(ctx, "retention_policy_preview", a, false)
+	b, e := c.retentionCall(ctx, fn, a, false)
 	if e != nil {
 		return RetentionPolicyPreview{}, e
 	}
