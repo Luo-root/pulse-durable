@@ -32,9 +32,10 @@ func EncodeSnapshot(record durable.RunRecord) ([]byte, error) {
 	return data, nil
 }
 
-// DecodeSnapshot 仅接受完整、大小写敏感的带版本快照
-// 模式。拒绝未知或重复字段（包括映射键）、有损 Unicode 及
-// 尾随数据。错误绝不包含已存储元数据或 Data。
+// DecodeSnapshot 仅接受大小写敏感的带版本快照模式。原有字段全部必填，
+// 显式标为 snapshot:optional 的新增可空字段可以缺省；非 nil 空容器保持原样。
+// 拒绝未知或重复字段（包括映射键）、有损 Unicode 及尾随数据。
+// 错误绝不包含已存储元数据或 Data。
 func DecodeSnapshot(data []byte) (durable.RunRecord, error) {
 	invalid := errors.New("recordio: invalid snapshot")
 	if !json.Valid(data) || !validJSONText(data) {
@@ -84,6 +85,7 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 			return bad
 		}
 		fields := make(map[string]reflect.Type)
+		required := make(map[string]bool)
 		if typ.Kind() == reflect.Struct {
 			for i := 0; i < typ.NumField(); i++ {
 				name := snapshotfmt.FieldName(typ.Field(i))
@@ -91,6 +93,9 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 					return bad
 				}
 				fields[name] = typ.Field(i).Type
+				if typ.Field(i).Tag.Get("snapshot") != "optional" {
+					required[name] = true
+				}
 			}
 		} else if typ.Key().Kind() != reflect.String {
 			return bad
@@ -119,8 +124,10 @@ func snapshotCheck(decoder *json.Decoder, typ reflect.Type) error {
 				return err
 			}
 		}
-		if typ.Kind() == reflect.Struct && len(seen) != len(fields) {
-			return bad
+		for name := range required {
+			if !seen[name] {
+				return bad
+			}
 		}
 		end, err := decoder.Token()
 		if err != nil || end != json.Delim('}') {

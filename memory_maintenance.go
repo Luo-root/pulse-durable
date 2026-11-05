@@ -129,6 +129,9 @@ func (s *MemoryStore) LoadRevision(ctx context.Context, id string, revision uint
 	if base.Record.RunID != id || base.Record.Revision != revision || base.Chain != expected {
 		return RevisionImage{}, fmt.Errorf("%w: memory history chain mismatch", ErrInvalidRecord)
 	}
+	if err := ValidateSemanticEvidence(base.Record); err != nil {
+		return RevisionImage{}, fmt.Errorf("%w: invalid memory history evidence", ErrInvalidRecord)
+	}
 	return base, nil
 }
 

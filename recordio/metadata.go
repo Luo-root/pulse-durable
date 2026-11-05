@@ -98,6 +98,19 @@ func validMetadata(record durable.RunRecord) bool {
 			}
 		}
 	}
+	for _, summary := range record.HistorySummaries {
+		if !validStrings(summary.Kind, summary.ID, summary.SourceDigest, summary.Digest) {
+			return false
+		}
+	}
+	for _, entry := range record.CommitIndex {
+		if !validStrings(entry.BatchDigest) {
+			return false
+		}
+	}
+	if p := record.Provenance; p != nil && !validStrings(p.OriginRunID, p.OriginRecordDigest, p.CompressionID, p.Digest) {
+		return false
+	}
 	return true
 }
 

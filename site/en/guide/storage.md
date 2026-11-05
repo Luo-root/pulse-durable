@@ -22,6 +22,14 @@ This page describes the development branch's mandatory Initialize/Apply API, req
 
 See the repository [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md) for initialization and a runnable integration fragment. Stop business execution and close Sessions before closing the Store; after an Initialize/Apply error, reload through the Store contract instead of inferring whether it committed. FULL synchronous mode is not a completed power-loss test acceptance; the host owns backup, restore, and directory retention.
 
+## Logical history evidence (Format3, in development)
+
+`RecordFormat` remains `2`: normal `Run` / `Initialize` do not produce Format3, and ordinary `Apply` cannot upgrade Format2. `SemanticRecordFormat` (also `RecordFormat3`) defines only the logical format carrying history evidence, independently of physical snapshots, file manifests, and database layouts. Existing Format2 snapshots retain their original bytes when the new evidence fields are nil; no automatic migration occurs.
+
+`HistorySummaries` uses unique `(Kind, ID)` keys and independently SHA-256-checks each Payload. `CommitIndex` stores consecutive batch commitments from revision 1 through the head. `Provenance` records the origin identity and digest. Each ordinary Format3 transaction appends exactly the next index entry and cannot rewrite or delete historical entries. Its digest binds the same canonical batch with `commit_index` operations omitted, avoiding self-reference. Pre-commit validation and byte accounting handle changed objects only; load boundaries validate complete evidence. `CloneRecord` isolates summary Payload bytes while preserving nil/empty shapes. Custom backends should call `ValidateSemanticEvidence` after decoding and still validate identity, graph, codecs, and references.
+
+These fields are integrity metadata, not authorization credentials or independent proof that historical origins are authentic. The current CommitIndex commits to batch content but does not yet include input, output, or State causal references required for positioned message replay. First materialization from Format2, semantic object deletion, recovery budget high-water marks, compression floors/permanent receipts, and derived replay execution remain unfinished. Changing a record's `Format` field does not provide those capabilities.
+
 ## 2. Configure a directory
 
 This initialization fragment belongs in a function returning `error`. It needs imports for `durable` and `filestore`; follow it with Runtime `Run` or `Resume`:

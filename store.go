@@ -14,9 +14,17 @@ var ErrBusy = errors.New("durable: run busy")
 // ErrConflict 表示 CAS 修订号、记录身份或已有运行发生冲突。
 var ErrConflict = errors.New("durable: revision or run conflict")
 
-// RecordFormat 是新建 RunRecord 的格式版本。版本 2 包含增量流、消息预算和显式状态；
-// Runtime 仍读取不含这些字段的普通版本 1，后续写入升级为 2。旧 Runtime 拒绝版本 2。
+// RecordFormat 是新建 RunRecord 的普通逻辑格式版本。版本 2 包含增量流、消息预算和显式状态；
+// Runtime 仍读取不含这些字段的普通版本 1，后续普通写入升级为 2。旧 Runtime 拒绝版本 2。
+// SemanticRecordFormat（3）是携带语义历史证据的独立逻辑格式，不等于物理快照或存储布局版本。
 const RecordFormat = 2
+
+// IsLogicalRecordFormat 返回当前根包能识别的逻辑记录格式。
+// 格式 1 仅用于读取旧记录；新的 Initialize 仍只产生格式 2。
+// 格式 3 的首次物化属于显式语义压缩入口，普通 Apply 不能完成格式升级。
+func IsLogicalRecordFormat(format int) bool {
+	return format == 1 || format == RecordFormat || format == SemanticRecordFormat
+}
 
 // Store 为一个 RunID 提供独占会话。实现须并发安全，且不同 RunID 可独立使用。
 // Acquire 不等待已占用的 RunID 释放，检测到占用时返回 ErrBusy；Close 释放所有权。
@@ -56,6 +64,12 @@ type RunRecord struct {
 	Streams    map[string]StreamRecord         `json:"streams,omitempty"`
 	Messages   map[string]MessageAttemptRecord `json:"messages,omitempty"`
 	Managed    map[string]ManagedRecord        `json:"managed,omitempty"`
+	// HistorySummaries、CommitIndex 和 Provenance 只在逻辑格式 3 中出现。
+	// 摘要使用切片而不是结构体键 map，保证 JSON、快照和严格解码都能
+	// 保留确定的字段形状；提交时由 recordTransaction 按 (Kind, ID) 做 CAS。
+	HistorySummaries []HistorySummary   `json:"history_summaries,omitempty" snapshot:"optional"`
+	CommitIndex      []CommitIndexEntry `json:"commit_index,omitempty" snapshot:"optional"`
+	Provenance       *Provenance        `json:"provenance,omitempty" snapshot:"optional"`
 }
 
 // ScopeRecord 保存一层图在某个持久作用域中的身份、输入指纹与完整节点成果。
@@ -151,6 +165,7 @@ func cloneRecord(r RunRecord) RunRecord {
 			out.Managed[id] = managed
 		}
 	}
+	cloneSemanticEvidence(&out)
 	return out
 }
 

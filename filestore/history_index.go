@@ -306,8 +306,11 @@ func (s *session) readSnapshot(image snapshotImage) (durable.RunRecord, error) {
 	if err != nil {
 		return r, invalidRecord(err)
 	}
-	if r.RunID != s.runID || r.Revision != image.Base.Revision || r.Format != durable.RecordFormat {
+	if r.RunID != s.runID || r.Revision != image.Base.Revision || !durable.IsLogicalRecordFormat(r.Format) {
 		return r, indexError("snapshot identity mismatch")
+	}
+	if err := durable.ValidateSemanticEvidence(r); err != nil {
+		return r, invalidRecord(err)
 	}
 	if r.Revision == 1 {
 		if err = durable.ValidateInitialRecord(r, s.runID); err != nil {
