@@ -38,7 +38,11 @@ func (b ChangeBatch) OperationCount() int {
 		return 0
 	}
 	t := b.tx
-	return len(t.attempts) + len(t.scopes) + len(t.nodes) + len(t.streams) + len(t.pending) + len(t.messages) + len(t.managed) + len(t.managedEntries)
+	count := len(t.attempts) + len(t.scopes) + len(t.nodes) + len(t.streams) + len(t.pending) + len(t.messages) + len(t.managed) + len(t.managedEntries) + len(t.summaries) + len(t.commitIndex)
+	if t.provenance != nil {
+		count++
+	}
+	return count
 }
 
 func changeHeader(r RunRecord) ChangeHeader {
@@ -47,14 +51,40 @@ func changeHeader(r RunRecord) ChangeHeader {
 		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
 }
 
+func changeHeaderFor(r RunRecord, tx *recordTransaction) ChangeHeader {
+	logical := r.Format
+	if logical == 1 || logical == 0 {
+		logical = RecordFormat
+	}
+	if tx != nil && tx.hasSemanticEvidence() {
+		logical = SemanticRecordFormat
+	}
+	return ChangeHeader{BatchFormat: 1, LogicalFormat: logical, RunID: r.RunID,
+		BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
+		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
+}
+
+func validChangeHeader(r RunRecord, header ChangeHeader, tx *recordTransaction) bool {
+	if header != changeHeaderFor(r, tx) {
+		return false
+	}
+	if header.LogicalFormat == SemanticRecordFormat {
+		return r.Format == SemanticRecordFormat
+	}
+	return header.LogicalFormat == RecordFormat && (r.Format == 1 || r.Format == RecordFormat)
+}
+
 // ApplyTo 在原地修改 record 前检查所有前置条件。调用方独占 record，必须围绕此调用提供原子持久化。
 // 应用期间不会执行回调或用户代码。返回数据不会与批次共享别名，因此后端可以保留/修改自己的 record，而不影响 Runtime。
 // 这里校验受信运行时的类型化变更，而不是图/codec schema；完整图校验仍由 Runtime 加载和现有检查点钩子执行。
 func (b ChangeBatch) ApplyTo(record *RunRecord) (CommitAck, error) {
-	if record == nil || b.tx == nil || record.Revision == math.MaxUint64 || b.header != changeHeader(*record) || b.header.ExpectedRevision != b.tx.baseRevision {
+	if record == nil || b.tx == nil || record.Revision == math.MaxUint64 || !validChangeHeader(*record, b.header, b.tx) || b.header.ExpectedRevision != b.tx.baseRevision {
 		return CommitAck{}, fmt.Errorf("%w: invalid delta header", ErrConflict)
 	}
 	if err := b.tx.check(*record); err != nil {
+		return CommitAck{}, err
+	}
+	if err := b.validateSemanticTransition(*record); err != nil {
 		return CommitAck{}, err
 	}
 	b.tx.apply(record)
@@ -124,6 +154,43 @@ func (tx *recordTransaction) copy() *recordTransaction {
 		}
 		_ = out.putManagedEntry(k, e, v)
 	}
+	for k, op := range tx.summaries {
+		key := HistorySummaryKey{Kind: k.kind, ID: k.id}
+		var e, v *HistorySummary
+		if !op.absent {
+			value := copyHistorySummary(op.expected)
+			e = &value
+		}
+		if !op.remove {
+			value := copyHistorySummary(op.value)
+			v = &value
+		}
+		_ = out.putHistorySummary(key, e, v)
+	}
+	for revision, op := range tx.commitIndex {
+		var e, v *CommitIndexEntry
+		if !op.absent {
+			value := op.expected
+			e = &value
+		}
+		if !op.remove {
+			value := op.value
+			v = &value
+		}
+		_ = out.putCommitIndex(revision, e, v)
+	}
+	if tx.provenance != nil {
+		var e, v *Provenance
+		if !tx.provenance.absent {
+			value := copyProvenance(tx.provenance.expected)
+			e = &value
+		}
+		if !tx.provenance.remove {
+			value := copyProvenance(tx.provenance.value)
+			v = &value
+		}
+		_ = out.putProvenance(e, v)
+	}
 	return out
 }
 
@@ -137,7 +204,7 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	if s.record.Revision == math.MaxUint64 {
 		return s.stop(fmt.Errorf("%w: revision exhausted", ErrConflict))
 	}
-	batch := ChangeBatch{header: changeHeader(s.record), tx: tx.copy()}
+	batch := ChangeBatch{header: changeHeaderFor(s.record, tx), tx: tx.copy()}
 	returned := false
 	defer func() {
 		if !returned {
@@ -156,7 +223,7 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	// 所有 Initialize 和 Load 边界值都已隔离，批次拥有独立的事务副本。
 	// 确认后只修改私有 record。
 	tx.apply(&s.record)
-	s.record.Format, s.record.Revision = RecordFormat, batch.header.Revision
+	s.record.Format, s.record.Revision = batch.header.LogicalFormat, batch.header.Revision
 	s.updateMessageIndex(tx)
 	return nil
 }

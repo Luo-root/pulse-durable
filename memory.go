@@ -74,6 +74,12 @@ func (s *memorySession) Load(ctx context.Context) (RunRecord, error) {
 	if !anchored || r.RunID != s.runID || r.Revision == 0 {
 		return RunRecord{}, fmt.Errorf("%w: invalid memory checkpoint", ErrInvalidRecord)
 	}
+	// 未识别格式仍交给 Runtime 判为不兼容；已有证据则必须先阻止结构损坏。
+	if r.Format == SemanticRecordFormat || r.HistorySummaries != nil || r.CommitIndex != nil || r.Provenance != nil {
+		if err := ValidateSemanticEvidence(r); err != nil {
+			return RunRecord{}, fmt.Errorf("%w: invalid memory semantic evidence", ErrInvalidRecord)
+		}
+	}
 	s.revision, s.chain, s.loaded = r.Revision, chain, true
 	return cloneRecord(r), nil
 }

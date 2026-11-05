@@ -19,6 +19,9 @@ type recordTransaction struct {
 	messages       map[string]putMessage
 	managed        map[string]putManagedHeader
 	managedEntries map[managedEntryKey]managedEntryOperation
+	summaries      map[historySummaryKey]putHistorySummary
+	commitIndex    map[uint64]putCommitIndex
+	provenance     *provenanceOperation
 	err            error
 }
 
@@ -146,6 +149,17 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
+	if s.record.Format == SemanticRecordFormat && (ChangeBatch{tx: tx}).OperationCount() != 0 {
+		if err := tx.ensureSemanticCommitIndex(s.record); err != nil {
+			return err
+		}
+		batch := ChangeBatch{header: changeHeaderFor(s.record, tx), tx: tx}
+		if err := batch.validateSemanticTransition(s.record); err != nil {
+			return err
+		}
+	} else if tx.hasSemanticEvidence() {
+		return fmt.Errorf("%w: format 3 changes require an existing format 3 record and semantic evidence", ErrConflict)
+	}
 	if err := tx.check(s.record); err != nil {
 		return err
 	}
@@ -187,11 +201,14 @@ func (tx *recordTransaction) check(record RunRecord) error {
 	if err := tx.checkMessages(record); err != nil {
 		return err
 	}
+	if err := tx.checkSemanticEvidence(record); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (s *runState) commitCheckedTransaction(ctx context.Context, tx *recordTransaction, prepare func(*RunRecord) error) error {
-	if len(tx.attempts)+len(tx.scopes)+len(tx.nodes)+len(tx.streams)+len(tx.pending)+len(tx.messages)+len(tx.managed)+len(tx.managedEntries) == 0 {
+	if (ChangeBatch{tx: tx}).OperationCount() == 0 {
 		return nil
 	}
 	if prepare != nil {
@@ -232,4 +249,5 @@ func (tx *recordTransaction) apply(proposed *RunRecord) {
 	}
 	tx.applyStreams(proposed)
 	tx.applyMessages(proposed)
+	tx.applySemanticEvidence(proposed)
 }

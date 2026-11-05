@@ -221,7 +221,7 @@ func headerUnwire(h wireHeader) (ChangeHeader, error) {
 	if !ok {
 		return ChangeHeader{}, errInvalidChangeWire
 	}
-	if a != 1 || l != RecordFormat || e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" {
+	if a != 1 || (l != RecordFormat && l != SemanticRecordFormat) || e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" {
 		return ChangeHeader{}, errInvalidChangeWire
 	}
 	return ChangeHeader{int(a), int(l), h.RunID, h.BusinessVersion, h.DefinitionDigest, h.InputsDigest, h.RootScope, e, r}, nil
@@ -238,7 +238,7 @@ func addWireOp(out *[]wireOp, kind, key, scope, name, seq string, state bool, ex
 	}
 	*out = append(*out, wireOp{Kind: kind, Key: key, Scope: scope, Name: name, Sequence: seq, State: state, Expected: e, Value: v, sortScope: scope, sortName: name, sortSequence: seq, sortState: state})
 }
-func (b ChangeBatch) wireOps() ([]wireOp, error) {
+func (b ChangeBatch) wireOps(includeCommitIndex bool) ([]wireOp, error) {
 	if b.tx == nil || b.tx.err != nil {
 		return nil, errInvalidChangeWire
 	}
@@ -267,6 +267,18 @@ func (b ChangeBatch) wireOps() ([]wireOp, error) {
 	for k, v := range b.tx.managedEntries {
 		addWireOp(&o, "managed_entry", "", k.managed, k.name, "", k.state, v.expected, v.value, v.absent, v.remove)
 	}
+	for k, v := range b.tx.summaries {
+		addWireOp(&o, "history_summary", "", k.kind, k.id, "", false, v.expected, v.value, v.absent, v.remove)
+	}
+	for revision, v := range b.tx.commitIndex {
+		if !includeCommitIndex {
+			continue
+		}
+		addWireOp(&o, "commit_index", u64(revision), "", "", "", false, v.expected, v.value, v.absent, v.remove)
+	}
+	if v := b.tx.provenance; v != nil {
+		addWireOp(&o, "provenance", "provenance", "", "", "", false, v.expected, v.value, v.absent, v.remove)
+	}
 	sort.Slice(o, func(i, j int) bool {
 		return tupleLess(o[i].tuple(), o[j].tuple())
 	})
@@ -275,10 +287,14 @@ func (b ChangeBatch) wireOps() ([]wireOp, error) {
 
 // MarshalChangeBatch 返回规范且确定性的字节。返回的字节不会与批次共享别名。
 func MarshalChangeBatch(b ChangeBatch) ([]byte, error) {
-	if b.tx == nil {
-		return nil, errInvalidChangeWire
-	}
-	o, e := b.wireOps()
+	return marshalChangeBatch(b, true)
+}
+
+// marshalChangeBatch 是内部的 wire 编码底层。requireSemantic=false 仅供
+// 计算 Format3 CommitIndexEntry 的内容摘要：它编码去掉 CommitIndex 后的
+// canonical batch，不对外接受为可执行批次。
+func marshalChangeBatch(b ChangeBatch, requireSemantic bool) ([]byte, error) {
+	o, e := b.wireOps(requireSemantic)
 	if e != nil {
 		return nil, e
 	}
@@ -300,7 +316,7 @@ func MarshalChangeBatch(b ChangeBatch) ([]byte, error) {
 	if !validStringFields(w.Header) {
 		return nil, errInvalidChangeWire
 	}
-	if _, err := UnmarshalChangeBatch(out); err != nil {
+	if _, err := unmarshalChangeBatch(out, requireSemantic); err != nil {
 		return nil, err
 	}
 	return out, e
@@ -469,9 +485,36 @@ func (w wireOp) validate() error {
 		return errInvalidChangeWire
 	}
 	switch w.Kind {
-	case "attempt", "scope", "node", "stream", "pending", "message", "managed", "managed_entry":
+	case "attempt", "scope", "node", "stream", "pending", "message", "managed", "managed_entry", "history_summary", "commit_index", "provenance":
 	default:
 		return errInvalidChangeWire
+	}
+	if w.Kind == "history_summary" {
+		if w.Key != "" || w.Scope == "" || w.Name == "" || w.Sequence != "" || w.State {
+			return errInvalidChangeWire
+		}
+		if bytes.Equal(w.Value, rawNull()) && bytes.Equal(w.Expected, rawNull()) {
+			return errInvalidChangeWire
+		}
+		return nil
+	}
+	if w.Kind == "commit_index" {
+		if w.Key == "" || !utf8.ValidString(w.Key) || w.Scope != "" || w.Name != "" || w.Sequence != "" || w.State {
+			return errInvalidChangeWire
+		}
+		if _, ok := parseU64(w.Key); !ok || bytes.Equal(w.Value, rawNull()) && bytes.Equal(w.Expected, rawNull()) {
+			return errInvalidChangeWire
+		}
+		return nil
+	}
+	if w.Kind == "provenance" {
+		if w.Key != "provenance" || w.Scope != "" || w.Name != "" || w.Sequence != "" || w.State {
+			return errInvalidChangeWire
+		}
+		if bytes.Equal(w.Value, rawNull()) && bytes.Equal(w.Expected, rawNull()) {
+			return errInvalidChangeWire
+		}
+		return nil
 	}
 	compound := w.Kind == "node" || w.Kind == "pending" || w.Kind == "managed_entry"
 	if compound {
@@ -512,6 +555,12 @@ func (w wireOp) validate() error {
 
 // UnmarshalChangeBatch 在构造任何事务状态前校验完整封装。
 func UnmarshalChangeBatch(data []byte) (ChangeBatch, error) {
+	return unmarshalChangeBatch(data, true)
+}
+
+// requireCommit=false 仅用于索引内容摘要。省略当前索引不放宽 header、
+// 字段形状、对象值、顺序或字节上限检查，不能把错误编码当成有效承诺。
+func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) {
 	var z ChangeBatch
 	if e := rejectJSON(data); e != nil {
 		return z, e
@@ -677,13 +726,85 @@ func UnmarshalChangeBatch(data []byte) (ChangeBatch, error) {
 				}
 				e = tx.putManagedEntry(n, ep, vp)
 			}
+		case "history_summary":
+			key := HistorySummaryKey{Kind: op.Scope, ID: op.Name}
+			var a, v HistorySummary
+			if !bytes.Equal(op.Expected, []byte("null")) {
+				e = unmarshalRecord(op.Expected, &a)
+			}
+			if e == nil && !bytes.Equal(op.Value, []byte("null")) {
+				e = unmarshalRecord(op.Value, &v)
+			}
+			if e == nil {
+				var ep, vp *HistorySummary
+				if !bytes.Equal(op.Expected, []byte("null")) {
+					ep = &a
+				}
+				if !bytes.Equal(op.Value, []byte("null")) {
+					vp = &v
+				}
+				e = tx.putHistorySummary(key, ep, vp)
+			}
+		case "commit_index":
+			revision, ok := parseU64(op.Key)
+			if !ok {
+				return z, errInvalidChangeWire
+			}
+			var a, v CommitIndexEntry
+			if !bytes.Equal(op.Expected, []byte("null")) {
+				e = unmarshalRecord(op.Expected, &a)
+			}
+			if e == nil && !bytes.Equal(op.Value, []byte("null")) {
+				e = unmarshalRecord(op.Value, &v)
+			}
+			if e == nil {
+				var ep, vp *CommitIndexEntry
+				if !bytes.Equal(op.Expected, []byte("null")) {
+					ep = &a
+				}
+				if !bytes.Equal(op.Value, []byte("null")) {
+					vp = &v
+				}
+				e = tx.putCommitIndex(revision, ep, vp)
+			}
+		case "provenance":
+			var a, v Provenance
+			if !bytes.Equal(op.Expected, []byte("null")) {
+				e = unmarshalRecord(op.Expected, &a)
+			}
+			if e == nil && !bytes.Equal(op.Value, []byte("null")) {
+				e = unmarshalRecord(op.Value, &v)
+			}
+			if e == nil {
+				var ep, vp *Provenance
+				if !bytes.Equal(op.Expected, []byte("null")) {
+					ep = &a
+				}
+				if !bytes.Equal(op.Value, []byte("null")) {
+					vp = &v
+				}
+				e = tx.putProvenance(ep, vp)
+			}
 		}
 		if e != nil {
 			return z, errInvalidChangeWire
 		}
 	}
-	if tx.err != nil {
+	if tx.err != nil || h.LogicalFormat == RecordFormat && tx.hasSemanticEvidence() {
 		return z, errInvalidChangeWire
+	}
+	if h.LogicalFormat == SemanticRecordFormat {
+		if h.ExpectedRevision == 0 {
+			return z, errInvalidChangeWire
+		}
+		if requireCommit {
+			op, ok := tx.commitIndex[h.Revision]
+			if len(tx.commitIndex) != 1 || !ok || !op.absent || op.remove {
+				return z, errInvalidChangeWire
+			}
+		} else if len(tx.commitIndex) != 0 {
+			return z, errInvalidChangeWire
+		}
 	}
 	return ChangeBatch{header: h, tx: tx}, nil
 }

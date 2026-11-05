@@ -108,8 +108,9 @@ func FieldName(field reflect.StructField) string {
 }
 
 type field struct {
-	name string
-	size int64
+	name     string
+	size     int64
+	optional bool // 仅为后来新增的可空字段省略 nil；非 nil 空容器仍必须编码。
 }
 type structPlan struct {
 	fields []field
@@ -132,7 +133,13 @@ func fields(typ reflect.Type) structPlan {
 			break
 		}
 		seen[name] = true
-		p.fields[i] = field{name, size + 1}
+		optional := typ.Field(i).Tag.Get("snapshot") == "optional"
+		kind := typ.Field(i).Type.Kind()
+		if optional && kind != reflect.Pointer && kind != reflect.Map && kind != reflect.Slice {
+			p.err = ErrInvalid
+			break
+		}
+		p.fields[i] = field{name: name, size: size + 1, optional: optional}
 	}
 	cached, _ := plans.LoadOrStore(typ, p)
 	return cached.(structPlan)
@@ -154,12 +161,21 @@ func walk(v reflect.Value, materialize bool) (any, int64, error) {
 		if p.err != nil {
 			return nil, 0, p.err
 		}
-		n, _ := ContainerOverhead(false, len(p.fields))
+		count := len(p.fields)
+		for i, f := range p.fields {
+			if f.optional && v.Field(i).IsNil() {
+				count--
+			}
+		}
+		n, _ := ContainerOverhead(false, count)
 		var out map[string]any
 		if materialize {
-			out = make(map[string]any, len(p.fields))
+			out = make(map[string]any, count)
 		}
 		for i, f := range p.fields {
+			if f.optional && v.Field(i).IsNil() {
+				continue
+			}
 			value, size, err := walk(v.Field(i), materialize)
 			if err != nil {
 				return nil, 0, err

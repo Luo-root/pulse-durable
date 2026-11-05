@@ -22,6 +22,14 @@
 
 SQLite 初始化与示例见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。关闭时先停止业务运行并关闭 Session，再关闭 Store；Initialize/Apply 返回错误时按 Store 契约重新 Load，不推断是否已经提交。FULL 同步不等于已完成断电实测验收，备份、恢复与目录保留由宿主负责。
 
+## 逻辑历史证据（Format3，开发中）
+
+`RecordFormat` 仍为 `2`；正常 `Run` / `Initialize` 不生成 Format3，普通 `Apply` 也不能把 Format2 升级成 Format3。`SemanticRecordFormat`（同 `RecordFormat3`）只定义携带历史摘要的逻辑格式，与物理快照、文件 manifest 或数据库布局版本独立。现有 Format2 快照在新增证据为 nil 时保持原字节表示，不自动迁移旧数据。
+
+Format3 的 `HistorySummaries` 以 `(Kind, ID)` 唯一标识摘要，Payload 有独立 SHA-256；`CommitIndex` 保存从 revision 1 到 head 的连续批次承诺；`Provenance` 保存来源身份与摘要。普通 Format3 事务恰好追加下一条索引，禁止改写或删除旧索引。索引摘要绑定同一规范批次中去掉 `commit_index` 操作后的内容，避免自引用；提交前校验与字节预算仅处理变化对象，完整证据在加载边界校验。`CloneRecord` 隔离摘要 Payload 并保留 nil/空形状。自定义后端解码后应调用 `ValidateSemanticEvidence`，并继续执行身份、图、Codec 与引用校验。
+
+这些字段是完整性元数据，不是授权凭据，也不单凭自身证明历史来源真实。当前 CommitIndex 只承诺批次内容，尚未包含指定位置消息回放所需的输入、输出及 State 因果引用。Format2 首次证据物化、语义对象删除、恢复预算高水位、压缩 floor/永久回执和派生回放执行仍未完成；不能通过修改记录的 `Format` 字段获得这些能力。
+
 ## 2. 设置文件目录
 
 以下是初始化片段，放在返回 `error` 的函数内；需要导入 `durable` 与 `filestore`，后续再调用 Runtime 的 `Run` 或 `Resume`：

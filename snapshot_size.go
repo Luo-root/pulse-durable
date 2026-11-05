@@ -9,15 +9,18 @@ import (
 
 // SnapshotSizeDelta 返回本批应用前后无损快照格式 1 的精确有符号字节差。
 // 它核对与 ApplyTo 相同的 header 和对象前置条件，不修改 before，也不克隆完整记录。
-// 大小编码只处理变更对象；对象前置条件检查仍可能线性查找同组 State/Values 条目。
+// 两种逻辑格式均只计算变化对象及其容器的大小；未变更的语义历史不参与编码。
 // 调用方须独占 before，且保证其来自完整加载校验。
 // 完整快照大小包括版本信封；本方法只计算差额，不能代替初始化时的完整计数。
 // nil/空容器、JSON 转义、base64 和修订号位数均参与计数；结果不代表磁盘或 WAL 字节。
 func (b ChangeBatch) SnapshotSizeDelta(before RunRecord) (int64, error) {
-	if b.tx == nil || before.Revision == math.MaxUint64 || b.header != changeHeader(before) || b.header.ExpectedRevision != b.tx.baseRevision {
+	if b.tx == nil || before.Revision == math.MaxUint64 || !validChangeHeader(before, b.header, b.tx) || b.header.ExpectedRevision != b.tx.baseRevision {
 		return 0, fmt.Errorf("%w: invalid delta header", ErrConflict)
 	}
 	if err := b.tx.check(before); err != nil {
+		return 0, err
+	}
+	if err := b.validateSemanticTransition(before); err != nil {
 		return 0, err
 	}
 	c := snapshotDelta{}
@@ -138,6 +141,28 @@ func (b ChangeBatch) SnapshotSizeDelta(before RunRecord) (int64, error) {
 		}
 		// managed 条目的最后一次删除将空切片归一化为 nil。
 		c.container(values == nil, len(values), additions, true, len(values)+additions == 0)
+	}
+	summaries := 0
+	for _, op := range tx.summaries {
+		switch {
+		case op.absent:
+			c.value(op.value, 1)
+			summaries++
+		case op.remove:
+			c.value(op.expected, -1)
+			summaries--
+		default:
+			c.replace(op.expected, op.value)
+		}
+	}
+	c.container(before.HistorySummaries == nil, len(before.HistorySummaries), summaries, len(tx.summaries) != 0, len(before.HistorySummaries)+summaries == 0)
+	// 普通 Format3 提交只允许追加下一条索引，历史条目是不可变证据。
+	for _, op := range tx.commitIndex {
+		c.value(op.value, 1)
+	}
+	c.container(before.CommitIndex == nil, len(before.CommitIndex), len(tx.commitIndex), len(tx.commitIndex) != 0, false)
+	if op := tx.provenance; op != nil {
+		c.replace(before.Provenance, &op.value)
 	}
 	if c.err != nil {
 		return 0, fmt.Errorf("%w: snapshot size cannot be represented", ErrInvalidRecord)
