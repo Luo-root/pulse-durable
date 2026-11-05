@@ -67,6 +67,29 @@ BEGIN
  IF q.namespace<>ns OR q.policy_version<>p.policy_version OR q.policy<>proposed OR q.policy_digest<>dg OR q.observed_from<>vf OR q.observed_through<>vt OR q.cursor<>cur OR q."limit"<>lim THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention preview binding conflict'; END IF;
  RETURN jsonb_build_object('dry_run_id',id,'namespace',ns,'policy_version',p.policy_version::text,'policy',proposed,'policy_digest',dg,'observed_from',vf,'observed_through',vt,'summary',jsonb_build_object('candidates','[]'::jsonb,'protected','{}'::jsonb,'logical_rows','0','logical_bytes','0'),'cursor',cur,'next_cursor',jsonb_build_object('set',false,'value',''),'receipt_digest',rd);
 END $$;
+CREATE FUNCTION pulse_durable_distributed.retention_candidate_preview(a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE ns text:=retention_policy_auth(a); p retention_policies; id text:=a->>'dry_run_id'; proposed jsonb:=a->'policy'; dg text:=a->>'policy_digest'; vf timestamptz:=(a->>'observed_from')::timestamptz; vt timestamptz:=(a->>'observed_through')::timestamptz; cur jsonb:=a->'cursor'; lim integer:=(a->>'limit')::integer; after_id text:=''; rd text; candidates jsonb:='[]'::jsonb; protected jsonb:='{}'::jsonb; rows bigint:=0; bytes bigint:=0; batch_rows bigint; batch_bytes bigint; r record; reasons jsonb; key text; more boolean:=false;
+BEGIN
+ IF coalesce(octet_length(id),0) NOT BETWEEN 1 AND 256 OR NOT retention_policy_validate(proposed) OR coalesce(dg,'') !~ '^[0-9a-f]{64}$' OR vf IS NULL OR vt IS NULL OR vt<vf OR jsonb_typeof(cur) IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(cur) AS keys(key))<>2 OR jsonb_typeof(cur->'set') IS DISTINCT FROM 'boolean' OR jsonb_typeof(cur->'value') IS DISTINCT FROM 'string' OR ((cur->>'set')::boolean=false AND cur->>'value'<>'') OR ((cur->>'set')::boolean=true AND coalesce(octet_length(cur->>'value'),0) NOT BETWEEN 1 AND 256) OR lim IS NULL OR lim NOT BETWEEN 1 AND 1000000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid retention candidate preview'; END IF;
+ IF cur->>'set'='true' THEN after_id:=cur->>'value'; END IF;
+ SELECT * INTO STRICT p FROM retention_policies WHERE namespace=ns FOR SHARE;
+ IF dg IS DISTINCT FROM encode(sha256(convert_to(replace(replace(proposed::text, ': ', ':'), ', ', ','),'UTF8')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='retention policy digest'; END IF;
+ IF (a->>'policy_version')::numeric IS DISTINCT FROM p.policy_version THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='retention policy version'; END IF;
+ rd:=encode(sha256(convert_to(id||':'||ns||':'||p.policy_version::text||':'||dg||':'||vf::text||':'||vt::text||':'||cur::text||':'||lim::text,'UTF8')),'hex');
+ FOR r IN SELECT x.* FROM runs x WHERE x.namespace=ns AND x.run_id COLLATE "C">after_id COLLATE "C" AND x.status IN ('succeeded','failed','canceled') AND x.revision>0 AND x.finished_at>=vf AND x.finished_at<=vt ORDER BY x.run_id COLLATE "C" LIMIT lim+1 LOOP
+  IF jsonb_array_length(candidates)>=lim THEN more:=true; EXIT; END IF;
+  key:=ns||chr(31)||'run'||chr(31)||r.run_id||chr(31)||r.revision::text;
+  reasons:=jsonb_build_array('history_retained','tombstone');
+  IF EXISTS(SELECT 1 FROM build_pins b WHERE b.namespace=ns AND b.run_id=r.run_id AND NOT b.closed) THEN reasons:=reasons||jsonb_build_array('build_pin'); END IF;
+  IF EXISTS(SELECT 1 FROM maintenance_guards g WHERE g.namespace=ns AND g.run_id=r.run_id) OR EXISTS(SELECT 1 FROM mutation_guards g WHERE g.namespace=ns AND g.run_id=r.run_id) THEN reasons:=reasons||jsonb_build_array('guard'); END IF;
+  SELECT count(*),coalesce(sum(octet_length(b.wire)),0) INTO batch_rows,batch_bytes FROM batches b WHERE b.namespace=ns AND b.run_id=r.run_id;
+  candidates:=candidates||jsonb_build_array(jsonb_build_object('namespace',ns,'kind','run','id',r.run_id,'revision',r.revision,'rows',batch_rows,'bytes',batch_bytes,'protected',reasons));
+  protected:=protected||jsonb_build_object(key,reasons);
+  rows:=rows+batch_rows; bytes:=bytes+batch_bytes;
+ END LOOP;
+ RETURN jsonb_build_object('dry_run_id',id,'namespace',ns,'policy_version',p.policy_version::text,'policy',proposed,'policy_digest',dg,'observed_from',vf,'observed_through',vt,'summary',jsonb_build_object('candidates',candidates,'protected',protected,'logical_rows',rows,'logical_bytes',bytes),'cursor',cur,'next_cursor',CASE WHEN more THEN jsonb_build_object('set',true,'value',(candidates->(jsonb_array_length(candidates)-1))->>'id') ELSE jsonb_build_object('set',false,'value','') END,'receipt_digest',rd);
+END $$;
+REVOKE ALL ON FUNCTION pulse_durable_distributed.retention_candidate_preview(jsonb) FROM PUBLIC;
 CREATE FUNCTION pulse_durable_distributed.retention_policy_update(a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE ns text:=retention_policy_auth(a); p retention_policies; q retention_previews; proposed jsonb:=a->'policy'; id text:=a->>'dry_run_id'; t timestamptz:=clock_timestamp();
 BEGIN

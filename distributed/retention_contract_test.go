@@ -55,6 +55,16 @@ func TestRetentionContractBindingAndReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestRetentionContractFirstPageCursorJSON(t *testing.T) {
+	b, err := retentionJSON(RetentionCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"set":false,"value":""}` {
+		t.Fatalf("first-page cursor must include empty value: %s", b)
+	}
+}
+
 func TestRetentionContractCursorAndBudgets(t *testing.T) {
 	q := retentionContractQuery()
 	q.Cursor = RetentionCursor{Set: true}

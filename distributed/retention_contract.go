@@ -30,7 +30,7 @@ const (
 // RetentionCursor 明确区分首页（Set=false）与已提供的分页游标；空游标不能冒充首页。
 type RetentionCursor struct {
 	Set   bool   `json:"set"`
-	Value string `json:"value,omitempty"`
+	Value string `json:"value"`
 }
 
 func (c RetentionCursor) valid() bool {
@@ -93,7 +93,7 @@ func cloneRetentionCandidates(in []RetentionCandidate) []RetentionCandidate {
 	return out
 }
 func retentionCandidateKey(c RetentionCandidate) string {
-	return c.Namespace + "\x00" + c.Kind + "\x00" + c.ID + "\x00" + strconv.FormatUint(c.Revision, 10)
+	return c.Namespace + "\x1f" + c.Kind + "\x1f" + c.ID + "\x1f" + strconv.FormatUint(c.Revision, 10)
 }
 
 // RetentionCandidateSummary 是 dry-run 对候选的只读摘要。
@@ -191,7 +191,15 @@ func retentionPolicyDigest(p RetentionPolicy) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	return retentionDigest(q)
+	// 使用按 key 排序的对象，而不是依赖结构体字段顺序；PostgreSQL jsonb
+	// 的文本摘要也按同一稳定表示计算，避免跨后端摘要不一致。
+	return retentionDigest(map[string]any{
+		"Enabled":            q.Enabled,
+		"EventTTL":           q.EventTTL,
+		"ReceiptTTL":         q.ReceiptTTL,
+		"ReplayHistoryTTL":   q.ReplayHistoryTTL,
+		"TerminalPayloadTTL": q.TerminalPayloadTTL,
+	})
 }
 
 func (q RetentionDryRun) Validate() error {

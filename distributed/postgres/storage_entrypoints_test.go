@@ -46,7 +46,9 @@ func TestPostgresStorageEntrypointACLAndAbortLifecycle(t *testing.T) {
 		if err := c.pool.QueryRow(ctx, `SELECT has_function_privilege(session_user,p.oid,'EXECUTE'), EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0) FROM pg_proc p WHERE p.pronamespace='pulse_durable_distributed'::regnamespace AND p.proname=$1`, name).Scan(&granted, &public); err != nil {
 			t.Fatal(name, err)
 		}
-		entry := name == "storage_inspect" || strings.HasPrefix(name, "storage_compact_")
+		// integration 默认只授予 query/worker/submit/cancel；物理合成
+		// 必须在后面显式授予 maintain 后才可执行。
+		entry := false
 		if granted != entry || public {
 			t.Fatalf("%s granted=%v public=%v", name, granted, public)
 		}
@@ -69,9 +71,7 @@ func TestPostgresStorageEntrypointACLAndAbortLifecycle(t *testing.T) {
 	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,'maintain')", role, ns); err != nil {
-		t.Fatal(err)
-	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
 	q := CompactStorageRequest{Identity: task.Identity(), ExpectedGeneration: 1, ThroughRevision: 1, Mutation: d.Mutation{ID: "abort-build"}}
 	q.Mutation.Digest = CompactStorageDigest(q)
 	a, err := maintenanceArgs(q)

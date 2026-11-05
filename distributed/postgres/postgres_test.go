@@ -16,6 +16,7 @@ import (
 	"github.com/Luo-root/pulse"
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -151,6 +152,50 @@ func integration(t *testing.T) (*Coordinator, *pgxpool.Pool, string) {
 	}
 	return c, admin, ns
 }
+
+// setTestPermission 同时维护测试角色的业务权限行和 PostgreSQL 函数 ACL。
+//
+// 生产入口 Migrate 会一次性完成这两步；部分集成测试为了验证权限
+// 动态撤销，会直接改变 access 表。若只改 access 而不同步 ACL，测试
+// 看到的角色状态就不再是生产中的合法状态，后续入口会被 PostgreSQL
+// 在进入业务权限判断前直接拒绝。该辅助函数只服务于一次性测试角色，
+// 不属于产品授权路径，也不授予任何表权限。
+func setTestPermission(t *testing.T, admin *pgxpool.Pool, ctx context.Context, role, ns, permission string, enabled bool) {
+	t.Helper()
+	if enabled {
+		if _, err := admin.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,$3) ON CONFLICT DO NOTHING", role, ns, permission); err != nil {
+			t.Fatal(err)
+		}
+	} else if _, err := admin.Exec(ctx, "DELETE FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission=$3", role, ns, permission); err != nil {
+		t.Fatal(err)
+	}
+
+	var api, maintain, replay, retain bool
+	if err := admin.QueryRow(ctx, `
+SELECT
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission IN ('query','worker','submit','cancel')),
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='maintain'),
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='replay'),
+ EXISTS(SELECT 1 FROM pulse_durable_distributed.access WHERE role_name=$1 AND namespace=$2 AND permission='retain')`, role, ns).Scan(&api, &maintain, &replay, &retain); err != nil {
+		t.Fatal(err)
+	}
+	roleSQL := pgx.Identifier{role}.Sanitize()
+	setFunctions := func(functions string, granted bool) {
+		t.Helper()
+		verb, suffix := "REVOKE EXECUTE ON FUNCTION ", " FROM "
+		if granted {
+			verb, suffix = "GRANT EXECUTE ON FUNCTION ", " TO "
+		}
+		if _, err := admin.Exec(ctx, verb+functions+suffix+roleSQL); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setFunctions("pulse_durable_distributed.api(text,jsonb)", api)
+	setFunctions("pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb)", maintain)
+	setFunctions("pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)", maintain || replay)
+	setFunctions("pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb)", retain)
+}
+
 func claimOne(t *testing.T, c *Coordinator, task d.Task, id string, ttl time.Duration) d.Claim {
 	t.Helper()
 	rows, e := c.Claim(context.Background(), d.ClaimRequest{Namespace: task.Identity().Namespace, Worker: d.Worker{ID: "worker", BootID: "boot"}, Capabilities: []d.Route{task.Route()}, Limit: 1, TTL: ttl, LeaseIDs: []string{digest([]byte(task.Identity().Namespace + id))[:32]}})

@@ -94,7 +94,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		}
 	} else {
 		var retentionReady bool
-		if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+		if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_candidate_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
 			return scrub(e, false)
 		}
 		if !retentionReady {
@@ -108,13 +108,13 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		}
 	}
 	var retentionReady bool
-	if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT to_regclass('pulse_durable_distributed.retention_policies') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_get(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_candidate_preview(jsonb)') IS NOT NULL AND to_regprocedure('pulse_durable_distributed.retention_policy_update(jsonb)') IS NOT NULL`).Scan(&retentionReady); e != nil {
 		return scrub(e, false)
 	}
 	if !retentionReady {
 		return ErrUnsupportedCapability
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -127,18 +127,26 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			return errors.New("distributed postgres: grant requires isolated non-owner role")
 		}
 		role := pgx.Identifier{g.Role}.Sanitize()
-		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.check_schema() TO "+role); e != nil {
-			return scrub(e, false)
-		}
+		functions := "pulse_durable_distributed.check_schema()"
 		for _, permission := range g.Permissions {
 			switch permission {
-			case "query", "worker", "submit", "cancel", "maintain", "retain", "replay":
+			case "query", "worker", "submit", "cancel":
+				functions += ",pulse_durable_distributed.api(text,jsonb)"
+			case "maintain":
+				functions += ",pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
+			case "replay":
+				functions += ",pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
+			case "retain":
+				functions += ",pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb)"
 			default:
 				return errors.New("distributed postgres: invalid permission")
 			}
 			if _, e = tx.Exec(ctx, "INSERT INTO pulse_durable_distributed.access VALUES($1,$2,$3) ON CONFLICT DO NOTHING", g.Role, g.Namespace, permission); e != nil {
 				return scrub(e, false)
 			}
+		}
+		if _, e = tx.Exec(ctx, "GRANT USAGE ON SCHEMA pulse_durable_distributed TO "+role+"; GRANT EXECUTE ON FUNCTION "+functions+" TO "+role); e != nil {
+			return scrub(e, false)
 		}
 	}
 	// 授权改变 ACL，但不改变模式签名；签名有意排除

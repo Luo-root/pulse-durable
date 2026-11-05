@@ -12,7 +12,7 @@ BEGIN
  SELECT encode(sha256(convert_to(s,'UTF8')),'hex') INTO actual FROM (` + catalogSQL + `) AS catalog(s);
  IF actual IS DISTINCT FROM expected THEN RETURN false; END IF;
  -- 当前开发布局必须具备历史 pin 表与五个独立入口，不接受旧布局自签名。
- IF to_regclass('pulse_durable_distributed.history_pins') IS NULL OR to_regclass('pulse_durable_distributed.pin_guards') IS NULL OR to_regclass('pulse_durable_distributed.pin_receipts') IS NULL OR
+ IF to_regclass('pulse_durable_distributed.history_pins') IS NULL OR to_regclass('pulse_durable_distributed.pin_guards') IS NULL OR to_regclass('pulse_durable_distributed.pin_receipts') IS NULL OR to_regprocedure('pulse_durable_distributed.retention_candidate_preview(jsonb)') IS NULL OR (SELECT count(*) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname='retention_candidate_preview' AND proargtypes='3802'::oidvector AND prosecdef AND (SELECT replace(x,' ','') FROM unnest(coalesce(proconfig,'{}'::text[])) x WHERE x LIKE 'search_path=%')='search_path=pg_catalog,pulse_durable_distributed,pg_temp')<>1 OR
  (SELECT count(*) FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname IN ('pin_create','pin_renew','pin_release','pin_find','pin_find_mutation') AND proargtypes='3802'::oidvector AND prosecdef)<>5 THEN RETURN false; END IF;
  IF EXISTS(SELECT 1 FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname LIKE 'pin_%' AND proname NOT IN ('pin_create','pin_renew','pin_release','pin_find','pin_find_mutation') AND has_function_privilege(session_user,oid,'EXECUTE')) THEN RETURN false; END IF;
  IF NOT (` + layoutSafetySQL + `) THEN RETURN false; END IF;
