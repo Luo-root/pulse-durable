@@ -432,6 +432,14 @@ func TestPostgresSnapshotExactBoundaryAndOneByte(t *testing.T) {
 
 func TestPostgresSnapshotRejectsUnknownMalformedDuplicateAndOldClient(t *testing.T) {
 	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	// 该用例直接调用 storage_inspect 验证请求格式；先显式授予
+	// maintain，确保断言落在请求校验而不是入口 ACL。
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
 	h := newSnapshotTestRun(t, c, admin, ns, "snapshot-reject")
 	batch := snapshotNodeBatch(t, h.r, snapshotDataNode("node", 1), nil)
 	wire, err := durable.MarshalChangeBatch(batch)
