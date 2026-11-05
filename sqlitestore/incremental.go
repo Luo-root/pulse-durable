@@ -71,6 +71,9 @@ func (s *session) Load(ctx context.Context) (durable.RunRecord, error) {
 			return durable.RunRecord{}, err
 		}
 	}
+	if err := durable.ValidateSemanticEvidence(*s.cache); err != nil {
+		return durable.RunRecord{}, fmt.Errorf("%w: invalid semantic evidence", durable.ErrInvalidRecord)
+	}
 	// 只有显式 Load 创建完整隔离副本，普通 Apply 绝不如此。
 	return durable.CloneRecord(*s.cache), nil
 }

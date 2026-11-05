@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Luo-root/pulse v0.5.2
-	github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639
+	github.com/Luo-root/pulse-durable v0.1.1-0.20261105231954-53869c8267d5
 	github.com/jackc/pgx/v5 v5.11.0
 )
 

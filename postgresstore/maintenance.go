@@ -147,7 +147,7 @@ func readImage(ctx context.Context, q txQuerier, state durable.StorageState, tar
 		return fail(errors.Join(errCorrupt, err))
 	}
 	canonical, err := encodeSnapshot(r)
-	if err != nil || !bytes.Equal(canonical, data) || r.RunID != state.RunID || r.Revision != base || r.Format != durable.RecordFormat {
+	if err != nil || !bytes.Equal(canonical, data) || r.RunID != state.RunID || r.Revision != base || !durable.IsLogicalRecordFormat(r.Format) {
 		return fail(errCorrupt)
 	}
 	// 即使从合成修订开始，也对照保留的初始快照验证

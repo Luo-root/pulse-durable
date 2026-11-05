@@ -156,6 +156,9 @@ func (x *session) Load(ctx context.Context) (durable.RunRecord, error) {
 	if err := x.rebuild(ctx); err != nil {
 		return durable.RunRecord{}, err
 	}
+	if err := durable.ValidateSemanticEvidence(*x.cache); err != nil {
+		return durable.RunRecord{}, fmt.Errorf("%w: invalid semantic evidence", durable.ErrInvalidRecord)
+	}
 	return durable.CloneRecord(*x.cache), nil
 }
 func (x *session) Initialize(ctx context.Context, r durable.RunRecord) (resultErr error) {

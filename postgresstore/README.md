@@ -2,6 +2,8 @@
 
 ## 中文
 
+当前开发版固定根依赖 `v0.1.1-0.20261105231954-53869c8267d5`，无需本地 replace 即可独立构建。Load、历史读取与快照合成检查逻辑 Format3 的摘要、连续 CommitIndex 和 Provenance，并将证据损坏归为 `ErrInvalidRecord`。Initialize 仍只创建 Format2，数据库布局不变。首次物化与语义删除入口尚未提供；测试显式注入快照仅验读取边界，不作为压缩执行证明。
+
 可选 PostgreSQL 后端，实现 Durable `Store` / `Session`，使用 `pgx/v5` 与 `pgxpool`。目标 API 基线 **v0.1.0**，要求 **Go 1.26+**、**Pulse v0.5.0**。
 
 这是发版准备，不代表已发布。状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；根 `v0.1.0` 与子模块 `postgresstore/v0.1.0` tag 发布前，以下命令尚不可用：
@@ -29,6 +31,8 @@ go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
 - opt-in 测试包含真实 Runtime 10/100/500 条求和、公开 wire State 删除 + 两输出原子提交与失败/reopen、旧库不变、head-chain CAS/损坏、批插入故障及真实进程退出。没有执行实库时只能报告编译和非数据库测试结果。
 
 ## English
+
+The development module pins root `v0.1.1-0.20261105231954-53869c8267d5` and builds independently without a local replace. Load, exact history reads, and snapshot synthesis validate logical Format3 summaries, consecutive CommitIndex entries, and Provenance, reporting corrupt evidence as `ErrInvalidRecord`. Initialize still creates Format2, and the database layout is unchanged. First materialization and semantic deletion remain unavailable; explicitly injected snapshots test read boundaries only, not compression execution.
 
 This optional PostgreSQL backend implements Durable `Store` / `Session` with `pgx/v5` and `pgxpool`. The target API baseline is **v0.1.0**, requiring **Go 1.26+**, **Pulse v0.5.0**.
 

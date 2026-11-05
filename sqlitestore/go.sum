@@ -1,7 +1,7 @@
 github.com/Luo-root/pulse v0.5.2 h1:qxIYwx4j/vIPEgFQrwJrgAe6FCqblyGlVvEvGJkNHSQ=
 github.com/Luo-root/pulse v0.5.2/go.mod h1:DPHAayLFyqLJujcrkzRnmhKwGQCzArW7aQ1330y/bu0=
-github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639 h1:DzEhlTOJbqpzVVKNiTFWsvxeGjH94zHdD7h06QsjU8U=
-github.com/Luo-root/pulse-durable v0.1.1-0.20261029022550-ce30b655d639/go.mod h1:Koy8Q6UFP+925ydpZQ6cEiTG+h/XD+F6CIotlx+013g=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261105231954-53869c8267d5 h1:NxSqMLVVUhc5/G+8OL2xVE4j7GiuKzcEELaUxqcdod8=
+github.com/Luo-root/pulse-durable v0.1.1-0.20261105231954-53869c8267d5/go.mod h1:hf4m5xNjowll0LEhZA4zHXvU/Dv7SiS1ZCWFNJXZeQg=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 h1:LMLX+LgTNWpfvCBdFebv6EsYotImrt/Ppc5cXIriCSo=
