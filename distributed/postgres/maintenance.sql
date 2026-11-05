@@ -3,6 +3,29 @@ CREATE FUNCTION pulse_durable_distributed.storage_state(r pulse_durable_distribu
  SELECT jsonb_build_object('generation',r.representation_generation::text,'base_revision',coalesce(s.revision,1)::text,'base_chain',coalesce(s.chain,encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex')),'head_revision',r.revision::text,'head_chain',r.head_chain)
  FROM (SELECT 1) x LEFT JOIN pulse_durable_distributed.storage_snapshots s ON s.namespace=r.namespace AND s.run_id=r.run_id AND s.generation=r.active_snapshot
 $$;
+-- 为历史引用和维护请求验证完整恢复路径，而不把单条链摘要存在当作可恢复。
+-- history_floor 只限制新请求；精确旧回执在调用此函数前裁决，不从这里获得新权限。
+CREATE FUNCTION pulse_durable_distributed.history_path(r pulse_durable_distributed.runs, target numeric) RETURNS text LANGUAGE plpgsql VOLATILE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE s pulse_durable_distributed.storage_snapshots; base numeric:=1; anchor text; expected numeric; entry record; rec bytea:=r.record; dg text:=r.snapshot_digest; computed text;
+BEGIN
+ IF target IS NULL OR trunc(target)<>target OR target<r.history_floor OR target>r.revision OR r.revision=0 THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='history outside retained range'; END IF;
+ SELECT * INTO s FROM pulse_durable_distributed.storage_snapshots WHERE namespace=r.namespace AND run_id=r.run_id AND revision>=r.history_floor AND revision<=target ORDER BY revision DESC,generation DESC LIMIT 1;
+ IF FOUND THEN base:=s.revision; anchor:=s.chain; rec:=s.record; dg:=s.digest;
+ ELSE
+  IF r.history_floor>1 THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='retained history base missing'; END IF;
+  anchor:=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex');
+ END IF;
+ IF rec IS NULL OR dg IS NULL OR encode(sha256(rec),'hex') IS DISTINCT FROM dg OR coalesce(anchor,'') !~ '^[0-9a-f]{64}$' THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='retained history base corrupt'; END IF;
+ expected:=base+1;
+ FOR entry IN SELECT * FROM pulse_durable_distributed.batches WHERE namespace=r.namespace AND run_id=r.run_id AND revision>base AND revision<=target ORDER BY revision LOOP
+  IF entry.revision<>expected OR entry.parent_chain IS DISTINCT FROM anchor OR encode(sha256(entry.wire),'hex') IS DISTINCT FROM entry.digest THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='retained history gap or corrupt batch'; END IF;
+  computed:=encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(anchor,'hex')||decode(entry.digest,'hex')||decode(lpad(to_hex(trunc(expected/4294967296)::bigint),8,'0')||lpad(to_hex(mod(expected,4294967296)::bigint),8,'0'),'hex')),'hex');
+  IF entry.next_chain IS DISTINCT FROM computed THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='retained history chain corrupt'; END IF;
+  anchor:=computed; expected:=expected+1;
+ END LOOP;
+ IF expected<>target+1 OR (target=r.revision AND anchor IS DISTINCT FROM r.head_chain) THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='retained history target missing'; END IF;
+ RETURN anchor;
+END $$;
 CREATE FUNCTION pulse_durable_distributed.storage_image(r pulse_durable_distributed.runs, through_rev numeric, active boolean) RETURNS jsonb LANGUAGE plpgsql VOLATILE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE s pulse_durable_distributed.storage_snapshots; base_rev numeric:=1; base_chain text; bytes bytea:=r.record; dg text:=r.snapshot_digest; anchor text;
 BEGIN
@@ -13,6 +36,7 @@ BEGIN
  IF through_rev=base_rev THEN anchor:=base_chain;
  ELSE SELECT next_chain INTO anchor FROM pulse_durable_distributed.batches WHERE namespace=r.namespace AND run_id=r.run_id AND revision=through_rev; END IF;
  IF through_rev=r.revision THEN anchor:=r.head_chain; END IF;
+ IF through_rev<r.history_floor THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='requested history expired'; END IF;
  IF anchor IS NULL OR through_rev<base_rev OR through_rev>r.revision THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='invalid path'; END IF;
  RETURN snapshot(r)||jsonb_build_object('revision',through_rev::text,'record',encode(bytes,'base64'),'snapshot_digest',dg,'base_revision',base_rev::text,'base_chain',base_chain,'head_chain',anchor,'batches',coalesce((SELECT jsonb_agg(jsonb_build_object('revision',revision::text,'wire',encode(wire,'base64'),'digest',digest,'parent_chain',parent_chain,'next_chain',next_chain) ORDER BY revision) FROM pulse_durable_distributed.batches WHERE namespace=r.namespace AND run_id=r.run_id AND revision>base_rev AND revision<=through_rev),'[]'::jsonb));
 END $$;
@@ -57,7 +81,11 @@ BEGIN
  rev:=(a->>'through_revision')::numeric; gen:=(a->>'generation')::bigint;
  IF md IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/maintenance/compact/v1','UTF8')||decode('00','hex')||convert_to(octet_length(ns)::text||':'||ns||octet_length(rid)::text||':'||rid||':'||gen::text||':'||rev::text,'UTF8')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='maintenance plan digest'; END IF;
  IF rev IS NULL OR trunc(rev)<>rev OR rev<1 OR rev>r.revision OR gen IS DISTINCT FROM r.representation_generation OR gen=9223372036854775807 OR rev<(storage_state(r)->>'base_revision')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='representation conflict'; END IF;
- IF rev=1 THEN anchor:=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex'); ELSE SELECT next_chain INTO anchor FROM pulse_durable_distributed.batches WHERE namespace=ns AND run_id=rid AND revision=rev; END IF;
+ IF r.history_floor>1 THEN
+  anchor:=history_path(r,rev);
+ ELSE
+  IF rev=1 THEN anchor:=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex'); ELSE SELECT next_chain INTO anchor FROM pulse_durable_distributed.batches WHERE namespace=ns AND run_id=rid AND revision=rev; END IF;
+ END IF;
  IF anchor IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='source missing'; END IF;
  INSERT INTO pulse_durable_distributed.maintenance_guards VALUES(ns,rid,mid,md,'compact_storage');
  INSERT INTO pulse_durable_distributed.build_pins VALUES(ns,rid,mid,session_user,gen,r.revision,r.head_chain,rev,anchor,t+interval '10 minutes',false);
