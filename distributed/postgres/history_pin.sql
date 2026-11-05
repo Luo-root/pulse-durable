@@ -94,7 +94,13 @@ BEGIN
  answer:=pin_receipt(a,'create',true); IF answer IS NOT NULL THEN RETURN answer->'result'; END IF;
  IF EXISTS(SELECT 1 FROM pulse_durable_distributed.history_pins WHERE namespace=r.namespace AND run_id=r.run_id AND pin_id=a->>'pin_id') THEN RAISE EXCEPTION USING ERRCODE='PH002',MESSAGE='pin id reused'; END IF;
  IF r.revision=0 OR (a->>'revision')::numeric>r.revision THEN RAISE EXCEPTION USING ERRCODE='PH003',MESSAGE='pin revision missing'; END IF;
- anchor:=history_path(r,(a->>'revision')::numeric);
+ IF (a->>'revision')::numeric < r.history_floor THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='pin history expired'; END IF;
+ IF r.history_floor>1 THEN
+  anchor:=history_path(r,(a->>'revision')::numeric);
+ ELSE
+  IF a->>'revision'='1' THEN anchor:=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex');
+  ELSE SELECT next_chain INTO anchor FROM pulse_durable_distributed.batches WHERE namespace=r.namespace AND run_id=r.run_id AND revision=(a->>'revision')::numeric; END IF;
+ END IF;
  IF anchor IS NULL THEN RAISE EXCEPTION USING ERRCODE='PH003',MESSAGE='pin revision missing'; END IF;
  IF anchor IS DISTINCT FROM a->>'chain' THEN RAISE EXCEPTION USING ERRCODE='PH002',MESSAGE='pin chain conflict'; END IF;
  seconds:=((a->>'ttl_ns')::numeric/1000000000)::bigint;
@@ -115,7 +121,8 @@ BEGIN
  IF p.released THEN RAISE EXCEPTION USING ERRCODE='PH002',MESSAGE='pin released'; END IF;
  IF p.expires_at<=t THEN RAISE EXCEPTION USING ERRCODE='PH004',MESSAGE='pin expired'; END IF;
  IF p.version<>(a->>'expected_version')::numeric OR p.version=18446744073709551615 THEN RAISE EXCEPTION USING ERRCODE='PH002',MESSAGE='pin version conflict'; END IF;
- IF history_path(r,p.revision) IS DISTINCT FROM p.chain THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='pin recovery path changed'; END IF;
+ IF p.pin_id IS NOT NULL AND p.revision<r.history_floor THEN RAISE EXCEPTION USING ERRCODE='HG004',MESSAGE='pin history expired'; END IF;
+ IF r.history_floor>1 THEN PERFORM history_path(r,p.revision); END IF;
  was_long:=p.ttl_seconds IS NULL;
  seconds:=coalesce(((a->>'ttl_ns')::numeric/1000000000)::bigint,p.ttl_seconds);
  expiry:=pin_deadline(t,seconds);

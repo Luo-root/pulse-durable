@@ -81,7 +81,11 @@ BEGIN
  rev:=(a->>'through_revision')::numeric; gen:=(a->>'generation')::bigint;
  IF md IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/maintenance/compact/v1','UTF8')||decode('00','hex')||convert_to(octet_length(ns)::text||':'||ns||octet_length(rid)::text||':'||rid||':'||gen::text||':'||rev::text,'UTF8')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='maintenance plan digest'; END IF;
  IF rev IS NULL OR trunc(rev)<>rev OR rev<1 OR rev>r.revision OR gen IS DISTINCT FROM r.representation_generation OR gen=9223372036854775807 OR rev<(storage_state(r)->>'base_revision')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='representation conflict'; END IF;
- anchor:=history_path(r,rev);
+ IF r.history_floor>1 THEN
+  anchor:=history_path(r,rev);
+ ELSE
+  IF rev=1 THEN anchor:=encode(sha256(convert_to('pulse-durable/chain/seed/v1','UTF8')||decode('00','hex')||decode(r.snapshot_digest,'hex')||int8send(1::bigint)),'hex'); ELSE SELECT next_chain INTO anchor FROM pulse_durable_distributed.batches WHERE namespace=ns AND run_id=rid AND revision=rev; END IF;
+ END IF;
  IF anchor IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='source missing'; END IF;
  INSERT INTO pulse_durable_distributed.maintenance_guards VALUES(ns,rid,mid,md,'compact_storage');
  INSERT INTO pulse_durable_distributed.build_pins VALUES(ns,rid,mid,session_user,gen,r.revision,r.head_chain,rev,anchor,t+interval '10 minutes',false);
