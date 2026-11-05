@@ -147,6 +147,8 @@ func scrub(err error, write bool) error {
 			return d.ErrClockRegression
 		case "PD008":
 			return ErrSnapshotLimit
+		case "HG004":
+			return d.ErrHistoryExpired
 		}
 		return fmt.Errorf("distributed postgres: SQLSTATE %s", pe.Code)
 	}

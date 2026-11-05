@@ -9,6 +9,8 @@ CREATE TABLE pulse_durable_distributed.runs(
  record bytea, snapshot_digest text, head_chain text, root_scope text, snapshot_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_bytes BETWEEN 0 AND 16777216), snapshot_fixed_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_fixed_bytes>=0), snapshot_budget_version integer NOT NULL DEFAULT 1 CHECK(snapshot_budget_version=1), active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
  receipt_coverage_floor timestamptz NOT NULL DEFAULT statement_timestamp(), receipt_observed_through timestamptz,
  representation_generation bigint NOT NULL DEFAULT 1 CHECK(representation_generation>0), active_snapshot bigint, maintenance_watermark timestamptz,
+ history_floor numeric(20,0) NOT NULL DEFAULT 1 CHECK(history_floor BETWEEN 1 AND 18446744073709551615), history_gc_through numeric(20,0) NOT NULL DEFAULT 1 CHECK(history_gc_through>=1),
+ CHECK(history_floor<=greatest(revision,1) AND (history_gc_through=1 OR history_gc_through<history_floor)),
  last_mutation_id text, last_mutation_digest text, reason text NOT NULL DEFAULT '',
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), finished_at timestamptz,
  PRIMARY KEY(namespace,run_id),

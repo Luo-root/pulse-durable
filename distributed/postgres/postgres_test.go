@@ -195,7 +195,7 @@ SELECT
 	setFunctions("pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb)", maintain)
 	setFunctions("pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb)", maintain || replay)
 	setFunctions("pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)", query || maintain || replay)
-	setFunctions("pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb)", retain)
+	setFunctions("pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.history_gc_prepare(jsonb),pulse_durable_distributed.history_gc_execute(jsonb),pulse_durable_distributed.history_gc_find(jsonb)", retain)
 }
 
 func claimOne(t *testing.T, c *Coordinator, task d.Task, id string, ttl time.Duration) d.Claim {
