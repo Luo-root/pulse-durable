@@ -192,7 +192,9 @@ FileStore 使用不可变首快照和批文件，以同目录同步和原子替�
 
 distributed mutation 的身份、结果凭据与诊断分开保存：永久 `mutation_guards`、独立 `mutation_receipts` 与诊断 `events`。`Coordinator.FindMutation(ctx, MutationQuery)` 匹配 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow；ExpectedEpoch/ExpectedRevision 可选指针 nil 表示未知，非 nil（含 0）精确匹配。`Found` 只裁决精确协调 mutation，不证明外部副作用或授予 lease/执行权限；`AbsentWithinWindow` 要求完整覆盖请求窗口；`Expired` 要求请求下界早于覆盖且观察已达到请求上界，未来上界会被拒绝。缺回执、缺席或过期均不证明从未提交，也不授权业务重放。
 
-Coverage.From 来自数据库持久 `receipt_coverage_floor`；Coverage.Through 是持运行锁采样的数据库观察上界，并持久为 `receipt_observed_through`，不使用客户端时钟。保留回执可早于 floor，覆盖内应有却缺失的回执报错。该 query 需可读写主库，不可用只读事务或副本；权限仍为 namespace `query`，不授予应用直接表 DML。RetentionPolicy 仅提供可选 TTL 校验/CAS 请求契约，不代表已实现策略落库、实际 retention 删除或 GC；replay 与语义压缩仍未完成。
+Coverage.From 来自数据库持久 `receipt_coverage_floor`；Coverage.Through 是持运行锁采样的数据库观察上界，并持久为 `receipt_observed_through`，不使用客户端时钟。保留回执可早于 floor，覆盖内应有却缺失的回执报错。该 query 需可读写主库，不可用只读事务或副本；权限仍为 namespace `query`，不授予应用直接表 DML。
+
+PostgreSQL 已支持 namespace 保留策略持久化、拟议策略预览绑定与版本 CAS，并独立提供候选只读预览。`GetRetentionPolicy` 的首次初始化、`PreviewRetentionPolicy` 的绑定记录需要可写事务；`PreviewRetentionCandidates` 在策略已存在时可用 READ ONLY 事务，不创建任何策略或绑定记录。候选结果不固定数据库快照、不授权删除，执行端仍须锁定并复验策略、历史与 pin。历史 pin 查询 `FindPin` / `FindPinMutation` 只需 namespace `query`，不获得 pin 写权限；有限 pin 创建需 `replay`，长期 pin 需 `maintain`。实际 retention 删除、GC、业务 replay 与语义历史压缩仍未实现。
 
 所有元数据字符串及 map 键必须有效 UTF-8。写前拒绝非法元数据，保留旧文件与 Revision；读时拒绝非法原始 UTF-8 和未配对 JSON Unicode 代理项。合法 Unicode 保留，Data 字节不受元数据 UTF-8 限制。
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -117,6 +118,54 @@ VALUES($1,$2,$3,$4,'{}'::jsonb,'succeeded',1,$5,$6,$7,$8,$8,$8)`, ns, "run-reten
 		if !containsRetentionReason(candidate.Protected, reason) {
 			t.Errorf("missing protection reason %q: %v", reason, candidate.Protected)
 		}
+	}
+
+	// 在已有 policy 和 preview 行上比较完整内容，不能只看行数：
+	// UPDATE 原行也必须被只读约束抓住。
+	metadata := func() string {
+		t.Helper()
+		var state string
+		if err := admin.QueryRow(ctx, `SELECT jsonb_build_object('policies',coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY namespace) FROM pulse_durable_distributed.retention_policies p WHERE namespace=$1),'[]'::jsonb),'previews',coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY dry_run_id) FROM pulse_durable_distributed.retention_previews p WHERE namespace=$1),'[]'::jsonb))::text`, ns).Scan(&state); err != nil {
+			t.Fatal("read complete retention metadata", scrub(err, false))
+		}
+		return state
+	}
+	wirePolicy, policyDigest, err := retentionPolicyArgs(policy.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewArgs := map[string]any{"dry_run_id": "readonly-retention-1", "namespace": ns, "policy_version": policy.PolicyVersion, "policy": wirePolicy, "policy_digest": policyDigest, "observed_from": now.Add(-time.Minute), "observed_through": now.Add(time.Minute), "cursor": d.RetentionCursor{}, "limit": uint64(10)}
+	if _, err = c.retentionCall(ctx, "retention_policy_preview", previewArgs, true); err != nil {
+		t.Fatal("seed policy preview binding", err)
+	}
+	before := metadata()
+	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal("begin read-only preview transaction", scrub(err, false))
+	}
+	defer tx.Rollback(context.Background())
+	var raw []byte
+	if err = tx.QueryRow(ctx, `SELECT pulse_durable_distributed.retention_candidate_preview($1::jsonb)`, previewArgs).Scan(&raw); err != nil {
+		t.Fatal("candidate preview in read-only transaction", scrub(err, false))
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal("commit read-only preview transaction", scrub(err, false))
+	}
+	if after := metadata(); after != before {
+		t.Fatal("candidate preview changed existing retention metadata")
+	}
+
+	// 策略预览是独立的写路径，必须通过公开方法生成可供 CAS 更新
+	// 验证的绑定；候选预览的只读修复不得破坏这条链路。
+	proposed := policy.Policy
+	proposed.Enabled = true
+	policyPreview, err := c.PreviewRetentionPolicy(ctx, "policy-update-"+suffix, ns, policyVersion, proposed, d.RetentionCursor{}, 10, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal("public policy preview", err)
+	}
+	updated, err := c.UpdateRetentionPolicy(ctx, d.RetentionPolicyUpdate{Namespace: ns, ExpectedVersion: policyVersion, Policy: proposed, DryRunID: policyPreview.DryRunID})
+	if err != nil || updated.PolicyVersion != strconv.FormatUint(policyVersion+1, 10) || !updated.Policy.Enabled {
+		t.Fatal("public policy preview to CAS update", err)
 	}
 
 	if _, err = c.pool.Exec(ctx, `SELECT pulse_durable_distributed.api('list',$1::jsonb)`, `{"namespace":"`+ns+`","limit":1,"status":""}`); err == nil {
