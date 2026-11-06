@@ -24,6 +24,9 @@ type runState struct {
 	// 消息索引只定位各组最新尝试，record.Messages 始终是事实源。
 	messageIndex      map[messageGroupKey]messageIndexEntry
 	messageIndexReady bool
+	// summaryIndex 只缓存已通过恢复校验的预算高水位；RunRecord 仍是事实源。
+	// 摘要变更确认后清空，下一次访问重新构建，不在每次消息操作扫描历史。
+	summaryIndex *recoverySummaryIndex
 }
 
 func (s *runState) hooks() pulse.CheckpointHooks {
@@ -129,6 +132,19 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	}
 	var latest AttemptRecord
 	var latestID string
+	if s.record.Format == SemanticRecordFormat && req.Boundary != "" {
+		index, err := s.recoverySummaries()
+		if err != nil {
+			return pulse.CheckpointAttempt{}, err
+		}
+		if prefix, ok := index.retries[retrySummaryGroup{req.Parent, req.NodeID, req.Boundary}]; ok {
+			if prefix.Limit != req.Limit {
+				return pulse.CheckpointAttempt{}, fmt.Errorf("%w: compressed attempt limit mismatch", ErrConflict)
+			}
+			latestID = prefix.LastPrunedID
+			latest = AttemptRecord{Parent: req.Parent, NodeID: req.NodeID, Boundary: req.Boundary, Index: prefix.ThroughIndex, Limit: prefix.Limit, State: AttemptFailed}
+		}
+	}
 	for id, a := range s.record.Attempts {
 		if a.Parent == req.Parent && a.NodeID == req.NodeID && a.Boundary == req.Boundary {
 			if a.Limit != req.Limit {
@@ -281,7 +297,15 @@ func (s *runState) newID() (string, error) {
 		_, scopeExists := s.record.Scopes[id]
 		_, attemptExists := s.record.Attempts[id]
 		_, messageExists := s.record.Messages[id]
-		if !scopeExists && !attemptExists && !messageExists {
+		reserved := false
+		if s.record.Format == SemanticRecordFormat {
+			index, err := s.recoverySummaries()
+			if err != nil {
+				return "", err
+			}
+			reserved = index.reserved[id]
+		}
+		if !scopeExists && !attemptExists && !messageExists && !reserved {
 			return id, nil
 		}
 	}
