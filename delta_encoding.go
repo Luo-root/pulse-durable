@@ -26,15 +26,19 @@ const (
 var errInvalidChangeWire = errors.New("durable: invalid change batch wire")
 
 type wireHeader struct {
-	BatchFormat      string `json:"batch_format"`
-	LogicalFormat    string `json:"logical_format"`
-	RunID            string `json:"run_id"`
-	BusinessVersion  string `json:"business_version"`
-	DefinitionDigest string `json:"definition_digest"`
-	InputsDigest     string `json:"inputs_digest"`
-	RootScope        string `json:"root_scope"`
-	ExpectedRevision string `json:"expected_revision"`
-	Revision         string `json:"revision"`
+	BatchFormat           string `json:"batch_format"`
+	LogicalFormat         string `json:"logical_format"`
+	RunID                 string `json:"run_id"`
+	BusinessVersion       string `json:"business_version"`
+	DefinitionDigest      string `json:"definition_digest"`
+	InputsDigest          string `json:"inputs_digest"`
+	RootScope             string `json:"root_scope"`
+	ExpectedRevision      string `json:"expected_revision"`
+	Revision              string `json:"revision"`
+	Operation             string `json:"operation,omitempty"`
+	CompressionPlanDigest string `json:"compression_plan_digest,omitempty"`
+	CompressionMaxObjects string `json:"compression_max_objects,omitempty"`
+	CompressionMaxBytes   string `json:"compression_max_bytes,omitempty"`
 }
 type wireOp struct {
 	Kind                              string          `json:"kind"`
@@ -201,9 +205,20 @@ func marshalWireArray(v []json.RawMessage) ([]byte, bool) {
 func marshalWireScalar(v any) ([]byte, bool) { b, e := json.Marshal(v); return b, e == nil }
 func rawNull() json.RawMessage               { return json.RawMessage("null") }
 
-func headerWire(h ChangeHeader) wireHeader {
-	return wireHeader{u64(uint64(h.BatchFormat)), u64(uint64(h.LogicalFormat)), h.RunID, h.BusinessVersion, h.DefinitionDigest, h.InputsDigest, h.RootScope, u64(h.ExpectedRevision), u64(h.Revision)}
+func headerWireFor(h ChangeHeader, tx *recordTransaction) wireHeader {
+	maxObjects, maxBytes, operation, planDigest := "", "", "", ""
+	if tx != nil && tx.historyCompression {
+		operation = "history_compression"
+		planDigest = tx.compressionPlanDigest
+		maxObjects, maxBytes = u64(tx.compressionRequest.MaxObjects), u64(tx.compressionRequest.MaxBytes)
+	}
+	return wireHeader{BatchFormat: u64(uint64(h.BatchFormat)), LogicalFormat: u64(uint64(h.LogicalFormat)), RunID: h.RunID,
+		BusinessVersion: h.BusinessVersion, DefinitionDigest: h.DefinitionDigest, InputsDigest: h.InputsDigest, RootScope: h.RootScope,
+		ExpectedRevision: u64(h.ExpectedRevision), Revision: u64(h.Revision), Operation: operation, CompressionPlanDigest: planDigest,
+		CompressionMaxObjects: maxObjects, CompressionMaxBytes: maxBytes}
 }
+
+func headerWire(h ChangeHeader) wireHeader { return headerWireFor(h, nil) }
 func headerUnwire(h wireHeader) (ChangeHeader, error) {
 	a, ok := parseU64(h.BatchFormat)
 	if !ok || a > uint64(^uint(0)>>1) {
@@ -221,10 +236,27 @@ func headerUnwire(h wireHeader) (ChangeHeader, error) {
 	if !ok {
 		return ChangeHeader{}, errInvalidChangeWire
 	}
-	if a != 1 || (l != RecordFormat && l != SemanticRecordFormat) || e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" {
+	maxObjects, maxBytes := uint64(0), uint64(0)
+	if h.Operation == "history_compression" {
+		maxObjects, ok = parseU64(h.CompressionMaxObjects)
+		if !ok {
+			return ChangeHeader{}, errInvalidChangeWire
+		}
+		maxBytes, ok = parseU64(h.CompressionMaxBytes)
+		if !ok {
+			return ChangeHeader{}, errInvalidChangeWire
+		}
+	}
+	if a != 1 || (l != RecordFormat && l != SemanticRecordFormat) || e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" ||
+		(h.Operation != "" && h.Operation != "history_compression") ||
+		(h.Operation == "" && (h.CompressionPlanDigest != "" || h.CompressionMaxObjects != "" || h.CompressionMaxBytes != "")) ||
+		(h.Operation == "history_compression" && (!validDigest(h.CompressionPlanDigest) || maxObjects == 0 || maxBytes == 0 ||
+			(HistoryCompressionRequest{RunID: h.RunID, ThroughRevision: e, MaxObjects: maxObjects, MaxBytes: maxBytes}).Validate() != nil)) {
 		return ChangeHeader{}, errInvalidChangeWire
 	}
-	return ChangeHeader{int(a), int(l), h.RunID, h.BusinessVersion, h.DefinitionDigest, h.InputsDigest, h.RootScope, e, r}, nil
+	return ChangeHeader{BatchFormat: int(a), LogicalFormat: int(l), RunID: h.RunID, BusinessVersion: h.BusinessVersion,
+		DefinitionDigest: h.DefinitionDigest, InputsDigest: h.InputsDigest, RootScope: h.RootScope,
+		ExpectedRevision: e, Revision: r}, nil
 }
 
 func addWireOp(out *[]wireOp, kind, key, scope, name, seq string, state bool, expected, value any, absent, remove bool) {
@@ -244,7 +276,7 @@ func (b ChangeBatch) wireOps(includeCommitIndex bool) ([]wireOp, error) {
 	}
 	var o []wireOp
 	for k, v := range b.tx.attempts {
-		addWireOp(&o, "attempt", k, "", "", "", false, v.expected, v.value, v.absent, false)
+		addWireOp(&o, "attempt", k, "", "", "", false, v.expected, v.value, v.absent, v.remove)
 	}
 	for k, v := range b.tx.scopes {
 		addWireOp(&o, "scope", k, "", "", "", false, nil, v, false, false)
@@ -259,7 +291,7 @@ func (b ChangeBatch) wireOps(includeCommitIndex bool) ([]wireOp, error) {
 		addWireOp(&o, "pending", "", k.stream, "", u64(k.sequence), false, v.expected, v.value, v.absent, v.remove)
 	}
 	for k, v := range b.tx.messages {
-		addWireOp(&o, "message", k, "", "", "", false, v.expected, v.value, v.absent, false)
+		addWireOp(&o, "message", k, "", "", "", false, v.expected, v.value, v.absent, v.remove)
 	}
 	for k, v := range b.tx.managed {
 		addWireOp(&o, "managed", k, "", "", "", false, v.expected, v.value, v.absent, false)
@@ -308,7 +340,7 @@ func marshalChangeBatch(b ChangeBatch, requireSemantic bool) ([]byte, error) {
 			}
 		}
 	}
-	w := wireBatch{ChangeBatchWireVersion, headerWire(b.header), o}
+	w := wireBatch{ChangeBatchWireVersion, headerWireFor(b.header, b.tx), o}
 	out, e := json.Marshal(w)
 	if e != nil || len(out) > MaxChangeBatchBytes {
 		return nil, errInvalidChangeWire
@@ -533,7 +565,12 @@ func (w wireOp) validate() error {
 	if w.Kind == "scope" && !bytes.Equal(w.Expected, rawNull()) {
 		return errInvalidChangeWire
 	}
-	if w.Kind != "pending" && w.Kind != "managed_entry" && bytes.Equal(w.Value, rawNull()) {
+	if w.Kind == "attempt" || w.Kind == "message" {
+		if bytes.Equal(w.Value, rawNull()) && bytes.Equal(w.Expected, rawNull()) {
+			return errInvalidChangeWire
+		}
+	}
+	if w.Kind != "pending" && w.Kind != "managed_entry" && w.Kind != "attempt" && w.Kind != "message" && bytes.Equal(w.Value, rawNull()) {
 		return errInvalidChangeWire
 	}
 	if w.Kind == "pending" {
@@ -620,7 +657,11 @@ func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) 
 				if !bytes.Equal(op.Expected, []byte("null")) {
 					ep = &a
 				}
-				e = tx.putAttempt(op.Key, ep, v)
+				if bytes.Equal(op.Value, []byte("null")) {
+					e = tx.deleteAttempt(op.Key, ep)
+				} else {
+					e = tx.putAttempt(op.Key, ep, v)
+				}
 			}
 		case "scope":
 			var v ScopeRecord
@@ -682,7 +723,7 @@ func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) 
 			if !bytes.Equal(op.Expected, []byte("null")) {
 				e = unmarshalRecord(op.Expected, &a)
 			}
-			if e == nil {
+			if e == nil && !bytes.Equal(op.Value, []byte("null")) {
 				e = unmarshalRecord(op.Value, &v)
 			}
 			if e == nil {
@@ -690,7 +731,11 @@ func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) 
 				if !bytes.Equal(op.Expected, []byte("null")) {
 					ep = &a
 				}
-				e = tx.putMessage(op.Key, ep, v)
+				if bytes.Equal(op.Value, []byte("null")) {
+					e = tx.deleteMessage(op.Key, ep)
+				} else {
+					e = tx.putMessage(op.Key, ep, v)
+				}
 			}
 		case "managed":
 			var a, v managedHeader
@@ -796,6 +841,19 @@ func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) 
 	if h.LogicalFormat == SemanticRecordFormat {
 		if h.ExpectedRevision == 0 {
 			return z, errInvalidChangeWire
+		}
+		if w.Header.Operation == "history_compression" && requireCommit {
+			tx.historyCompression = true
+			tx.compressionPlanDigest = w.Header.CompressionPlanDigest
+			maxObjects, objectsOK := parseU64(w.Header.CompressionMaxObjects)
+			maxBytes, bytesOK := parseU64(w.Header.CompressionMaxBytes)
+			if !objectsOK || !bytesOK {
+				return z, errInvalidChangeWire
+			}
+			tx.compressionRequest = HistoryCompressionRequest{RunID: w.Header.RunID, ThroughRevision: h.ExpectedRevision, MaxObjects: maxObjects, MaxBytes: maxBytes}
+			if err := validateHistoryCompressionOperationShape(w.Header.Operation, w.Header.CompressionPlanDigest, tx, h.Revision); err != nil {
+				return z, errInvalidChangeWire
+			}
 		}
 		if requireCommit {
 			op, ok := tx.commitIndex[h.Revision]

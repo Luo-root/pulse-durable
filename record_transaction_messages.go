@@ -9,6 +9,7 @@ import (
 type putMessage struct {
 	expected, value MessageAttemptRecord
 	absent          bool
+	remove          bool
 }
 type managedHeader struct{ Scope, Parent, NodeID string }
 type putManagedHeader struct {
@@ -32,7 +33,7 @@ func (tx *recordTransaction) putMessage(id string, expected *MessageAttemptRecor
 	if expected != nil {
 		op.expected = *expected
 	}
-	if old, ok := tx.messages[id]; ok && (old.absent != op.absent || old.expected != op.expected) {
+	if old, ok := tx.messages[id]; ok && (old.absent != op.absent || old.remove != op.remove || old.expected != op.expected) {
 		tx.err = fmt.Errorf("%w: conflicting message precondition for %q", ErrConflict, id)
 		return tx.err
 	}
@@ -42,6 +43,26 @@ func (tx *recordTransaction) putMessage(id string, expected *MessageAttemptRecor
 	tx.messages[id] = op
 	return nil
 }
+func (tx *recordTransaction) deleteMessage(id string, expected *MessageAttemptRecord) error {
+	if tx.err != nil {
+		return tx.err
+	}
+	if expected == nil {
+		tx.err = fmt.Errorf("%w: message delete requires an expected value", ErrConflict)
+		return tx.err
+	}
+	op := putMessage{expected: *expected, remove: true}
+	if old, ok := tx.messages[id]; ok && (old.absent || old.remove || old.expected != op.expected) {
+		tx.err = fmt.Errorf("%w: conflicting message delete for %q", ErrConflict, id)
+		return tx.err
+	}
+	if tx.messages == nil {
+		tx.messages = make(map[string]putMessage)
+	}
+	tx.messages[id] = op
+	return nil
+}
+
 func managedHeaderOf(m ManagedRecord) managedHeader {
 	return managedHeader{m.Scope, m.Parent, m.NodeID}
 }
@@ -132,6 +153,10 @@ func (tx *recordTransaction) applyMessages(record *RunRecord) {
 		record.Messages = make(map[string]MessageAttemptRecord)
 	}
 	for id, op := range tx.messages {
+		if op.remove {
+			delete(record.Messages, id)
+			continue
+		}
 		record.Messages[id] = op.value
 	}
 	if len(tx.managed) > 0 && record.Managed == nil {

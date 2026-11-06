@@ -52,26 +52,37 @@ func changeHeader(r RunRecord) ChangeHeader {
 }
 
 func changeHeaderFor(r RunRecord, tx *recordTransaction) ChangeHeader {
-	logical := r.Format
-	if logical == 1 || logical == 0 {
-		logical = RecordFormat
-	}
+	header := baseChangeHeaderFor(r)
 	if tx != nil && tx.hasSemanticEvidence() {
-		logical = SemanticRecordFormat
+		header.LogicalFormat = SemanticRecordFormat
 	}
-	return ChangeHeader{BatchFormat: 1, LogicalFormat: logical, RunID: r.RunID,
-		BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
-		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
+	return header
 }
 
 func validChangeHeader(r RunRecord, header ChangeHeader, tx *recordTransaction) bool {
-	if header != changeHeaderFor(r, tx) {
+	if header != baseChangeHeaderFor(r) {
 		return false
+	}
+	if tx != nil && tx.historyCompression {
+		return r.Format == SemanticRecordFormat
+	}
+	if tx != nil && tx.hasSemanticEvidence() {
+		return header.LogicalFormat == SemanticRecordFormat && r.Format == SemanticRecordFormat
 	}
 	if header.LogicalFormat == SemanticRecordFormat {
 		return r.Format == SemanticRecordFormat
 	}
 	return header.LogicalFormat == RecordFormat && (r.Format == 1 || r.Format == RecordFormat)
+}
+
+func baseChangeHeaderFor(r RunRecord) ChangeHeader {
+	logical := r.Format
+	if logical == 1 || logical == 0 {
+		logical = RecordFormat
+	}
+	return ChangeHeader{BatchFormat: 1, LogicalFormat: logical, RunID: r.RunID,
+		BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
+		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
 }
 
 // ApplyTo 在原地修改 record 前检查所有前置条件。调用方独占 record，必须围绕此调用提供原子持久化。
@@ -95,8 +106,15 @@ func (b ChangeBatch) ApplyTo(record *RunRecord) (CommitAck, error) {
 // copy 隔离每个可变的暂存值，但不复制未改变的 RunRecord 历史。
 func (tx *recordTransaction) copy() *recordTransaction {
 	out := newRecordTransaction(tx.baseRevision)
+	out.historyCompression = tx.historyCompression
+	out.compressionPlanDigest = tx.compressionPlanDigest
+	out.compressionRequest = tx.compressionRequest
 	out.err = tx.err
 	for k, op := range tx.attempts {
+		if op.remove {
+			_ = out.deleteAttempt(k, &op.expected)
+			continue
+		}
 		var e *AttemptRecord
 		if !op.absent {
 			e = &op.expected
@@ -135,7 +153,11 @@ func (tx *recordTransaction) copy() *recordTransaction {
 		if !op.absent {
 			e = &op.expected
 		}
-		_ = out.putMessage(k, e, op.value)
+		if op.remove {
+			_ = out.deleteMessage(k, e)
+		} else {
+			_ = out.putMessage(k, e, op.value)
+		}
 	}
 	for k, op := range tx.managed {
 		var e *managedHeader

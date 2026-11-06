@@ -32,6 +32,9 @@ func (b ChangeBatch) SnapshotSizeDelta(before RunRecord) (int64, error) {
 		if op.absent {
 			c.insert(key, op.value)
 			attempts++
+		} else if op.remove {
+			c.remove(key, op.expected)
+			attempts--
 		} else {
 			c.replace(op.expected, op.value)
 		}
@@ -96,6 +99,9 @@ func (b ChangeBatch) SnapshotSizeDelta(before RunRecord) (int64, error) {
 		if op.absent {
 			c.insert(key, op.value)
 			messages++
+		} else if op.remove {
+			c.remove(key, op.expected)
+			messages--
 		} else {
 			c.replace(op.expected, op.value)
 		}
@@ -216,6 +222,23 @@ func (c *snapshotDelta) insert(key string, value any) {
 	c.add(1)
 	c.value(value, 1)
 }
+
+// remove 与 insert 严格对称，包含 JSON 对象键的引号、转义和冒号。
+// map 删除若只减 value，会让快照预算在压缩删除时持续高估。
+func (c *snapshotDelta) remove(key string, value any) {
+	if c.err != nil {
+		return
+	}
+	n, err := snapshotfmt.QuotedSize(key)
+	if err != nil {
+		c.err = err
+		return
+	}
+	c.add(-n)
+	c.add(-1)
+	c.value(value, -1)
+}
+
 func (c *snapshotDelta) container(wasNil bool, count, additions int, changed, becomesNil bool) {
 	if !changed || c.err != nil {
 		return

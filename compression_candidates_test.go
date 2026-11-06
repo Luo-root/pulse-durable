@@ -9,7 +9,8 @@ import (
 
 func TestCompressionCandidatesRejectUnknownAndProtectPrefixes(t *testing.T) {
 	record := compressionPlanRecord(t)
-	payload := raw(retryPrefixSummaryPayload{LastPrunedID: "a2", Parent: "parent", NodeID: "node", Boundary: "retry", ThroughIndex: 2, Limit: 3, LastPrunedDigest: summaryDigest("retry", record.RunID, record.Revision, "parent", "node", "retry", 2, 3, string(AttemptFailed))})
+	secondID := strings.Repeat("b", 32)
+	payload := raw(retryPrefixSummaryPayload{LastPrunedID: secondID, Parent: "parent", NodeID: "node", Boundary: "retry", ThroughIndex: 2, Limit: 3, LastPrunedDigest: summaryDigest("retry", record.RunID, record.Revision, "parent", "node", "retry", 2, 3, string(AttemptFailed))})
 	record.HistorySummaries[0].Payload = payload
 	record.HistorySummaries[0].Digest = digest(payload)
 	rows, err := candidateObjectsFromSummary(record, record.HistorySummaries[0])
@@ -35,21 +36,21 @@ func TestCompressionRetryCandidatesRejectForgedFacts(t *testing.T) {
 			case "digest":
 				payload.LastPrunedDigest = strings.Repeat("f", 64)
 			case "active":
-				a := r.Attempts["a1"]
+				a := r.Attempts[strings.Repeat("a", 32)]
 				a.State = AttemptActive
-				r.Attempts["a1"] = a
+				r.Attempts[strings.Repeat("a", 32)] = a
 			case "gap":
-				delete(r.Attempts, "a1")
+				delete(r.Attempts, strings.Repeat("a", 32))
 			case "duplicate":
-				r.Attempts["copy"] = r.Attempts["a1"]
+				r.Attempts["copy"] = r.Attempts[strings.Repeat("a", 32)]
 			case "limit":
-				a := r.Attempts["a2"]
+				a := r.Attempts[strings.Repeat("b", 32)]
 				a.Limit++
-				r.Attempts["a2"] = a
+				r.Attempts[strings.Repeat("b", 32)] = a
 			case "scope-reference":
-				r.Scopes["a1"] = ScopeRecord{}
+				r.Scopes[strings.Repeat("a", 32)] = ScopeRecord{}
 			case "managed-reference":
-				r.Managed = map[string]ManagedRecord{"m": {State: []ValueRecord{{Stream: &StreamDescriptorRecord{Attempt: "a1"}}}}}
+				r.Managed = map[string]ManagedRecord{"m": {State: []ValueRecord{{Stream: &StreamDescriptorRecord{Attempt: strings.Repeat("a", 32)}}}}}
 			case "oversized-through":
 				payload.ThroughIndex = int(^uint(0) >> 1)
 				payload.Limit = payload.ThroughIndex

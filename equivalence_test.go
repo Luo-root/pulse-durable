@@ -2,6 +2,7 @@ package durable
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -50,9 +51,9 @@ func TestCompressionEquivalenceRejectsUnknownOrChangedProjection(t *testing.T) {
 					delete(after.Attempts, object.ID)
 				}
 			case "replacement":
-				forged.DeleteObjects = []CompressionObjectRef{{Kind: "attempt", ID: "a2"}}
+				forged.DeleteObjects = []CompressionObjectRef{{Kind: "attempt", ID: strings.Repeat("b", 32)}}
 				forged.Rows = 1
-				delete(after.Attempts, "a2")
+				delete(after.Attempts, strings.Repeat("b", 32))
 			}
 			forged.PlanDigest = forged.Digest()
 			if err := ValidateHistoryCompressionEquivalence(record, after, forged); !errors.Is(err, ErrInvalid) {

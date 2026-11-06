@@ -49,7 +49,7 @@ func candidateObjectsFromVerifiedSource(record RunRecord, summary HistorySummary
 	switch summary.Kind {
 	case RetryPrefixSummaryKind:
 		var payload retryPrefixSummaryPayload
-		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 || !validSemanticText(payload.Parent) || !validSemanticText(payload.NodeID) || !validSemanticText(payload.Boundary) || !validDigest(payload.LastPrunedDigest) {
+		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 || !validSemanticText(payload.Parent) || !validSemanticText(payload.NodeID) || !validSemanticText(payload.Boundary) || !validDigest(payload.LastPrunedDigest) || !validIdentity(payload.LastPrunedID) {
 			return nil, fmt.Errorf("%w: invalid retry prefix summary payload", ErrInvalid)
 		}
 		key := retrySummaryGroup{payload.Parent, payload.NodeID, payload.Boundary}
@@ -84,7 +84,7 @@ func candidateObjectsFromVerifiedSource(record RunRecord, summary HistorySummary
 		return rows, nil
 	case MessagePrefixSummaryKind:
 		var payload messagePrefixSummaryPayload
-		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 || !validSemanticText(payload.ProcessingScope) || !validSemanticText(payload.ProcessingAttempt) || !validSemanticText(payload.NodeID) || payload.Input.Generation == 0 || payload.ThroughSequence == 0 || !validDigest(payload.BudgetDigest) {
+		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 || !validSemanticText(payload.ProcessingScope) || !validSemanticText(payload.ProcessingAttempt) || !validSemanticText(payload.NodeID) || payload.Input.Generation == 0 || payload.ThroughSequence == 0 || !validDigest(payload.BudgetDigest) || !validDigest(payload.ManagedDigest) || len(payload.ConfirmationIDs) == 0 {
 			return nil, fmt.Errorf("%w: invalid message prefix summary payload", ErrInvalid)
 		}
 		key := messageSummaryGroup{payload.ProcessingScope, payload.ProcessingAttempt, payload.NodeID, streamKey(payload.Input)}
