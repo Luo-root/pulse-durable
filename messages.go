@@ -61,11 +61,47 @@ func (s *runState) updateMessageIndex(tx *recordTransaction) {
 	if !s.messageIndexReady {
 		return
 	}
+	// 一次压缩可能删除同一消息分组的整个前缀。先收集“当前索引正好
+	// 指向被删对象”的分组，再一次性重建这些分组；不能在每个删除项
+	// 上重新扫描完整 Messages，否则 D 个删除、M 条保留消息会退化为
+	// O(D×M)，并且整个过程持有 runState.mu。
+	affected := make(map[messageGroupKey]struct{})
 	for id, op := range tx.messages {
+		if !op.remove {
+			continue
+		}
+		key := messageGroup(op.expected)
+		if current, exists := s.messageIndex[key]; exists && current.id == id {
+			affected[key] = struct{}{}
+		}
+	}
+	for key := range affected {
+		delete(s.messageIndex, key)
+	}
+	for id, op := range tx.messages {
+		if op.remove {
+			continue
+		}
 		key := messageGroup(op.value)
+		if _, rebuild := affected[key]; rebuild {
+			continue
+		}
 		current, exists := s.messageIndex[key]
 		if !exists || op.value.Index > current.index || (op.value.Index == current.index && id > current.id) {
 			s.messageIndex[key] = messageIndexEntry{id: id, index: op.value.Index}
+		}
+	}
+	if len(affected) == 0 {
+		return
+	}
+	for id, message := range s.record.Messages {
+		key := messageGroup(message)
+		if _, rebuild := affected[key]; !rebuild {
+			continue
+		}
+		current, exists := s.messageIndex[key]
+		if !exists || message.Index > current.index || (message.Index == current.index && id > current.id) {
+			s.messageIndex[key] = messageIndexEntry{id: id, index: message.Index}
 		}
 	}
 }

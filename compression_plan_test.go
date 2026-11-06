@@ -14,13 +14,14 @@ func compressionPlanRecord(t *testing.T) RunRecord {
 	t.Helper()
 	record, _ := format3Fixture(t)
 	record.HistorySummaries = nil
+	firstID, secondID := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	record.Attempts = map[string]AttemptRecord{
-		"a1": {Parent: "parent", NodeID: "node", Boundary: "retry", Index: 1, Limit: 3, State: AttemptFailed},
-		"a2": {Parent: "parent", NodeID: "node", Boundary: "retry", Index: 2, Limit: 3, State: AttemptFailed},
+		firstID:  {Parent: "parent", NodeID: "node", Boundary: "retry", Index: 1, Limit: 3, State: AttemptFailed},
+		secondID: {Parent: "parent", NodeID: "node", Boundary: "retry", Index: 2, Limit: 3, State: AttemptFailed},
 	}
 	through := 2
-	last := record.Attempts["a2"]
-	payload := raw(retryPrefixSummaryPayload{LastPrunedID: "a2", Parent: "parent", NodeID: "node", Boundary: "retry", ThroughIndex: through, Limit: 3, LastPrunedDigest: summaryDigest("retry", record.RunID, record.Revision, "parent", "node", "retry", last.Index, last.Limit, string(last.State))})
+	last := record.Attempts[secondID]
+	payload := raw(retryPrefixSummaryPayload{LastPrunedID: secondID, Parent: "parent", NodeID: "node", Boundary: "retry", ThroughIndex: through, Limit: 3, LastPrunedDigest: summaryDigest("retry", record.RunID, record.Revision, "parent", "node", "retry", last.Index, last.Limit, string(last.State))})
 	summary := HistorySummary{Kind: RetryPrefixSummaryKind, ID: "retry", SourceRevision: record.Revision, SourceDigest: compressionSourceDigest(record), Payload: payload, Digest: digest(payload)}
 	record.HistorySummaries = []HistorySummary{summary}
 	return record

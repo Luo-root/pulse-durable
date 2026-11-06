@@ -268,6 +268,11 @@ func (b ChangeBatch) validateSemanticTransition(record RunRecord) error {
 	if b.header.LogicalFormat != SemanticRecordFormat {
 		return nil
 	}
+	if b.tx.historyCompression {
+		if err := b.validateHistoryCompressionTransition(record); err != nil {
+			return err
+		}
+	}
 	if record.Format != SemanticRecordFormat || len(record.HistorySummaries) == 0 ||
 		uint64(len(record.CommitIndex)) != record.Revision || record.Revision == 0 || record.Provenance == nil {
 		return fmt.Errorf("%w: source semantic evidence is incomplete", ErrInvalidRecord)

@@ -10,29 +10,37 @@ import (
 // 暂存和提交要求持有 runState.mu；这不是并发 Store 协议。
 // 每个普通检查点仅提交这些暂存的类型化操作。
 type recordTransaction struct {
-	baseRevision   uint64
-	attempts       map[string]putAttempt
-	scopes         map[string]ScopeRecord // 仅用于创建；Nodes 始终为空
-	nodes          map[nodeRecordKey]putNode
-	streams        map[string]putStreamHeader
-	pending        map[pendingKey]pendingOperation
-	messages       map[string]putMessage
-	managed        map[string]putManagedHeader
-	managedEntries map[managedEntryKey]managedEntryOperation
-	summaries      map[historySummaryKey]putHistorySummary
-	commitIndex    map[uint64]putCommitIndex
-	provenance     *provenanceOperation
-	err            error
+	baseRevision          uint64
+	historyCompression    bool
+	compressionPlanDigest string
+	compressionRequest    HistoryCompressionRequest
+	attempts              map[string]putAttempt
+	scopes                map[string]ScopeRecord // 仅用于创建；Nodes 始终为空
+	nodes                 map[nodeRecordKey]putNode
+	streams               map[string]putStreamHeader
+	pending               map[pendingKey]pendingOperation
+	messages              map[string]putMessage
+	managed               map[string]putManagedHeader
+	managedEntries        map[managedEntryKey]managedEntryOperation
+	summaries             map[historySummaryKey]putHistorySummary
+	commitIndex           map[uint64]putCommitIndex
+	provenance            *provenanceOperation
+	err                   error
 }
 
 type putAttempt struct {
 	expected AttemptRecord
 	absent   bool
+	remove   bool
 	value    AttemptRecord
 }
 
 func newRecordTransaction(baseRevision uint64) *recordTransaction {
 	return &recordTransaction{baseRevision: baseRevision}
+}
+
+func newHistoryCompressionTransaction(baseRevision uint64, planDigest string, request HistoryCompressionRequest) *recordTransaction {
+	return &recordTransaction{baseRevision: baseRevision, historyCompression: true, compressionPlanDigest: planDigest, compressionRequest: request}
 }
 
 // putAttempt 复制两个值；expected 为 nil 表示键必须不存在。
@@ -46,8 +54,30 @@ func (tx *recordTransaction) putAttempt(id string, expected *AttemptRecord, valu
 	if expected != nil {
 		op.expected = *expected
 	}
-	if previous, ok := tx.attempts[id]; ok && (previous.absent != op.absent || previous.expected != op.expected) {
+	if previous, ok := tx.attempts[id]; ok && (previous.absent != op.absent || previous.remove != op.remove || previous.expected != op.expected) {
 		tx.err = fmt.Errorf("%w: conflicting attempt precondition for %q", ErrConflict, id)
+		return tx.err
+	}
+	if tx.attempts == nil {
+		tx.attempts = make(map[string]putAttempt)
+	}
+	tx.attempts[id] = op
+	return nil
+}
+
+// deleteAttempt 仅删除精确 expected 的持久 Attempt。删除与摘要推进必须在同一
+// Format3 ChangeBatch 中完成；普通业务调用方不应使用它重置 Retry 预算。
+func (tx *recordTransaction) deleteAttempt(id string, expected *AttemptRecord) error {
+	if tx.err != nil {
+		return tx.err
+	}
+	if expected == nil {
+		tx.err = fmt.Errorf("%w: attempt delete requires an expected value", ErrConflict)
+		return tx.err
+	}
+	op := putAttempt{expected: *expected, remove: true}
+	if old, ok := tx.attempts[id]; ok && (old.absent || old.remove || old.expected != op.expected) {
+		tx.err = fmt.Errorf("%w: conflicting attempt delete for %q", ErrConflict, id)
 		return tx.err
 	}
 	if tx.attempts == nil {
@@ -175,6 +205,12 @@ func (tx *recordTransaction) check(record RunRecord) error {
 	}
 	for id, op := range tx.attempts {
 		current, exists := record.Attempts[id]
+		if op.remove {
+			if !exists || current != op.expected {
+				return fmt.Errorf("%w: attempt delete precondition for %q", ErrConflict, id)
+			}
+			continue
+		}
 		if exists == op.absent || (exists && current != op.expected) {
 			return fmt.Errorf("%w: attempt precondition for %q", ErrConflict, id)
 		}
@@ -245,6 +281,10 @@ func (tx *recordTransaction) apply(proposed *RunRecord) {
 		proposed.Attempts = make(map[string]AttemptRecord, len(tx.attempts))
 	}
 	for id, op := range tx.attempts {
+		if op.remove {
+			delete(proposed.Attempts, id)
+			continue
+		}
 		proposed.Attempts[id] = op.value
 	}
 	tx.applyStreams(proposed)

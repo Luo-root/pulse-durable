@@ -150,10 +150,12 @@ func (tx *recordTransaction) checkSemanticEvidence(record RunRecord) error {
 		if exists == op.absent || (exists && !reflect.DeepEqual(current, op.expected)) {
 			return fmt.Errorf("%w: history summary precondition", ErrConflict)
 		}
-		// 已应用高水位不能通过普通元数据 CAS 删除、改写或伪造；后续专门
-		// 压缩入口会在对象删除与恢复等价校验的同一事务中推进这些摘要。
-		if err := checkOrdinarySummaryOperation(op); err != nil {
-			return err
+		// 已应用高水位只能由独立语义压缩事务推进；普通事务
+		// 不能删除、改写或伪造它们。
+		if !tx.historyCompression {
+			if err := checkOrdinarySummaryOperation(op); err != nil {
+				return err
+			}
 		}
 	}
 	for revision, op := range tx.commitIndex {
