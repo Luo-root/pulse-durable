@@ -1,8 +1,8 @@
 # PostgreSQL 使用教程
 
-本文描述当前开发分支的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.0**。独立 PostgreSQL 后端仍在开发，本页不是已发布或本轮实库验收通过的声明。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一新协议，没有可选增量模式或整记录写入回退。`durable.New` 和 Runtime Run/Resume 不需要额外开关。
+本文描述当前未发布 checkout 的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.2**。当前根与独立 PostgreSQL 源码工作区的实库验证已通过；这不代表新版已发布或独立安装验证通过。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一新协议，没有可选增量模式或整记录写入回退。`durable.New` 和 Runtime Run/Resume 不需要额外开关。
 
-新 API 尚无本页可用的发布安装 pin，旧版 v0.1.0 不适用于下面示例。请按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout；跨模块安装 pin 留待统一更新，发布状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。
+postgresstore/go.mod 已固定可下载根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3`，包含本轮根包契约，是开发提交而非 tag。当前根与独立 PostgreSQL 源码实库、中英文教程三进程验证均已通过；完整 postgresstore 开发 pin 为 `v0.1.1-0.20261108164227-4babad07420f`，已可下载并通过无 replace 的独立消费者构建与 race 检查；它不是正式 tag。按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout，tag 状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。
 
 ## 1. 准备数据库与安装模块
 
@@ -12,7 +12,7 @@
 mkdir durable-postgres
 cd durable-postgres
 go mod init example.com/durable-postgres
-# 新 API 尚无本页可用的发布 pin；先按贡献指南配置本地源码工作区。
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.1-0.20261108164227-4babad07420f
 ```
 
 通过环境变量提供 DSN，URI 或 pgx key/value 格式均可。以下仅为示例凭据，须按本机配置修改，并根据部署配置 TLS；不要将真实 DSN 提交到仓库或写入日志。PowerShell：
@@ -150,7 +150,7 @@ result: 42 ready
 
 Runtime Run 构造合法初始空执行状态，由 Initialize 发布 Revision 1；不能用它导入已有业务历史，重复初始化返回 `ErrConflict`。普通提交仅走 typed Apply：同一短事务中插入批并 CAS 推进 head，核对身份、expected/next revision 严格 +1、精确对象前置条件和链锚点；确认后返回精确 CommitAck。应用继续使用 Run/Resume，不手写业务 records 或批。
 
-首次 Load 在一致快照中验证首快照、摘要与连续批链并重建私有投影，显式 Load 返回隔离完整记录。普通 Apply 不重写完整快照、不重放整个历史。当前未合成链预算为 100000 批和 256 MiB wire，超限返回 `ErrBudget`，不自动丢历史或拆开原子批；Store 已实现 `durable.Maintenance`：`InspectStorage` 读取 generation/base/head，`LoadRevision` 返回精确历史投影及原链锚点、不创建持久 pin，`CompactStorage` 使用 RunID、ThroughRevision 与 ExpectedGeneration 显式合成。目标须在当前 base/head 之间，generation 过期返回 `ErrConflict`。全部维护操作都取得原有 advisory lock，不能与同 RunID 的活跃 Session 并行，检测占用返回 `ErrBusy`。合成快照 digest 独立计算，保留原链 `C(R)`；发布只推进表示 generation/base，不改变业务 revision/head。全部历史、原快照和批保留，无 GC；发布后报错先 Inspect 核对状态。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成，不承诺无限保留。逻辑 wire bytes 不是 PostgreSQL WAL 或物理磁盘写入量。成本边界见[检查点成本](checkpoint-cost.md)。
+首次 Load 在一致快照中验证首快照、摘要与连续批链并重建私有投影，显式 Load 返回隔离完整记录。普通 Apply 不重写完整快照、不重放整个历史。当前未合成链预算为 100000 批和 256 MiB wire，超限返回 `ErrBudget`，不自动丢历史或拆开原子批；Store 已实现 `durable.Maintenance`：`InspectStorage` 读取 generation/base/head，`LoadRevision` 返回精确历史投影及原链锚点、不创建持久 pin，`CompactStorage` 使用 RunID、ThroughRevision 与 ExpectedGeneration 显式合成。目标须在当前 base/head 之间，generation 过期返回 `ErrConflict`。全部维护操作都取得原有 advisory lock，不能与同 RunID 的活跃 Session 并行，检测占用返回 `ErrBusy`。合成快照 digest 独立计算，保留原链 `C(R)`；发布只推进表示 generation/base，不改变业务 revision/head。全部历史、原快照和批保留，无 GC；发布后报错先 Inspect 核对状态。根包已实现 `BuildHistoryCompressionBatch` 的精确 CAS 删除与恢复闭包，`PlanHistoryCompression` 仍只读且 `Executable=false`；本后端首次权威证据物化、完整语义压缩维护入口、retention 删除与指定位置 `ReplayCreateDerived` 尚未完成，不承诺无限保留。wire `2`、snapshot envelope `2` 与旧字节拒绝策略见[存储](storage.md)，物理 schema 版本留在后端边界。逻辑 wire bytes 不是 PostgreSQL WAL 或物理磁盘写入量。成本边界见[检查点成本](checkpoint-cost.md)。
 
 Initialize/Apply 报错可能发生在已落库之后，**不自动重试**。停止原调用并等待所有权释放，Acquire 同一 RunID、Load 权威状态，关闭检查 Session 后再决定 Resume；不要盲目重交旧快照或批。旧格式、损坏、权限与连接错误不能当作 `ErrNotFound` 来创建记录。
 
@@ -167,7 +167,7 @@ fmt.Println("run:", record.RunID, "revision:", record.Revision)
 
 数据库后端保存首快照和增量批，Load 返回完整投影；它不编码业务类型。`durable.NewCodecs()` 支持本例 int；自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不作为普通值保存。检查点包含业务数据，不是加密容器。
 
-distributed PostgreSQL 是另一套后端，使用专用 `pulse_durable_distributed` 当前布局，不与上述独立后端共用布局。`Migrate` 使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 以及 owner/`SECURITY DEFINER`/ACL 安全检查，再执行 namespace 授权。布局不匹配时只拒绝，不写入、删除或迁移旧数据，需使用新库；开发期不维护递增物理 schema 版本链。逻辑记录 format 2、协调 protocol 1 不变。其 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance）用 Namespace/RunID 定位，要求数据库 `maintain` 权限，不接受 worker ownership/token 代替维护授权。合成先建立 build pin，在发布锁外重建，再校验 generation 并 CAS 发布；并行业务追加的 suffix 必须保留。mutation guard 与发布 receipt 用于核对结果，未知提交通过 `FindMaintenance` 查询，不盲重试；pin 不隐式续期。当前无对外 `LoadRevision`，不能冒称已满足 root `durable.Maintenance` 接口；语义压缩、实际 retention 删除、ReplayCreateDerived 与 GC 仍未实现。已实现的保留策略与候选预览边界见下文。本页不声明本轮 distributed 整包实库验收通过；本机 strict-clock 检查仍有风险，需独立验证收口。
+distributed PostgreSQL 是另一套后端，使用专用 `pulse_durable_distributed` 当前布局，不与上述独立后端共用布局。`Migrate` 使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 以及 owner/`SECURITY DEFINER`/ACL 安全检查，再执行 namespace 授权。布局不匹配时只拒绝，不写入、删除或迁移旧数据，需使用新库；开发期不维护递增物理 schema 版本链。领域记录无格式号；当前 wire 为 `2`、snapshot envelope 为 `2`、Task 顶层 protocol 为 `2` / payload_format 为 `1`，snapshot_budget_version 为 `2`。固定 marker 不改号，旧 catalog signature 或旧编码不匹配均明确拒绝并保留原字节，不自动迁移、重签或重编码。其 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance）用 Namespace/RunID 定位，要求数据库 `maintain` 权限，不接受 worker ownership/token 代替维护授权。合成先建立 build pin，在发布锁外重建，再校验 generation 并 CAS 发布；并行业务追加的 suffix 必须保留。mutation guard 与发布 receipt 用于核对结果，未知提交通过 `FindMaintenance` 查询，不盲重试；pin 不隐式续期。当前无对外 `LoadRevision`，不能冒称已满足 root `durable.Maintenance` 接口；语义压缩、实际 retention 删除、ReplayCreateDerived 与 GC 仍未实现。已实现的保留策略与候选预览边界见下文。本轮 distributed PostgreSQL 新库整套 race 已通过（491.245s），包含容量（199.98s）、精确边界（232.29s）、retention 修复，以及 500 消息/1506 回执与批次（34.95s）；空库 DDL 验证通过（0.775s）。这些是当前源码实库结果，不等于完整 CI 或子模块正式发布。
 
 业务 mutation 回执与上述维护 receipt 分离：`mutation_receipts` 保存回执，永久 `mutation_guards` 防止身份复用，`events` 仅供诊断。`Coordinator.FindMutation(ctx, MutationQuery)` 按 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow 查询；ExpectedEpoch/ExpectedRevision 为可选指针，nil 表示未知，非 nil（含 0）精确匹配，不能从后来的 Get 猜测。返回 `Found`（精确 mutation 已提交）、`AbsentWithinWindow`（请求完全在覆盖内但无匹配回执）或 `Expired`（请求下界早于覆盖，观察已达到请求上界）。未来请求上界被拒绝，不当作 Expired。
 

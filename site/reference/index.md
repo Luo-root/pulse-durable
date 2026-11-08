@@ -25,7 +25,7 @@
 
 ## 版本与范围
 
-本套参考以目标 Durable `v0.1.0` 为 API 基线，依赖 Pulse `v0.5.0`，要求 Go 1.26 或更高版本。这是发版准备，不代表已发布：tag 状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准，相应 tag 发布前安装命令尚不可用。独立后端的三 tag 命名见[安装](../guide/installation.md)，完整用法见 [SQLite](../guide/sqlite.md) 与 [PostgreSQL](../guide/postgresql.md)。历史性能页面保留各自标注的测量版本。
+本套参考描述当前未发布 checkout，根模块依赖 Pulse `v0.5.2`，要求 Go 1.26 或更高版本。无格式号记录、可组合证据、wire/snapshot `2` 与 Task 顶层 protocol `2` 的边界见[数据模型](data-model.md)。本轮根与完整子模块开发 pin 均可下载并通过独立消费者验证，安装说明见[安装](../guide/installation.md)；tag 状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准。完整用法见 [SQLite](../guide/sqlite.md) 与 [PostgreSQL](../guide/postgresql.md)。历史性能页面保留各自标注的测量版本。
 
 支持普通值、受管流、显式状态、静态子图，以及内置 Retry 和消息预算。MemoryStore 只提供进程内协议；文件 Store 面向本机单宿主。宿主可通过[切面与 Cancel/Resume](../guide/composition.md)组合审批等待及按轮工具调用；内置唤醒服务、分布式运行管理、deterministic replay 和外部副作用 exactly-once 不在当前实现内。
 

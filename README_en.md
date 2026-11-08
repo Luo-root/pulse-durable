@@ -18,18 +18,15 @@ Outputs are published to downstream nodes after storage confirms the checkpoint 
 
 ## Install
 
-This page uses target **Durable v0.1.0** as its API baseline, requires **Go 1.26 or later**, and depends on Pulse **v0.5.0**.
+This page describes the **current unreleased source checkout**, requiring **Go 1.26 or later**. The root module depends on Pulse **v0.5.2**. Validate current examples through the source workspace in [Contributing](CONTRIBUTING.md).
 
-**Release preparation, not a claim of publication.** Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag publication status. The commands below are not available until their respective tags are published.
+Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag status. Downloadable root development commit `v0.1.1-0.20261108162459-ccc90d4b53c3` includes this round's root contract. It is a public commit pseudo-version, not a release tag:
 
 ```sh
-go get github.com/Luo-root/pulse-durable@v0.1.0
-# Optional backends; install only as needed:
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
 ```
 
-Both backends are independent modules. See [Installation](site/en/guide/installation.md) for the three tag names, pre-release development pin alternative, and dependency checks; [SQLite](site/en/guide/sqlite.md) and [PostgreSQL](site/en/guide/postgresql.md) for complete usage; and [Contributing](CONTRIBUTING.md) for source validation.
+Optional backends are independent modules whose go.mod files pin this root development version. Complete SQLite and standalone PostgreSQL development commits both resolve to `v0.1.1-0.20261108164227-4babad07420f`; distributed resolves to `v0.0.0-20261108164227-4babad07420f`. These are public development pseudo-versions, not release tags. A fresh consumer downloaded the complete modules with `GOWORK=off` and no replace, checked all four versions, and passed interface assembly, snapshot2, and `go test -race .` (4.858s). See [Installation](site/en/guide/installation.md) for commands, [SQLite](site/en/guide/sqlite.md) and [PostgreSQL](site/en/guide/postgresql.md) for complete usage, and [Contributing](CONTRIBUTING.md) for source validation.
 
 ## Minimal example
 
@@ -123,7 +120,7 @@ Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) ·
 | Task | Documentation |
 | --- | --- |
 | Understand the purpose and reading order | [Guide overview](site/en/guide/index.md) |
-| Install v0.1.0 and inspect dependencies and release status | [Installation](site/en/guide/installation.md) |
+| Check the current checkout, public dependencies, and release status | [Installation](site/en/guide/installation.md) |
 | Complete the first run and read an outlet | [Quick start](site/en/guide/quickstart.md) |
 | Keep checkpoints and recover in a new process | [Recovery after process exit](site/en/guide/recovery.md) |
 | Compose child graphs and understand Retry recovery | [Subgraphs and retries](site/en/guide/subgraphs.md) |
@@ -137,11 +134,12 @@ Online documentation: [English](https://luo-root.github.io/pulse-durable/en/) ·
 ## Current boundaries
 
 - Supports ordinary values, managed `pulse.Stream[T]`, static child graphs, and persistent node Retry and message retry budgets. `Resume` continues remaining budgets; child results beneath a failed parent attempt are not reused.
-- Messages are durably appended before delivery. `HandleMessage` confirms its input, explicit `SetMessageState` snapshot, and outputs in one Save. Recovery reclaims ordinary message values into complete-node staging; publication still waits for complete node confirmation without replaying acknowledged inputs. Active sources must declare `WithStreamSource(id, true)` and continue through `StreamWriter.Position()` and `SendAt`. Completed sources rebuild unacknowledged tails without rerunning the source body.
+- Messages are durably appended before delivery. `HandleMessage` confirms its input, explicit `SetMessageState` snapshot, and outputs in one `ChangeBatch` applied atomically through `Apply`. Recovery reclaims ordinary message values into complete-node staging; publication still waits for complete node confirmation without replaying acknowledged inputs. Active sources must declare `WithStreamSource(id, true)` and continue through `StreamWriter.Position()` and `SendAt`. Completed sources rebuild unacknowledged tails without rerunning the source body.
 - `RunID` and business `Version` must be nonempty UTF-8 text. Invalid text is rejected as an argument error before accessing Store; `Version` does not require SemVer syntax. Recovery needs the same definition, inputs, and encoding contract. Change the business version when changing functions, closures, or Aspect semantics.
-- `filestore` targets one local host and depends on exclusive file locking and atomic replacement within a directory. After taking the lock, Acquire removes strictly matched temporary files left by that run and reports cleanup errors; the JSON record remains the sole authority. It does not provide distributed leases, dispatch across machines, or a durability guarantee for power loss. `MemoryStore` validates only the in-process protocol.
+- `filestore` targets one local host and depends on exclusive file locking and atomic replacement within a directory. After taking the lock, Acquire removes strictly matched temporary files left by that run and reports cleanup errors; `.head` references establish authority over committed snapshots and batches. It does not provide distributed leases, dispatch across machines, or a durability guarantee for power loss. `MemoryStore` validates only the in-process protocol.
 - External effects from unconfirmed nodes may repeat. Applications need idempotency keys, transactions, deduplication, or an outbox. Durable does not promise exactly-once effects or deterministic replay. Hosts can register business waits and Cancel/Resume as described in [composition](site/en/guide/composition.md); the library includes no wake-up service. Channel, function, and `unsafe.Pointer` values are unsupported.
-- New records use format `2`. Ordinary format `1` records remain recoverable and upgrade on their next Save. Old Runtime versions reject the new format. Codecs encode message elements, cursors, and explicit state, never stream endpoints; nested channel values remain unsupported.
+- Domain records have no format version; business `Version` remains. All-nil optional HistorySummaries/CommitIndex/Provenance fields describe an ordinary record; any present component requires complete closure. Summaries and provenance grant no authority. Current boundaries use wire `2`, snapshot envelope `2`, and Task top-level protocol `2` / payload_format `1`. Old bytes are explicitly rejected and preserved, without automatic migration, re-signing, or re-encoding. Codecs encode message elements, cursors, and explicit state, never stream endpoints; nested channel values remain unsupported.
+- Root `BuildHistoryCompressionBatch` provides authoritative-record replanning, complete exact CAS deletion, same-batch AppliedRevision/CommitIndex, and recovery closure. `PlanHistoryCompression` remains read-only with `Executable=false`. First authoritative evidence materialization, distributed semantic compression/floors/permanent receipts, and positioned derived replay remain unfinished. Physical compact, GC, retention, semantic compression, and Replay are separate capabilities; see [Storage](site/en/guide/storage.md).
 - `RunOptions.BeforeStart` lets the host register `pulse.SubscribeStream` and start its reader before Start. Run/Resume still block in Wait and own the Session; readers must acknowledge messages or explicitly stop.
 - Checkpoints contain encoded business outputs and are not encrypted containers. The host manages storage access, backups, and retention.
 

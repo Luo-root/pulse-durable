@@ -23,18 +23,15 @@ Pulse Durable 为 [Pulse](https://github.com/Luo-root/pulse) 工作流提供检�
 
 ## 安装
 
-本文以目标 **Durable v0.1.0** 为 API 基线，需要 **Go 1.26 或更高版本**，依赖 Pulse **v0.5.0**。
+本文描述当前**尚未发布的源码 checkout**，需要 **Go 1.26 或更高版本**，根模块依赖 Pulse **v0.5.2**。当前示例按[贡献指南](CONTRIBUTING.md)使用源码工作区验证。
 
-**发版准备中，尚不称已发布。** tag 发布状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；相应 tag 发布前，以下安装命令尚不可用。
+相应 tag 的状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准。当前可下载的根开发提交是 `v0.1.1-0.20261108162459-ccc90d4b53c3`，包含本轮根包契约；它是公开提交伪版本，不是发布 tag：
 
 ```sh
-go get github.com/Luo-root/pulse-durable@v0.1.0
-# 可选后端，按需安装：
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
 ```
 
-两个后端是独立模块。三 tag 命名、发布前开发 pin 备选及依赖核对见[安装](site/guide/installation.md)；完整使用见 [SQLite](site/guide/sqlite.md) 与 [PostgreSQL](site/guide/postgresql.md)，源码验证见[贡献指南](CONTRIBUTING.md)。
+可选后端是独立模块，go.mod 已固定这个根开发 pin。SQLite 与独立 PostgreSQL 的完整开发提交均已解析为 `v0.1.1-0.20261108164227-4babad07420f`，distributed 为 `v0.0.0-20261108164227-4babad07420f`；这些是公开开发伪版本，不是发布 tag。全新消费者已在 `GOWORK=off`、无 replace 下下载完整模块，核对四个版本并通过接口装配、snapshot2 与 `go test -race .`（4.858s）。安装命令见[安装](site/guide/installation.md)；完整使用见 [SQLite](site/guide/sqlite.md) 与 [PostgreSQL](site/guide/postgresql.md)，源码验证见[贡献指南](CONTRIBUTING.md)。
 
 ## 最小示例
 
@@ -128,7 +125,7 @@ result: 42 ready
 | 任务 | 文档 |
 | --- | --- |
 | 了解定位与阅读顺序 | [指南概览](site/guide/index.md) |
-| 安装 v0.1.0 并检查依赖与发布状态 | [安装](site/guide/installation.md) |
+| 了解当前 checkout、公开依赖与发布状态 | [安装](site/guide/installation.md) |
 | 完成第一次运行并读取出口 | [快速开始](site/guide/quickstart.md) |
 | 保留检查点并在新进程中恢复 | [进程退出后恢复](site/guide/recovery.md) |
 | 组合子图并理解 Retry 恢复 | [子图与重试](site/guide/subgraphs.md) |
@@ -142,11 +139,12 @@ result: 42 ready
 ## 当前边界
 
 - 支持普通值、受管 `pulse.Stream[T]`、静态子图，以及节点 Retry 和消息重试预算的保存与恢复。`Resume` 延续剩余预算；已失败的父尝试下的子成果不会复用。
-- 流消息先可靠追加再交付；`HandleMessage` 的输入确认、显式 `SetMessageState` 状态和输出在同一次 Save 中确认。消息贡献的普通值在恢复时认回完整节点暂存，仍等完整节点确认才发布，不重跑已 Ack 输入。活跃来源须声明 `WithStreamSource(id, true)`，按 `StreamWriter.Position()` 与 `SendAt` 续读；已完成来源会重建未确认尾部而不重跑业务体。
+- 流消息先可靠追加再交付；`HandleMessage` 的输入确认、显式 `SetMessageState` 状态和输出在同一 `ChangeBatch` 的 `Apply` 事务中确认。消息贡献的普通值在恢复时认回完整节点暂存，仍等完整节点确认才发布，不重跑已 Ack 输入。活跃来源须声明 `WithStreamSource(id, true)`，按 `StreamWriter.Position()` 与 `SendAt` 续读；已完成来源会重建未确认尾部而不重跑业务体。
 - `RunID` 和业务 `Version` 必须是非空 UTF-8 文本，非法文本在访问 Store 前作为参数错误拒绝；`Version` 不要求 SemVer 格式。恢复需要相同的定义、输入和编码契约；修改业务函数、闭包或切面语义时，需要升级业务版本。
-- `filestore` 面向本机单宿主，依赖文件系统的独占锁和同目录原子替换。Acquire 持锁后清理本运行遗留的严格匹配暂存文件，清理错误会返回；JSON 记录始终是唯一权威。它不提供分布式租约、跨机器调度或断电持久性保证。`MemoryStore` 只验证进程内协议。
+- `filestore` 面向本机单宿主，依赖文件系统的独占锁和同目录原子替换。Acquire 持锁后清理本运行遗留的严格匹配暂存文件，清理错误会返回；已提交快照与批由 `.head` 引用确定权威状态。它不提供分布式租约、跨机器调度或断电持久性保证。`MemoryStore` 只验证进程内协议。
 - 未确认节点的外部副作用可能重复。业务应使用幂等键、事务、去重或 outbox。Durable 不承诺 exactly-once 或 deterministic replay；宿主可按[组合指南](site/guide/composition.md)登记业务等待并 Cancel/Resume，库不内置唤醒服务。不支持 channel、函数或 `unsafe.Pointer` 值。
-- 新建记录使用格式 `2`；普通格式 `1` 仍可恢复，下一次保存升级为 `2`。旧 Runtime 拒绝新格式。Codec 编码消息元素、游标和显式状态，不编码流端点；普通值中嵌套 channel 的拒绝不变。
+- 领域记录不携带格式版本，业务 `Version` 保留。可选 HistorySummaries/CommitIndex/Provenance 全 nil 是普通记录，任一出现须闭合；摘要与来源不是权限凭证。当前边界为 wire `2`、snapshot envelope `2`、Task 顶层 protocol `2` / payload_format `1`；旧字节明确拒绝并保留，不自动迁移、重签或重编码。Codec 编码消息元素、游标和显式状态，不编码流端点；普通值中嵌套 channel 的拒绝不变。
+- 根包 `BuildHistoryCompressionBatch` 已实现权威记录重规划、完整精确 CAS 删除、同批 AppliedRevision/CommitIndex 与恢复闭包。`PlanHistoryCompression` 仍只读且 `Executable=false`；首次权威证据物化、distributed 语义压缩/floor/永久 receipt 与指定位置派生回放尚未完成。物理 compact、GC、retention、语义压缩和 Replay 各自独立，见[存储](site/guide/storage.md)。
 - `RunOptions.BeforeStart` 在 Start 前供宿主登记 `pulse.SubscribeStream` 并启动读取任务；Run/Resume 仍阻塞 Wait 并持有 Session，读取任务须确认消息或显式停止。
 - 检查点包含编码后的业务输出，并非加密容器。存储访问控制、备份与数据保留由宿主管理。
 

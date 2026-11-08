@@ -14,7 +14,7 @@
 
 `filestore` 依赖文件系统的独占锁与同目录原子替换，不提供分布式租约、fencing 或跨机器派发，也不承诺断电时的持久性。不能仅凭把目录放到网络共享上，就将其当作分布式运行管理。
 
-本页描述当前开发分支的强制 Initialize/Apply API，需要 Go **1.26+**、Pulse **v0.5.0**，不是旧 v0.1.0 的接口说明或新 API 已发布声明。没有兼容 Save、RequireDelta 或全量回退；业务使用 `durable.New` 与 Runtime Run/Resume，无需 opt-in。安装 pin 留待跨模块统一更新，请按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout，发布状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。`sqlitestore` 与 `postgresstore` 是独立模块；完整程序和运维规则见 [SQLite 教程](sqlite.md)与 [PostgreSQL 教程](postgresql.md)。独立 PostgreSQL 仍在开发，本页不声明本轮实库验收通过。
+本页描述当前未发布 checkout 的强制 Initialize/Apply API，需要 Go **1.26+**、Pulse **v0.5.2**。没有兼容 Save、RequireDelta 或全量回退；业务使用 `durable.New` 与 Runtime Run/Resume，无需 opt-in。子模块 go.mod 已固定公开根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3`，它可下载并包含本轮根包契约，是提交伪版本而非发布 tag；SQLite/独立 PostgreSQL 开发 pin 为 `v0.1.1-0.20261108164227-4babad07420f`，distributed 为 `v0.0.0-20261108164227-4babad07420f`，均已可下载并通过独立消费者验证。按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证当前 checkout，不能将源码组合或根依赖下载结果等同于完整新版子模块发布；tag 状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。`sqlitestore` 与 `postgresstore` 是独立模块，完整程序和运维规则见 [SQLite 教程](sqlite.md)与 [PostgreSQL 教程](postgresql.md)。本轮四模块 `GOWORK=off` 下载/build/vet/race（含独立 PostgreSQL 实库）、根包/FileStore/integration race、SQLite 实库、中英文 SQLite/PG 教程三进程，以及 distributed PostgreSQL 新库全套 race 与空库 DDL 均已通过；这些结果不代替尚未运行的完整 CI。
 
 `postgresstore` 使用 pgx/v5，初始化并严格检查专用 `pulse_durable` schema。同一 Store 已持有或 pending 的 RunID 立即返回 `ErrBusy`；跨 Store 须取得连接并完成 `pg_try_advisory_lock` 网络检测，检测到占用后返回 `ErrBusy`，不等待锁释放。池容量与网络检测的总等待默认最多 30 秒，caller 更短 deadline 优先；池满而无法判断远端占用时返回 `context.DeadlineExceeded`，不伪报 `ErrBusy`。Store.Close 取消 pending Acquire 并等待资源清理；解锁失败或结果不确定时销毁连接，清理最长 5 秒。DSN 由宿主管理，不能记录密码；真实数据库测试使用 `PULSE_POSTGRES_TEST_DSN`，会执行 `DROP SCHEMA IF EXISTS pulse_durable CASCADE`，**只能指向隔离测试数据库，不能使用业务库**。未设置 DSN 时数据库测试跳过，不代表通过。源码验证、使用片段与边界见 [`postgresstore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/postgresstore/README.md)。
 
@@ -22,17 +22,21 @@
 
 SQLite 初始化与示例见仓库 [`sqlitestore/README.md`](https://github.com/Luo-root/pulse-durable/blob/main/sqlitestore/README.md)。关闭时先停止业务运行并关闭 Session，再关闭 Store；Initialize/Apply 返回错误时按 Store 契约重新 Load，不推断是否已经提交。FULL 同步不等于已完成断电实测验收，备份、恢复与目录保留由宿主负责。
 
-## 逻辑历史证据（Format3，开发中）
+## 可组合历史证据（未发布）
 
-`RecordFormat` 仍为 `2`；正常 `Run` / `Initialize` 不生成 Format3，普通 `Apply` 也不能把 Format2 升级成 Format3。`SemanticRecordFormat`（同 `RecordFormat3`）只定义携带历史摘要的逻辑格式，与物理快照、文件 manifest 或数据库布局版本独立。现有 Format2 快照在新增证据为 nil 时保持原字节表示，不自动迁移旧数据。
+`RunRecord` 不携带格式或能力版本号；`Version` 仍是恢复必须匹配的业务身份。可选的 `HistorySummaries`、`CommitIndex`、`Provenance` 全为 nil 表示普通记录，任一出现就必须三者齐全并通过完整证据闭包校验。正常 `Run` / `Initialize` 生成普通记录，普通 `Apply` 不能首次物化证据。`RunRecord.Format`、`RecordFormat`、`RecordFormat3`、`SemanticRecordFormat` 以及 `ChangeHeader.BatchFormat` / `LogicalFormat` 已删除。
 
-Format3 的 `HistorySummaries` 以 `(Kind, ID)` 唯一标识摘要，Payload 有独立 SHA-256；`CommitIndex` 保存从 revision 1 到 head 的连续批次承诺；`Provenance` 保存来源身份与摘要。普通 Format3 事务恰好追加下一条索引，禁止改写或删除旧索引。索引摘要绑定同一规范批次中去掉 `commit_index` 操作后的内容，避免自引用；提交前校验与字节预算仅处理变化对象，完整证据在加载边界校验。`CloneRecord` 隔离摘要 Payload 并保留 nil/空形状。自定义后端解码后应调用 `ValidateSemanticEvidence`，并继续执行身份、图、Codec 与引用校验。
+`HistorySummaries` 以 `(Kind, ID)` 唯一标识摘要，Payload 有独立 SHA-256；`CommitIndex` 保存从 revision 1 到 head 的连续批次承诺；`Provenance` 保存来源身份与摘要。带证据的普通事务恰好追加下一条索引，禁止改写或删除旧索引。索引摘要绑定同一规范批次中去掉 `commit_index` 操作后的内容，避免自引用；提交前校验与字节预算仅处理变化对象，完整证据在加载边界校验。`CloneRecord` 隔离摘要 Payload 并保留 nil/空形状。自定义后端解码后应调用 `ValidateSemanticEvidence`，并继续执行身份、图、Codec 与引用校验。
 
-这些字段是完整性元数据，不是授权凭据，也不单凭自身证明历史来源真实。当前 CommitIndex 只承诺批次内容，尚未包含指定位置消息回放所需的输入、输出及 State 因果引用。Format2 首次证据物化、语义对象删除、压缩 floor/永久回执和派生回放执行仍未完成；不能通过修改记录的 `Format` 字段获得这些能力。
+摘要的解码、应用标记、候选规划、恢复与普通修改检查共用不可变的 `historySummaryRegistry`，内置 Retry 与 Message 前缀两个 handler。未知 Kind 可在底层只读路径保留为 opaque 证据；恢复或任何修改前必须拒绝未知必需语义，不能绕过检查。摘要与来源信息是完整性元数据，不是授权凭据，也不单凭自身证明历史来源真实。
 
-`PlanHistoryCompression(record, request)` 是只读候选规划：要求 Format3 且 ThroughRevision 等于当前 head，重新验证 Retry 失败前缀、消息完整重试组、ACK 与引用闭包；未知 Kind、缺口、活跃对象或来源变化均拒绝。请求显式限制删除与保护对象总数，Bytes 计源记录无损快照加规范计划的字节，不是可回收空间或 WAL。计划始终 `Executable=false`，即使自行改字段并重算 PlanDigest 也不能开启执行。`ValidateHistoryCompressionEquivalence` 只复验候选删除与保留字段，是必要预检，不能替代完整图/Codec恢复等价或锁后授权。
+`PlanHistoryCompression(record, request)` 是只读候选规划：要求完整证据组件且 ThroughRevision 等于当前 head，重新验证 Retry 失败前缀、消息完整重试组、ACK 与引用闭包；未知 Kind、缺口、活跃对象或来源变化均拒绝。请求显式限制删除与保护对象总数，Bytes 计源记录无损快照加规范计划的字节，不是可回收空间或 WAL。计划始终 `Executable=false`，自行改字段并重算 PlanDigest 不能授权执行。`ValidateHistoryCompressionEquivalence` 只复验候选删除与保留字段，不能替代完整图/Codec 恢复校验或锁后授权。
 
-Runtime 对带有已应用标记的 Retry/Message 摘要提供恢复前提：Retry 从已消费高水位继续计数，保留原 Limit 与耗尽身份，拒绝前缀重现及后缀缺口；Message 的已结算前沿仍受 ACK 约束，旧 Open/Fail/ACK 被拒绝，Managed 当前 State/Values 有摘要与后续确认见证。候选摘要不改变预算；普通 Apply 不能创建、改写或删除已应用高水位。相关恢复测试显式安装逻辑夹具，不证明后端删除已原子提交。压缩执行入口仍不可用。
+根包 `BuildHistoryCompressionBatch(record, plan)` 已实现：基于当前权威记录重新规划并核对计划，使用完整旧对象作精确 CAS 删除 Attempt/Message，在同一批次更新摘要的 `AppliedRevision`、追加 `CommitIndex`，并校验恢复闭包。构造器不写 Store、不修改输入记录；提交仍走现有 `Session.Apply` 与确认后发布路径。执行方必须在独占/有效所有权下重新 Load 权威状态，计划本身不授予权限。Runtime 恢复按已应用摘要继续 Retry 消费高水位与消息结算前沿，保留 Limit、耗尽身份、ACK 和 Managed State/Values 见证，拒绝前缀重现、后缀缺口及旧 Open/Fail/ACK；普通 Apply 不能创建、改写或删除已应用高水位。
+
+上述根包事务不表示后端首次权威证据物化或 distributed 语义压缩已交付。首次物化、distributed 压缩 floor/永久 receipt、实际 retention 删除、GC 与指定位置派生回放仍未完成；当前 CommitIndex 也尚未包含该回放所需的输入、输出和 State 因果引用。物理 `CompactStorage`、GC、retention、语义压缩和 Replay 是不同能力。
+
+编码版本仅留在边界：ChangeBatch wire 为 `2`，无损 snapshot envelope 为 `2`；Task 顶层为 `protocol=2` / `payload_format=1`，业务 Route 只含 TaskType、BusinessVersion、Definition、ManifestDigest。首版策略明确拒绝旧 wire、snapshot 和 Task，保留原字节，不自动迁移、重签或重编码；物理 backend schema/layout 另行校验，不能据此重写历史承诺。
 
 ## 2. 设置文件目录
 
@@ -61,7 +65,7 @@ FileStore 合成从当前 base 快照重放到目标 R，保存新的完整物�
 
 完整校验由可选 `durable.HistoryAuditor` 提供，FileStore 的 `AuditHistory(ctx, durable.AuditHistoryRequest{RunID: id})` 在独占锁内验证完整原始链、全部已提交快照的精确投影和索引跳指针，返回观察到的 `State`、`Snapshots`、`Batches` 与 `BatchBytes`；失败时这些计数不代表完成审计。未引用孤儿不属于审计对象，也不会被采纳。该能力不要求其他后端实现。设保留批数为 H、已提交合成次数为 G、所选快照到目标的批数为 K，FileStore 精确读取的寻址元数据最坏为 `O(log² H + log²(G+1))`，payload 重放为 K 个批及一份快照；每次 Apply 或合成的索引追加最多读 `O(log H)` 或 `O(log(G+1))` 元数据，摊销 `O(1)`，不复制历史目录。完整审计仍随全部保留历史增长。
 
-MemoryStore 提供非耐久维护参考实现。FileStore 与独立 PostgreSQL 的维护读写使用原有独占运行锁，活跃 Session 导致 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务、不需要 runlock，CompactStorage 仍排他并可能 `ErrBusy`。FileStore 维护入口不枚举目录清理暂存文件。发布后报错可能结果不确定，先重新 Inspect 核对 generation/base，再规划下一次操作。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成；物理合成不是这些能力，也不是无限保留承诺。
+MemoryStore 提供非耐久维护参考实现。FileStore 与独立 PostgreSQL 的维护读写使用原有独占运行锁，活跃 Session 导致 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务、不需要 runlock，CompactStorage 仍排他并可能 `ErrBusy`。FileStore 维护入口不枚举目录清理暂存文件。发布后报错可能结果不确定，先重新 Inspect 核对 generation/base，再规划下一次操作。根包已提供语义压缩批构造器，首次权威证据物化、distributed 语义压缩、retention 删除与 `ReplayCreateDerived` 仍未完成；物理合成、GC 与这些能力分别验收，也不承诺无限保留。
 
 当前 `.head` manifest 与批路由头为物理格式 `3`；旧 manifest `1`、`2` 和旧 `.json` 均明确拒绝，原数据及旧目录中的暂存文件保持不变。检测到旧 `.json` 返回明确旧格式错误，不自动清除、覆盖或迁移；需要旧数据时保留旧版和隔离目录，新版另用新目录。Acquire 取得锁后仍可清理本运行精确匹配 `<SHA-256>-<uint32十进制>.tmp` 的普通暂存文件（无前导零，`0` 除外），但不会把未引用的不可变文件认作提交。清理不递归、不触碰其他运行或 `.lock`；失败返回错误并释放锁。目录权限和保留由宿主管理。性能与逻辑 bytes 的测量边界见[检查点成本](checkpoint-cost.md)，增量不保证所有规模都更快。
 
@@ -73,7 +77,7 @@ MemoryStore 提供非耐久维护参考实现。FileStore 与独立 PostgreSQL �
 mkdir durable-storage
 cd durable-storage
 go mod init example.com/durable-storage
-# 新 API 的安装 pin 留待统一更新；先按贡献指南配置当前 checkout 工作区。
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
 ```
 
 需要 Go 1.26 或更高版本。保存以下完整程序为 `main.go`：
@@ -115,7 +119,7 @@ func inspect(dir, runID string) (err error) {
 		return err
 	}
 	fmt.Println("run:", record.RunID)
-	fmt.Println("record format:", record.Format)
+	fmt.Println("business version:", record.Version)
 	fmt.Println("revision:", record.Revision)
 	fmt.Println("scopes:", len(record.Scopes))
 	fmt.Println("attempts:", len(record.Attempts))
@@ -130,7 +134,7 @@ go mod tidy
 go run . -dir ../durable-recovery/checkpoints -run-id recovery-demo-001
 ```
 
-输入须是当前开发分支生成的新布局目录；不能把旧版恢复教程生成的 `.json` 当作兼容输入。对相同简单业务图，预期运行身份为 `recovery-demo-001`、逻辑格式为 `2`、修订号为正整数，完成后包含一个根作用域与两个节点根尝试。检查工具仅 Acquire/Load/Close，打印元数据，不打印编码业务值，不初始化或提交变更。逻辑 RecordFormat 与后端物理格式是不同边界，旧物理目录不会因逻辑格式可识别就自动升级。
+输入须是当前 checkout 生成的新布局目录；不能把旧版恢复教程生成的 `.json` 或旧 snapshot/wire 当作兼容输入。对相同简单业务图，预期运行身份为 `recovery-demo-001`、业务版本为 `recovery/1`、修订号为正整数，完成后包含一个根作用域与两个节点根尝试。检查工具仅 Acquire/Load/Close，打印元数据，不打印编码业务值，不初始化或提交变更。记录没有格式字段；边界版本不匹配时明确拒绝并保留原字节，不自动升级目录或重编码历史。
 
 读取也需要独占会话。如果业务进程仍持有同一 RunID，会立即返回 `ErrBusy`。`filestore.New` 会创建不存在的目录，所以路径拼错时可能得到空目录和 `ErrNotFound`；请核对路径，不能将记录不存在误判为业务已经完成。
 
@@ -140,7 +144,7 @@ go run . -dir ../durable-recovery/checkpoints -run-id recovery-demo-001
 
 1. `Acquire(ctx, runID)` 获得该 RunID 的独占会话。检测到同一 RunID 正被持有时返回 `ErrBusy`，不等待该运行释放所有权；连接容量与网络检测的等待由后端约定，不同 RunID 可以独立使用。
 2. `Load(ctx)` 返回隔离副本，没有记录时返回 `ErrNotFound`。权限、损坏或读取故障不能伪装成不存在。
-3. `Initialize(ctx, record)` 仅在无检查点时原子发布合法 Revision `1` 初始空执行状态，核对当前格式、RunID 与业务身份；已有检查点返回 `ErrConflict`，不能导入业务历史。
+3. `Initialize(ctx, record)` 仅在无检查点时原子发布合法 Revision `1` 初始空执行状态，核对 RunID、业务身份与初始记录不变量；已有检查点返回 `ErrConflict`，不能导入业务历史。
 4. `Apply(ctx, batch) (CommitAck, error)` 是唯一普通提交入口，原子核对 typed 变更的精确前置条件、身份与严格 +1 的修订号。耐久后端保存批并 CAS head/chain；失败不得发布半批，修订号溢出拒绝。新会话权威加载链，普通 Apply 不得重放整条历史或全量覆写。
 5. `Close()` 幂等，等待在途操作并释放会话所有权；关闭后 Load/Initialize/Apply 必须报错。Store 须并发安全，不能通过可选接口探测后退回旧全量写入。
 

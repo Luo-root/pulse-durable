@@ -1,7 +1,7 @@
 # Durable 存储演进 v3：全后端统一增量契约
 
-日期：2026-10-28。状态：破坏性接口修订，待复审；不是实现或性能验收。
-源码基线：3139e3a024d849a347d3ad06fa6b91abc934ed7a。
+日期：2026-10-28；当前契约收口：2026-11-08。状态：破坏性接口修订，当前 checkout 已部分实现且尚未发布；验收矩阵仍是要求，不代表全部通过。
+原设计源码基线：3139e3a024d849a347d3ad06fa6b91abc934ed7a；当前根开发提交为 `ccc90d4b53c318696328cf0fbed7f876e996b7a8`，已解析可下载伪版本 `v0.1.1-0.20261108162459-ccc90d4b53c3`，不是发布 tag。完整 SQLite/独立 PostgreSQL 开发 pin 为 `v0.1.1-0.20261108164227-4babad07420f`，distributed 为 `v0.0.0-20261108164227-4babad07420f`，对应 `4babad07420f7114729455eaf7fcff9ee5818002`；均可下载，非发布 tag。
 承接 distributed-evolution-design-v2.md 的回放、历史压缩、pin、retention 及业务不变量；本稿仅替换其旧 Save 兼容、后端范围与升级章节。v2 原文件保留在 distributed-contracts-20261024 工作树。本稿与 v2 冲突时以本稿为准，不保留两套写入政策。
 
 ## 1. 已确认的范围和边界
@@ -9,7 +9,7 @@
 用户决定：所有官方存储都必须解决正常 checkpoint 全量写问题；当前早期版本允许破坏性修改，不要求兼容旧 Session.Save、旧 schema 或旧存储文件。
 官方实现全集：MemoryStore、filestore、sqlitestore、postgresstore、distributed/postgres。MemoryStore 是语义参考，不提供持久性；独立 postgresstore 是会话锁语义，不提供分布式租约；只有 distributed/postgres 提供 token/epoch/lease fencing，不能互相冒称。
 不再维护 RequireDelta 选择、DeltaSession 可选探测或自动全量回退。普通业务提交只用增量；初始化及显式快照合成可以写完整快照，但不能每次 Apply 后都重写完整快照。
-现有 ChangeBatch wire 1 / logical format2 的不变量继续有效；logical format3 仅在加入历史摘要/回放证据时切换，不能把物理日志格式与逻辑记录格式混为一谈。
+领域对象不承载格式或能力版本：RunRecord.Format、RecordFormat/RecordFormat3/SemanticRecordFormat 与 ChangeHeader.BatchFormat/LogicalFormat 已删除，RunRecord.Version 仍为业务身份并必须保留。可选 HistorySummaries/CommitIndex/Provenance 全 nil 为普通记录，任一出现须三者完整闭合；证据与来源不是权限凭证。编码版本仅在边界：ChangeBatch wire 2、snapshot envelope 2，Task 顶层 protocol 2/payload_format 1；Route 仅有 TaskType/BusinessVersion/Definition/ManifestDigest 四项。首版旧 wire/snapshot/Task 明确拒绝并保留原字节，无自动迁移、重签或重编码。物理 backend schema/layout 版本留在各自边界；distributed 固定 layout-marker `pulse-durable-distributed-layout-v1` 不改号，但旧 catalog 不匹配拒绝，budget 协议为 2。ScopeRecord.Bindings 兼容标记已删除，child 只认当前稳定绑定与固定输入值指纹，不按旧输入值回退。
 拒绝旧存储不等于获准删除旧数据：检测到旧格式必须返回 UnsupportedFormat/明确升级错误，不能自动清库、覆盖旧目录或默默重新初始化。本轮不交付旧数据转换器；需保留历史的用户先继续用旧版和隔离旧存储，新版采用新目录/新库。备份恢复的源数据也不能自动执行。
 
 ## 2. 接口与唯一业务状态转换
@@ -26,7 +26,7 @@ type Session interface {
 }
 ```
 
-- Initialize 的不存在条件指“检查点不存在”，不是调度运行身份不存在。本地会话要求该RunID无检查点/manifest/墓碑；分布式InitializeOwned要求Submit创建的task/run已存在、status=running、token有效、checkpoint revision=0且无manifest，在同一事务核对task identity并发布revision1。记录必须Revision=1、当前逻辑格式、RunID/版本/定义/输入与会话task匹配，且是业务启动前的初始空执行状态。已有检查点、已种子的CreateDerived运行或墓碑均Conflict，不覆盖。派生初始快照由专门CreateDerived入口原子发布来源信息，不通过Initialize导入。
+- Initialize 的不存在条件指“检查点不存在”，不是调度运行身份不存在。本地会话要求该RunID无检查点/manifest/墓碑；分布式InitializeOwned要求Submit创建的task/run已存在、status=running、token有效、checkpoint revision=0且无manifest，在同一事务核对task identity并发布revision1。记录必须Revision=1、RunID/业务版本/定义/输入与会话task匹配，且是业务启动前的初始空执行状态。已有检查点、已种子的CreateDerived运行或墓碑均Conflict，不覆盖。派生初始快照由专门CreateDerived入口原子发布来源信息，不通过Initialize导入。
 - Initialize 响应丢失也可能已提交，Runtime 停止并从 Load 裁决，不盲重试或以“已存在”推断本请求已成功。Initialize 不赋执行权；分布式 InitializeOwned 必须有有效token。
 - Load 只返回通过摘要、连续 revision、identity、typed precondition校验的完整隔离投影；无记录与损坏/旧格式必须可区分。不为查询重新写快照或推进业务revision。
 - Apply 唯一普通写入口，batch expected/next revision 严格+1，身份与业务版本固定，uint64耗尽拒绝。批内State、ACK、输出、确认等全部原子。原子失败/未知提交、panic封闭、确认后发布继续沿用当前Runtime行为。
@@ -73,9 +73,13 @@ type Session interface {
 ## 5. 执行与覆盖账本
 
 - C1 根契约/Runtime/Memory及测试适配：必须先实现强制Initialize+Apply、去掉可选模式、未知提交不变。不能合并一个使主线全部后端编译失败的半成品；跨文件接口更新可用同一集成PR，组件在隔离分支验证。
-- C2 文件/SQLite/独立PG/分布式PG：各自独占目录并行实现，统一共享C1契约和batch链算法。子模块固定真实可下载根版本，无release replace。接口变更跨模块发布顺序由维护者最后统一；不伪造已发布tag。
+- C2 文件/SQLite/独立PG/分布式PG：各自独占目录并行实现，统一共享C1契约和batch链算法。子模块 go.mod 已固定可下载根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3`，包含本轮根包契约；该伪版本不是发布 tag，完整子模块开发 pin 已解析并通过无 replace 的独立消费者验证，版本见文首。源码组合、公开根 pin 下载与完整子模块发布是不同验证边界；不使用 release replace、不编造子模块 pin 或已发布 tag。
 - C3 各后端真实测试矩阵、深审、CI、双语文档与成本报告；所有官方后端缺一项就不能宣称“统一增量存储完成”。
 - C4 v2历史压缩、pin/retention及回放继续属于本次总体目标，不因本接口修订推迟或删减。
+
+当前已实现边界：根包不可变 historySummaryRegistry 以 Retry/Message 两个内置 handler 统一五处分派；未知 Kind 可由底层只读保存 opaque，但恢复或修改前拒绝。BuildHistoryCompressionBatch 基于权威记录重规划，使用完整旧对象精确 CAS 删除 Attempt/Message，在同批写 AppliedRevision/CommitIndex 并核对恢复闭包；PlanHistoryCompression 仍只读、Executable=false。该根包事务不等于后端首次权威证据物化或 distributed semantic compression 已交付。首次物化、distributed compression floor/permanent receipt 和指定位置派生回放尚未完成，物理 compact、GC、retention、语义压缩与 Replay 不互相替代。
+
+本轮验证事实：四模块 GOWORK=off 下载/build/vet/race（含 standalone PostgreSQL 实库）、root/FileStore/integration race、SQLite 当前源码实库、中英文 SQLite/PG 教程三进程均通过；distributed PostgreSQL 新库整套 race 491.245s 通过，包含容量 199.98s、精确边界 232.29s、retention 修复，以及 500 消息/1506 回执与批次 34.95s。空库 DDL 0.775s 通过。全新消费者 GOWORK=off、无 replace 下载四个精确公开开发版本，接口装配与 snapshot2、go test -race .（4.858s）通过。完整 CI 与未实现能力验收不能据此标 PASS。上述结果由本轮主控实测提供，文档构建检查另行记录，不将文档构建当作 Go/实库验收。
 
 职责、输入输出、排除与交接见§2/§3；执行授权分别为本地session独占和分布式R-OWN；生命周期与失败见§2/§3及v2公共规则；数值预算沿用v2§7，若实测要求修改需注明依据；验收见§4。原设计D01–D06账本继续跟踪，旧兼容门槛D06由“旧格式拒绝且不破坏数据”替代。
 尚未实现、未实测的项目均不能标PASS。用户许可破坏性API，不许可删除已有库/目录、代发版、自动部署或泄露凭据。

@@ -56,14 +56,14 @@ Wait for the original call to finish and confirm ownership has been released. Ch
 
 ## Uncertain saves
 
-A failed Save has two possible outcomes:
+A failed `Initialize` / `Apply` has two possible outcomes:
 
 1. **No commit**: the disk or backend still has the previous record, and the node remains unconfirmed.
 2. **Commit completed**: the record was updated, but a later sync or confirmation step failed.
 
-Runtime stops this execution without treating the proposed record as its confirmed in-memory state, automatically rolling back, or repeating Save. Do not overwrite the backend with the previous record or blindly retry an old expectedRevision.
+Runtime stops this execution without treating the proposed record as its confirmed in-memory state, automatically rolling back, or repeating `Initialize` / `Apply`. Do not overwrite the backend with the previous record or blindly retry an old expectedRevision.
 
-After resolving the cause, confirm the record prerequisites above. For an existing valid, compatible record, call Resume with a new or reused Runtime; it reloads and reuses results or continues unconfirmed nodes subject to terminal state and remaining budget. A failed initial Save may already have established a record. Continue Run only after checking the original storage and identity and confirming the initial record was never established. A returned Save error alone proves neither absence of a record nor whether a particular business action must repeat.
+After resolving the cause, confirm the record prerequisites above. For an existing valid, compatible record, call Resume with a new or reused Runtime; it reloads and reuses results or continues unconfirmed nodes subject to terminal state and remaining budget. A failed initial `Initialize` may already have established a record. Continue Run only after checking the original storage and identity and confirming the initial record was never established. A returned `Initialize` / `Apply` error alone proves neither absence of a record nor whether a particular business action must repeat.
 
 Later errors do not roll back confirmed results. A Session close failure is also joined into the returned error as CheckpointError. Even when the actual Execution completed, the Runtime call can fail during cleanup. Handle the returned error and investigate storage/ownership state; a completed Snapshot alone does not prove the entire call was error-free.
 

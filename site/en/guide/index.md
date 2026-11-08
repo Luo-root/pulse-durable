@@ -6,7 +6,7 @@ Pulse owns graph definitions, dependency scheduling, Aspects, and observation of
 
 ## Before you start
 
-You need Go 1.26 or later and access to module downloads. Current tutorials target Durable v0.1.0 and Pulse v0.5.0, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases); installation commands are unavailable before their tags are published. The minimal example uses `MemoryStore`, and the recovery tutorial uses `filestore`; complete SQLite and PostgreSQL tutorials are also available.
+You need Go 1.26 or later and access to module downloads. The current contract is defined by untagged development source, whose root module depends on Pulse v0.5.2. This round's root and complete submodule development pins are downloadable and passed independent consumer validation. See [Installation](installation.md) for the distinction between installation and source validation. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for publication. The minimal example uses `MemoryStore`, and the recovery tutorial uses `filestore`; complete SQLite and PostgreSQL tutorials are also available.
 
 If graphs, typed Keys, and declared outlets are new to you, start with the [Pulse quick start](https://luo-root.github.io/pulse/en/guide/quickstart). The Durable tutorials provide their own complete programs and dependency versions.
 

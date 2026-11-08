@@ -1,6 +1,6 @@
 # Installation
 
-This page and current tutorials target the **Durable v0.1.0** API, require **Go 1.26+**, and depend on **Pulse v0.5.0**. This is release preparation, not a claim of publication: check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag status. The v0.1.0 commands below are unavailable until the corresponding tags are published. Historical performance pages retain their measured versions.
+This page explains the relationship between the **current untagged development source** and public installation versions. It requires **Go 1.26+**; the current root module depends on **Pulse v0.5.2**. The storage contract uses domain records without format numbers, wire `2`, snapshot envelope `2`, and Task top-level protocol `2` / payload_format `1`. Root development commit `v0.1.1-0.20261108162459-ccc90d4b53c3` has been resolved by `go list -m` and is downloadable, at full Hash `ccc90d4b53c318696328cf0fbed7f876e996b7a8`. It is a public commit pseudo-version, not a release tag. Submodule go.mod files pin that root dependency. SQLite/standalone PostgreSQL resolve to `v0.1.1-0.20261108164227-4babad07420f`; distributed resolves to `v0.0.0-20261108164227-4babad07420f`, at full Hash `4babad07420f7114729455eaf7fcff9ee5818002`. These are also development commits rather than tags; earlier source tests do not establish validation of the complete downloaded packages. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tags. Historical performance pages retain their measured versions.
 
 ## 1. Check prerequisites
 
@@ -10,43 +10,32 @@ go version
 
 Expect `go1.26.0` or later. Downloads need a Go module proxy or GitHub; check connectivity and `GOPROXY` first if they fail.
 
-## 2. Create a module and install
+## 2. Install the root development commit and validate submodule source
+
+The root module can use the resolved public development pin:
 
 ```sh
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@v0.1.0
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
 ```
 
-Install optional backends only as needed. The root module does not pull in database drivers when you do not use them:
+Install optional modules as needed using complete development pins resolved by `go list -m`:
 
 ```sh
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.1-0.20261108164227-4babad07420f
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.1-0.20261108164227-4babad07420f
+go get github.com/Luo-root/pulse-durable/distributed@v0.0.0-20261108164227-4babad07420f
 ```
 
-The repository contains three independent modules, requiring three separate release tags:
+A fresh consumer with `GOWORK=off` and no replace downloaded the modules, checked all four versions, assembled Store/Coordinator/worker interfaces, checked snapshot2, and passed `go test -race .` (4.858s). This validates independent consumption of public development pins, not a formal tag release or all backend real-database tests on the consumer package. See [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md) for source validation.
 
-| Module | Repository tag | go get version |
-| --- | --- | --- |
-| Root | `v0.1.0` | `@v0.1.0` |
-| SQLite | `sqlitestore/v0.1.0` | `@v0.1.0` |
-| PostgreSQL | `postgresstore/v0.1.0` | `@v0.1.0` |
+Root and submodules publish separately; a root pin does not automatically publish submodules. See [SQLite](sqlite.md), [PostgreSQL](postgresql.md), and the [distributed entry point](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md) for current usage.
 
-The root tag does not publish submodules automatically. This describes naming only; it does not create or publish tags. See [SQLite](sqlite.md) and [PostgreSQL](postgresql.md) for complete usage.
+### Historical development pins
 
-### Pre-release development pin alternative
-
-If target tags are not yet published, these public development pins were previously verified to resolve. They are older development snapshots, not v0.1.0 release-install acceptance, and may lack fixes in the current source:
-
-```sh
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3
-```
-
-Validate the current checkout with the temporary `go.work` in [Contributing](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md), without local `replace` directives in release dependencies.
+Older development pins do not provide the current contract and are not for current examples. Historical performance pages retain their measured versions; use the downloadable root development commit above for this contract.
 
 ## 3. Inspect dependencies
 
@@ -54,7 +43,7 @@ Validate the current checkout with the temporary `go.work` in [Contributing](htt
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-A new module using target release installation should resolve Durable `v0.1.0` and Pulse `v0.5.0`; development pins resolve to their pseudo-versions. Existing projects may retain higher dependencies through Go module version selection: inspect and validate the actual combination. Do not immediately run `go mod tidy` without source imports, as it removes unused dependencies.
+Root development installation should resolve `v0.1.1-0.20261108162459-ccc90d4b53c3` and Pulse `v0.5.2`; a source workspace may point root to its local checkout. Submodule go.mod files pin this root version; complete submodules resolve to the development versions above. Existing projects may retain higher dependencies through Go module version selection: inspect and validate the actual combination. Do not immediately run `go mod tidy` without source imports, as it removes unused dependencies.
 
 Temporarily disable workspaces for an independent check. PowerShell:
 
