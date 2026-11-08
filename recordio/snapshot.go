@@ -14,18 +14,18 @@ import (
 const snapshotVersion = snapshotfmt.Version
 
 type snapshotWire struct {
-	Version int               `json:"version"`
-	Record  durable.RunRecord `json:"record"`
+	Version int            `json:"version"`
+	Record  snapshotRecord `json:"record"`
 }
 
-// EncodeSnapshot 编码任意修订，不归一化 nil 容器
-// 或空 Data。快照版本独立于 RunRecord.Format。身份、
-// 模式及修订号验证仍由调用方负责。
+// EncodeSnapshot 通过固定 DTO 编码任意修订，不归一化 nil 容器或空 Data。
+// 封装版本只属于 recordio；RunRecord 不携带格式开关。身份和领域语义
+// 仍由调用方校验，未知或损坏的旧封装不会自动重写。
 func EncodeSnapshot(record durable.RunRecord) ([]byte, error) {
 	if !validMetadata(record) {
 		return nil, errors.New("recordio: snapshot metadata is not UTF-8")
 	}
-	data, err := snapshotfmt.Encode(record)
+	data, err := snapshotfmt.Encode(snapshotRecordFromDomain(record))
 	if err != nil {
 		return nil, errors.New("recordio: encode snapshot failed")
 	}
@@ -56,10 +56,11 @@ func DecodeSnapshot(data []byte) (durable.RunRecord, error) {
 	if wire.Version != snapshotVersion {
 		return durable.RunRecord{}, errors.New("recordio: unsupported snapshot version")
 	}
-	if !validMetadata(wire.Record) {
+	record := wire.Record.record()
+	if !validMetadata(record) {
 		return durable.RunRecord{}, invalid
 	}
-	return wire.Record, nil
+	return record, nil
 }
 
 // token 级验证先于 Unmarshal，因为 encoding/json 原本会

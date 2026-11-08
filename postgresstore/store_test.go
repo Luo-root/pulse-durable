@@ -215,5 +215,5 @@ func runChildBusy(dsn, runID string) error {
 }
 
 func testRecord(runID string, revision uint64, blob []byte) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: runID, Revision: revision, Version: "v1", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "g", Nodes: map[string]durable.NodeRecord{"node": {NodeID: "node", Attempt: "attempt", Reason: "completed", Outputs: []durable.ValueRecord{{Name: "blob", TypeID: "bytes", Version: "v1", State: "ready", Data: blob}}}}}}}
+	return durable.RunRecord{RunID: runID, Revision: revision, Version: "v1", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "g", Nodes: map[string]durable.NodeRecord{"node": {NodeID: "node", Attempt: "attempt", Reason: "completed", Outputs: []durable.ValueRecord{{Name: "blob", TypeID: "bytes", Version: "v1", State: "ready", Data: blob}}}}}}}
 }

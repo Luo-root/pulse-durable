@@ -51,7 +51,7 @@ func acquire(t *testing.T, s *Store, id string) durable.Session {
 }
 func record(id string, rev uint64) durable.RunRecord {
 	d := fmt.Sprintf("%x", sha256.Sum256([]byte("inputs")))
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: id, Revision: rev, Version: "v1", Definition: d, Inputs: d, RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "graph", Inputs: d, Nodes: map[string]durable.NodeRecord{}}}}
+	return durable.RunRecord{RunID: id, Revision: rev, Version: "v1", Definition: d, Inputs: d, RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "graph", Inputs: d, Nodes: map[string]durable.NodeRecord{}}}}
 }
 
 type captureStore struct {

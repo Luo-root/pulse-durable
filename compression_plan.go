@@ -112,8 +112,8 @@ func (p HistoryCompressionPlan) Validate(q HistoryCompressionRequest) error {
 // PlanHistoryCompression 重新核对当前摘要与事实，生成候选和保护集合。
 // 它不删除任何对象；恢复高水位与执行事务完成前始终 Executable=false。
 func PlanHistoryCompression(record RunRecord, request HistoryCompressionRequest) (HistoryCompressionPlan, error) {
-	if request.Validate() != nil || record.RunID != request.RunID || record.Revision == 0 || record.Format != SemanticRecordFormat {
-		return HistoryCompressionPlan{}, fmt.Errorf("%w: compression requires a valid format 3 record", ErrInvalid)
+	if request.Validate() != nil || record.RunID != request.RunID || record.Revision == 0 || !hasCompleteSemanticEvidence(record) {
+		return HistoryCompressionPlan{}, fmt.Errorf("%w: compression requires a complete semantic evidence component", ErrInvalid)
 	}
 	if request.ThroughRevision != record.Revision {
 		return HistoryCompressionPlan{}, ErrConflict

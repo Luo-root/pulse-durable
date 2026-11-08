@@ -56,14 +56,14 @@ func classify(err error) string {
 
 ## 保存结果不确定
 
-Save 报错有两种可能：
+`Initialize` / `Apply` 报错有两种可能：
 
 1. **没有提交**：磁盘或后端仍保留旧记录，节点尚未确认。
 2. **已经提交**：记录已更新，只是在随后的同步或确认步骤报错。
 
-Runtime 停止本次执行，不把 proposed record 当成自己的已确认内存状态，不自动回滚或重复 Save。不要据此用旧记录覆盖后端，也不要盲目重试旧 expectedRevision。
+Runtime 停止本次执行，不把 proposed record 当成自己的已确认内存状态，不自动回滚或重复 `Initialize` / `Apply`。不要据此用旧记录覆盖后端，也不要盲目重试旧 expectedRevision。
 
-处理原因后，按上节先确认记录前提。已有有效且兼容记录时，新建或复用 Runtime 调用 Resume，重新 Load 后按终态和剩余预算复用成果或继续未确认节点。首次 Save 报错也可能已经建立记录；只有核对原存储与身份并确认首次记录未建立，才继续 Run。Save 返回错误本身不能证明记录不存在，也不能证明某个业务动作必须重做或不重做。
+处理原因后，按上节先确认记录前提。已有有效且兼容记录时，新建或复用 Runtime 调用 Resume，重新 Load 后按终态和剩余预算复用成果或继续未确认节点。首次 `Initialize` 报错也可能已经建立记录；只有核对原存储与身份并确认首次记录未建立，才继续 Run。`Initialize` / `Apply` 返回错误本身不能证明记录不存在，也不能证明某个业务动作必须重做或不重做。
 
 已确认成果不会因为后续错误而回滚。关闭 Session 失败也会作为 CheckpointError 与返回错误合并；即使实际 Execution 已完成，Runtime 调用仍可能因收尾错误返回失败。此时应处理返回错误并查明存储/所有权状态，不能仅按 Snapshot 的 completed 判定整个调用无误。
 

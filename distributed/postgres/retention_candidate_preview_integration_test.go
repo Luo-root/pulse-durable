@@ -134,7 +134,9 @@ VALUES($1,$2,$3,$4,'{}'::jsonb,'succeeded',1,$5,$6,$7,$8,$8,$8)`, ns, "run-reten
 	if err != nil {
 		t.Fatal(err)
 	}
-	previewArgs := map[string]any{"dry_run_id": "readonly-retention-1", "namespace": ns, "policy_version": policy.PolicyVersion, "policy": wirePolicy, "policy_digest": policyDigest, "observed_from": now.Add(-time.Minute), "observed_through": now.Add(time.Minute), "cursor": d.RetentionCursor{}, "limit": uint64(10)}
+	// dry_run_id 是全库主键；与 namespace 一样按本轮隔离，保证同一专用库
+	// 重跑时不会命中上一轮其他 namespace 的预览绑定。
+	previewArgs := map[string]any{"dry_run_id": "readonly-retention-" + suffix, "namespace": ns, "policy_version": policy.PolicyVersion, "policy": wirePolicy, "policy_digest": policyDigest, "observed_from": now.Add(-time.Minute), "observed_through": now.Add(time.Minute), "cursor": d.RetentionCursor{}, "limit": uint64(10)}
 	if _, err = c.retentionCall(ctx, "retention_policy_preview", previewArgs, true); err != nil {
 		t.Fatal("seed policy preview binding", err)
 	}

@@ -300,10 +300,11 @@ func TestClaimedRestoreValidation(t *testing.T) {
 	opts := testOptions("run")
 	opts.BeforeStart = func(*pulse.Execution) error { t.Error("callback before validation"); return nil }
 	opts.OnEvent = func(Event) error { t.Error("event before validation"); return nil }
-	for _, mode := range []string{"version", "input", "format"} {
+	for _, mode := range []string{"version", "input", "partial-evidence"} {
 		t.Run(mode, func(t *testing.T) {
 			options := opts
 			inputs := in
+			want := OutcomeRejected
 			switch mode {
 			case "version":
 				options.Version = "other"
@@ -312,18 +313,24 @@ func TestClaimedRestoreValidation(t *testing.T) {
 				if err := pulse.Seed(&inputs, key, 2); err != nil {
 					t.Fatal(err)
 				}
-			case "format":
+			case "partial-evidence":
+				// MemoryStore 在 Load 就拒绝损坏证据，沿用 Store 错误的
+				// infrastructure 分类；这与成功加载后的兼容性拒绝不同。
+				want = OutcomeInfrastructure
 				record, err := session.Load(context.Background())
 				if err != nil {
 					t.Fatal(err)
 				}
-				record.Format = 999
+				record.HistorySummaries = []HistorySummary{{Kind: "partial"}}
 				record.Revision++
 				replaceMemoryFixture(session.Session, record)
 			}
 			_, outcome, err := rt.ResumeClaimed(context.Background(), session, g, inputs, options)
-			if err == nil || outcome != OutcomeRejected {
-				t.Fatalf("validation: %v %v", outcome, err)
+			if err == nil || outcome != want {
+				t.Fatalf("validation: got=%v want=%v error=%v", outcome, want, err)
+			}
+			if mode == "partial-evidence" && !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("load corruption lost its classification: %v", err)
 			}
 		})
 	}

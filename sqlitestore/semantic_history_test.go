@@ -1,5 +1,5 @@
-// 本文件验证 SQLite 读取边界的 Format3 证据闭合。
-// 格式3仅通过明确的测试夹具注入；不是公开首次物化或语义压缩执行验收。
+// 本文件验证 SQLite 读取边界的可选语义证据闭包。
+// 证据仅通过明确的测试夹具注入；不是公开首次物化或语义压缩执行验收。
 package sqlitestore
 
 import (
@@ -18,7 +18,6 @@ import (
 func semanticSnapshotFixture(t *testing.T, r durable.RunRecord) durable.RunRecord {
 	t.Helper()
 	sum := func(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
-	r.Format = durable.SemanticRecordFormat
 	payload := []byte{0xff, 0, 1}
 	r.HistorySummaries = []durable.HistorySummary{{Kind: "future", ID: "evidence", SourceRevision: r.Revision, SourceDigest: sum([]byte("source")), Payload: payload, Digest: sum(payload)}}
 	for revision := uint64(1); revision <= r.Revision; revision++ {
@@ -40,8 +39,8 @@ func semanticSnapshotFixture(t *testing.T, r durable.RunRecord) durable.RunRecor
 	return r
 }
 
-func TestFormat3SnapshotLoadHistoryAndCorruption(t *testing.T) {
-	for _, mode := range []string{"valid", "summary-digest", "index-gap", "legacy-evidence"} {
+func TestSemanticSnapshotLoadHistoryAndCorruption(t *testing.T) {
+	for _, mode := range []string{"valid", "summary-digest", "index-gap", "partial-evidence"} {
 		t.Run(mode, func(t *testing.T) {
 			s := openStore(t, filepath.Join(t.TempDir(), "semantic.sqlite"))
 			r, batches := runtimeBatches(t, "semantic")
@@ -68,8 +67,8 @@ func TestFormat3SnapshotLoadHistoryAndCorruption(t *testing.T) {
 				r.HistorySummaries[0].Payload[0] ^= 1
 			case "index-gap":
 				r.CommitIndex = r.CommitIndex[1:]
-			case "legacy-evidence":
-				r.Format = durable.RecordFormat
+			case "partial-evidence":
+				r.Provenance = nil
 			}
 			data, err := recordio.EncodeSnapshot(r)
 			if err != nil {

@@ -6,7 +6,7 @@ import (
 )
 
 func testSummaryRecord() RunRecord {
-	return RunRecord{Format: RecordFormat, RunID: "run", Revision: 7,
+	return RunRecord{RunID: "run", Revision: 7,
 		Attempts: map[string]AttemptRecord{
 			"a1": {Parent: "parent", NodeID: "node", Boundary: "b", Index: 1, Limit: 3, State: AttemptFailed},
 			"a2": {Parent: "parent", NodeID: "node", Boundary: "b", Index: 2, Limit: 3, State: AttemptFailed},

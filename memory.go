@@ -74,8 +74,9 @@ func (s *memorySession) Load(ctx context.Context) (RunRecord, error) {
 	if !anchored || r.RunID != s.runID || r.Revision == 0 {
 		return RunRecord{}, fmt.Errorf("%w: invalid memory checkpoint", ErrInvalidRecord)
 	}
-	// 未识别格式仍交给 Runtime 判为不兼容；已有证据则必须先阻止结构损坏。
-	if r.Format == SemanticRecordFormat || r.HistorySummaries != nil || r.CommitIndex != nil || r.Provenance != nil {
+	// 格式/编码版本由 recordio/backend 边界校验；只要记录携带任一语义证据组件，
+	// 就必须先验证三者形成完整闭包。
+	if hasAnySemanticEvidence(r) {
 		if err := ValidateSemanticEvidence(r); err != nil {
 			return RunRecord{}, fmt.Errorf("%w: invalid memory semantic evidence", ErrInvalidRecord)
 		}

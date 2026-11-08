@@ -87,6 +87,99 @@ func TestCanonicalImmutableAndDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 新封装的版本只在顶层出现；业务 Route 固定为四个字符串字段。
+// 同时对照 Prepare 的原始字节，避免只改封装却悄悄改变输入编码。
+func TestTaskEnvelopeKeepsVersionsOutsideRoute(t *testing.T) {
+	a, in := fixture(t)
+	prepared, err := durable.Prepare(context.Background(), a.Graph, in, a.Codecs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := taskFixture(t)
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(task.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if Protocol != 2 || PayloadFormat != 1 || len(envelope) != 8 || string(envelope["protocol"]) != "2" || string(envelope["payload_format"]) != "1" {
+		t.Fatal("unexpected envelope versions or fields")
+	}
+	var fields map[string]string
+	if err := json.Unmarshal(envelope["route"], &fields); err != nil {
+		t.Fatal(err)
+	}
+	route := task.Route()
+	want := map[string]string{"task_type": "test", "business_version": "v1", "definition": prepared.Definition, "manifest_digest": route.ManifestDigest}
+	if len(fields) != len(want) {
+		t.Fatal("route contains non-business fields")
+	}
+	for name, value := range want {
+		if fields[name] != value {
+			t.Fatalf("route field %s differs", name)
+		}
+	}
+	if !bytes.Equal(task.Payload(), prepared.Payload) || task.InputsFingerprint() != prepared.Inputs {
+		t.Fatal("envelope migration changed canonical input bytes")
+	}
+}
+
+// 这是旧协议的冻结字节：版本仍在 route 内，不能随着当前 DTO 重新编码。
+// 空清单和 [] 输入的摘要均有效，用于确保拒绝原因不依赖损坏的载荷。
+const legacyTaskWireV1 = `{"identity":{"namespace":"tenant","run_id":"run"},"route":{"task_type":"test","business_version":"v1","definition":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","manifest_digest":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","protocol":1,"record_format":2,"payload_format":1},"codec_manifest":[],"inputs":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945","payload":"W10=","payload_digest":"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"}`
+
+func TestTaskEnvelopeRejectsVersionsBeforeAssembly(t *testing.T) {
+	task := taskFixture(t)
+	r := &Registry{}
+	calls := 0
+	if _, err := r.Register("test", "v1", func() (Assembly, error) {
+		calls++
+		a, _ := fixture(t)
+		return a, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls = 0
+	wires := map[string][]byte{
+		"legacy frozen task":     []byte(legacyTaskWireV1),
+		"missing protocol":       bytes.Replace(task.Bytes(), []byte(`"protocol":2,`), nil, 1),
+		"missing payload format": bytes.Replace(task.Bytes(), []byte(`"payload_format":1,`), nil, 1),
+		// 即使顶层版本正确，旧的 route 字段也必须单独拒绝。
+		"route record format":  bytes.Replace(task.Bytes(), []byte(`"route":{`), []byte(`"route":{"record_format":2,`), 1),
+		"route protocol":       bytes.Replace(task.Bytes(), []byte(`"route":{`), []byte(`"route":{"protocol":2,`), 1),
+		"route payload format": bytes.Replace(task.Bytes(), []byte(`"route":{`), []byte(`"route":{"payload_format":1,`), 1),
+	}
+	for name, mutate := range map[string]func(*descriptor){
+		"old protocol":          func(d *descriptor) { d.Protocol = 1 },
+		"future protocol":       func(d *descriptor) { d.Protocol = 3 },
+		"zero payload format":   func(d *descriptor) { d.PayloadFormat = 0 },
+		"future payload format": func(d *descriptor) { d.PayloadFormat = 2 },
+	} {
+		d := task.data()
+		mutate(&d)
+		wire, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wires[name] = wire
+	}
+	for name, wire := range wires {
+		t.Run(name, func(t *testing.T) {
+			before := append([]byte(nil), wire...)
+			if parsed, err := ParseTask(wire); !errors.Is(err, ErrInvalid) || parsed != (Task{}) {
+				t.Fatalf("invalid envelope accepted: %v", err)
+			}
+			// 伪造私有 Task 以覆盖从存储恢复损坏任务时的 Resolve 入口；
+			// 该入口必须再次验证字节，不能因路由已注册而调用 Factory。
+			if _, _, err := r.Resolve(context.Background(), Task{wire: string(wire), digest: hash(wire)}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("resolve accepted invalid envelope: %v", err)
+			}
+			if calls != 0 || !bytes.Equal(wire, before) {
+				t.Fatal("rejection assembled business or changed input bytes")
+			}
+		})
+	}
+}
+
 func TestCanonicalCorruptionAndLimits(t *testing.T) {
 	task := taskFixture(t)
 	for _, wire := range [][]byte{append(task.Bytes(), ' '), append([]byte(" "), task.Bytes()...), append(task.Bytes(), task.Bytes()...), bytes.Replace(task.Bytes(), []byte(`"identity":`), []byte(`"unknown":0,"identity":`), 1), bytes.Replace(task.Bytes(), []byte(`"run_id":"run"`), []byte(`"run_id":"run","run_id":"run"`), 1), bytes.Repeat([]byte("x"), MaxEnvelopeBytes+1)} {
@@ -97,8 +190,8 @@ func TestCanonicalCorruptionAndLimits(t *testing.T) {
 	for name, mutate := range map[string]func(*descriptor){
 		"payload digest":  func(d *descriptor) { d.Payload[0] ^= 1 },
 		"manifest digest": func(d *descriptor) { d.Manifest[0].Version = "2" },
-		"protocol":        func(d *descriptor) { d.Route.Protocol++ },
-		"record":          func(d *descriptor) { d.Route.RecordFormat++ },
+		"protocol":        func(d *descriptor) { d.Protocol++ },
+		"payload format":  func(d *descriptor) { d.PayloadFormat++ },
 		"long name":       func(d *descriptor) { d.Identity.RunID = strings.Repeat("x", MaxTextBytes+1) },
 		"utf8":            func(d *descriptor) { d.Identity.Namespace = "\xff" },
 		"payload size":    func(d *descriptor) { d.Payload = make([]byte, MaxPayloadBytes+1); d.PayloadDigest = hash(d.Payload) },
@@ -140,6 +233,22 @@ func TestRegistryExactRoutesAndBadPayload(t *testing.T) {
 	if _, err := r.Register("test", "v2", func() (Assembly, error) { a, _ := fixture(t); return a, nil }); err != nil {
 		t.Fatal(err)
 	}
+	// 能力集合与任务使用同一完整业务路由；返回的切片不能修改注册表。
+	caps := r.Capabilities()
+	wantCaps := map[Route]bool{route: true}
+	v2 := route
+	v2.BusinessVersion = "v2"
+	wantCaps[v2] = true
+	if len(caps) != len(wantCaps) {
+		t.Fatal("capability set differs from registered routes")
+	}
+	for _, capability := range caps {
+		if !wantCaps[capability] {
+			t.Fatal("unexpected capability")
+		}
+		delete(wantCaps, capability)
+	}
+	caps[0] = Route{}
 	a, in, err := r.Resolve(context.Background(), task)
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +258,7 @@ func TestRegistryExactRoutesAndBadPayload(t *testing.T) {
 		t.Fatal("typed nil round trip", err)
 	}
 	for name, mutate := range map[string]func(*descriptor){
+		"task type":  func(d *descriptor) { d.Route.TaskType = "absent" },
 		"business":   func(d *descriptor) { d.Route.BusinessVersion = "absent" },
 		"definition": func(d *descriptor) { d.Route.Definition = hash([]byte("other")) },
 		"codec": func(d *descriptor) {

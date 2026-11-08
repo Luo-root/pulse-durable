@@ -110,7 +110,7 @@ func (tx *recordTransaction) putManagedEntry(key managedEntryKey, expected, valu
 	return nil
 }
 func managedEntry(values []ValueRecord, name string) *ValueRecord {
-	// Format2 验证允许导入条目未排序。
+	// 保留记录中的条目顺序；不能以排序归一化替代精确旧值匹配。
 	for i := range values {
 		if values[i].Name == name {
 			return &values[i]

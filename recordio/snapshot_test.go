@@ -166,12 +166,12 @@ func TestSnapshotRejectsCorruption(t *testing.T) {
 	base := string(snapshotRoundTrip(t, durable.RunRecord{RunID: "PRIVATE_MARKER"}))
 	cases := []string{
 		"", "null", "[]", "{}", base + "{}", base + " PRIVATE_MARKER",
-		strings.Replace(base, `"version":1`, `"version":2`, 1),
-		strings.Replace(base, `"version":1`, `"version":null`, 1),
-		strings.Replace(base, `"version":1`, `"Version":1`, 1),
-		strings.Replace(base, `"version":1`, `"version":1,"version":1`, 1),
-		strings.Replace(base, `"version":1`, `"version":1,"vers\u0069on":1`, 1),
-		strings.Replace(base, `"version":1`, `"version":1,"PRIVATE_MARKER":0`, 1),
+		strings.Replace(base, `"version":2`, `"version":3`, 1),
+		strings.Replace(base, `"version":2`, `"version":null`, 1),
+		strings.Replace(base, `"version":2`, `"Version":2`, 1),
+		strings.Replace(base, `"version":2`, `"version":2,"version":2`, 1),
+		strings.Replace(base, `"version":2`, `"version":2,"vers\u0069on":2`, 1),
+		strings.Replace(base, `"version":2`, `"version":2,"PRIVATE_MARKER":0`, 1),
 		strings.Replace(base, `"record":{`, `"record":{"PRIVATE_MARKER":0,`, 1),
 		strings.Replace(base, `"run_id":"PRIVATE_MARKER"`, `"run_id":"a","run_id":"b"`, 1),
 		strings.Replace(base, `"run_id":"PRIVATE_MARKER"`, `"Run_ID":"PRIVATE_MARKER"`, 1),
@@ -208,8 +208,11 @@ func TestSnapshotRejectsCorruption(t *testing.T) {
 		duplicate := `{"x":` + string(scope) + `,"\u0078":` + string(scope) + `}`
 		cases = append(cases, strings.Replace(full, string(fields["scopes"]), duplicate, 1))
 	}
-	for _, field := range []string{"outputs", "nodes", "pending", "cursor", "state", "values", "data", "stream", "id", "generation", "bindings"} {
+	for _, field := range []string{"outputs", "nodes", "pending", "cursor", "state", "values", "data", "stream", "id", "generation"} {
 		needle := `"` + field + `":`
+		if !strings.Contains(full, needle) {
+			t.Fatalf("corruption target %q is absent from current snapshot", field)
+		}
 		cases = append(cases, strings.Replace(full, needle, needle+`null,"`+field+`":`, 1))
 	}
 	cases = append(cases,

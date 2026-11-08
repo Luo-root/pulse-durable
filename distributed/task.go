@@ -17,7 +17,10 @@ import (
 )
 
 const (
-	Protocol           = 1
+	// Protocol 标识任务封装的语法。版本 2 把边界版本移出业务 Route；
+	// 旧封装必须被拒绝，不能在解析时静默升级或重写。
+	Protocol = 2
+	// PayloadFormat 标识规范输入字节的编码；本次只改封装，输入字节仍为版本 1。
 	PayloadFormat      = 1
 	MaxTextBytes       = 256
 	MaxManifestEntries = 4096
@@ -46,19 +49,21 @@ type Identity struct {
 	RunID     string `json:"run_id"`
 }
 
-// Route 是精确能力，不是版本范围。ManifestDigest 覆盖
-// 完整有序的图键清单，包括内部键和流键。
+// Route 是精确业务能力，不是版本范围。ManifestDigest 覆盖
+// 完整有序的图键清单，包括内部键和流键。任务封装与输入编码版本
+// 只属于 descriptor 边界，不参与注册、查询或 worker 的业务能力匹配。
 type Route struct {
 	TaskType        string `json:"task_type"`
 	BusinessVersion string `json:"business_version"`
 	Definition      string `json:"definition"`
 	ManifestDigest  string `json:"manifest_digest"`
-	Protocol        int    `json:"protocol"`
-	RecordFormat    int    `json:"record_format"`
-	PayloadFormat   int    `json:"payload_format"`
 }
 
+// descriptor 是任务的私有传输边界：先验证封装和输入编码版本，
+// 再允许 Registry 组装业务。字段顺序也是规范字节的一部分。
 type descriptor struct {
+	Protocol      int                    `json:"protocol"`
+	PayloadFormat int                    `json:"payload_format"`
 	Identity      Identity               `json:"identity"`
 	Route         Route                  `json:"route"`
 	Manifest      []durable.CodecBinding `json:"codec_manifest"`
@@ -94,7 +99,21 @@ func NewTask(ctx context.Context, id Identity, taskType, version string, g *puls
 		return Task{}, ErrInvalid
 	}
 	m, _ := json.Marshal(p.CodecManifest)
-	d := descriptor{id, Route{taskType, version, p.Definition, hash(m), Protocol, durable.RecordFormat, PayloadFormat}, p.CodecManifest, p.Inputs, p.Payload, hash(p.Payload)}
+	d := descriptor{
+		Protocol:      Protocol,
+		PayloadFormat: PayloadFormat,
+		Identity:      id,
+		Route: Route{
+			TaskType:        taskType,
+			BusinessVersion: version,
+			Definition:      p.Definition,
+			ManifestDigest:  hash(m),
+		},
+		Manifest:      p.CodecManifest,
+		Inputs:        p.Inputs,
+		Payload:       p.Payload,
+		PayloadDigest: hash(p.Payload),
+	}
 	wire, err := json.Marshal(d)
 	if err != nil {
 		return Task{}, ErrInvalid
@@ -103,8 +122,9 @@ func NewTask(ctx context.Context, id Identity, taskType, version string, g *puls
 }
 
 // ParseTask 在任何构造函数或编解码器运行前限制并验证封装。
-// 它检查结构和校验和，不检查本地图与编解码器兼容性：Registry
-// 在向执行桥返回图和输入前验证后者。
+// Protocol 和 PayloadFormat 必须精确匹配当前边界；旧 route.record_format
+// 属于未知字段，直接拒绝且不改写传入字节。它检查结构和校验和，不检查
+// 本地图与编解码器兼容性：Registry 在向执行桥返回图和输入前验证后者。
 func ParseTask(wire []byte) (Task, error) {
 	if len(wire) == 0 || len(wire) > MaxEnvelopeBytes || !utf8.Valid(wire) {
 		return Task{}, ErrInvalid
@@ -115,12 +135,16 @@ func ParseTask(wire []byte) (Task, error) {
 	if dec.Decode(&d) != nil {
 		return Task{}, ErrInvalid
 	}
+	// 版本检查只读取封装，不调用 Factory 或输入编解码器。
+	if d.Protocol != Protocol || d.PayloadFormat != PayloadFormat {
+		return Task{}, ErrInvalid
+	}
 	canonical, err := json.Marshal(d)
 	if err != nil || !bytes.Equal(wire, canonical) {
 		return Task{}, ErrInvalid
 	}
 	r := d.Route
-	if !text(d.Identity.Namespace) || !text(d.Identity.RunID) || !text(r.TaskType) || !text(r.BusinessVersion) || r.Protocol != Protocol || r.PayloadFormat != PayloadFormat || r.RecordFormat != durable.RecordFormat || !fingerprint(r.Definition) || !fingerprint(d.Inputs) || !fingerprint(r.ManifestDigest) || !fingerprint(d.PayloadDigest) {
+	if !text(d.Identity.Namespace) || !text(d.Identity.RunID) || !text(r.TaskType) || !text(r.BusinessVersion) || !fingerprint(r.Definition) || !fingerprint(d.Inputs) || !fingerprint(r.ManifestDigest) || !fingerprint(d.PayloadDigest) {
 		return Task{}, ErrInvalid
 	}
 	if len(d.Payload) > MaxPayloadBytes || len(d.Manifest) > MaxManifestEntries || d.Manifest == nil || hash(d.Payload) != d.PayloadDigest {

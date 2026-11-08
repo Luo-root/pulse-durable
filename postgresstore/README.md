@@ -2,19 +2,23 @@
 
 ## 中文
 
-当前开发版固定根依赖 `v0.1.1-0.20261105231954-53869c8267d5`，无需本地 replace 即可独立构建。Load、历史读取与快照合成检查逻辑 Format3 的摘要、连续 CommitIndex 和 Provenance，并将证据损坏归为 `ErrInvalidRecord`。Initialize 仍只创建 Format2，数据库布局不变。首次物化与语义删除入口尚未提供；测试显式注入快照仅验读取边界，不作为压缩执行证明。
+本页描述当前未发布 checkout：普通 `Initialize` 生成 HistorySummaries/CommitIndex/Provenance 全 nil 的记录，任一证据组件出现就必须完整闭合。Load、历史读取与快照合成校验摘要、连续 CommitIndex 和 Provenance，并将证据损坏归为 `ErrInvalidRecord`；摘要与来源不是权限凭证。领域记录不携带格式号，业务 `Version` 保留；wire 为 `2`、snapshot envelope 为 `2`，旧字节明确拒绝并保留，不自动迁移、重签或重编码，物理 schema 版本另留在后端边界。
 
-可选 PostgreSQL 后端，实现 Durable `Store` / `Session`，使用 `pgx/v5` 与 `pgxpool`。目标 API 基线 **v0.1.0**，要求 **Go 1.26+**、**Pulse v0.5.0**。
+根包 `BuildHistoryCompressionBatch` 已实现权威记录重规划、完整旧对象精确 CAS 删除、同批 AppliedRevision/CommitIndex 与恢复闭包；这不表示本后端首次权威证据物化或完整语义压缩维护入口已交付。`PlanHistoryCompression` 仍只读且 `Executable=false`；首次物化与指定位置派生回放尚未完成，注入快照测试仅验读取边界。
 
-这是发版准备，不代表已发布。状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；根 `v0.1.0` 与子模块 `postgresstore/v0.1.0` tag 发布前，以下命令尚不可用：
+go.mod 已固定可下载根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3`，它包含本轮根包契约，是公开提交伪版本而非发布 tag。当前根与独立 PostgreSQL 源码实库及中英文教程三进程验证已通过；完整 postgresstore 开发 pin 为 `v0.1.1-0.20261108164227-4babad07420f`，已可下载并通过无 replace 的独立消费者构建与 race 检查；它不是发布 tag。
+
+可选 PostgreSQL 后端，实现 Durable `Store` / `Session`，使用 `pgx/v5` 与 `pgxpool`。当前 API 以源码 checkout 为准，要求 **Go 1.26+**、**Pulse v0.5.2**。
+
+当前公开开发提交不是正式 tag，安装命令如下；状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准：
 
 ```sh
-go get github.com/Luo-root/pulse-durable@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.1-0.20261108164227-4babad07420f
 ```
 
 - [PostgreSQL 完整教程](../site/guide/postgresql.md)：数据库与权限、环境变量 DSN、完整 Run/Resume 程序、读取持久化成果、Initialize/Apply/Load 和 Codec、连接与关闭。
-- [安装与版本](../site/guide/installation.md)：三 tag 命名、发布前开发 pin 备选。
+- [安装与版本](../site/guide/installation.md)：当前根开发 pin、子模块源码验证与发布边界。
 - [贡献指南](../CONTRIBUTING.md)：独立模块和源码工作区验证。根 `./...` 不包含本模块。
 
 初始化创建并严格检查专用 `pulse_durable` schema v3。每个 Session 在 Close 前占用一条池连接；跨 Store Acquire 的池等待和 advisory lock 检测默认合计最多 30 秒，调用方更短 deadline 优先。池耗尽超时是 `context.DeadlineExceeded`，不伪报 `ErrBusy`。解锁不确定则销毁连接，清理最多 5 秒。advisory lock 不是 lease/fencing、派发或自动接管；外部副作用仍需幂等。Initialize/Apply 提交错误不自动重试，应停止原调用、等待所有权释放并重新 Load。不要记录 DSN 或密码；先停止业务运行再关闭 Session/Store。
@@ -32,14 +36,18 @@ go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
 
 ## English
 
-The development module pins root `v0.1.1-0.20261105231954-53869c8267d5` and builds independently without a local replace. Load, exact history reads, and snapshot synthesis validate logical Format3 summaries, consecutive CommitIndex entries, and Provenance, reporting corrupt evidence as `ErrInvalidRecord`. Initialize still creates Format2, and the database layout is unchanged. First materialization and semantic deletion remain unavailable; explicitly injected snapshots test read boundaries only, not compression execution.
+This page describes the current unreleased checkout. Ordinary `Initialize` creates a record with nil HistorySummaries/CommitIndex/Provenance; any present evidence component requires complete closure. Load, exact history reads, and snapshot synthesis validate summaries, consecutive CommitIndex entries, and Provenance, reporting corrupt evidence as `ErrInvalidRecord`. Summaries and provenance grant no authority. Domain records have no format number; business `Version` remains. Wire is `2` and snapshot envelope is `2`; old bytes are explicitly rejected and preserved without automatic migration, re-signing, or re-encoding. Physical schema versions remain backend concerns.
 
-This optional PostgreSQL backend implements Durable `Store` / `Session` with `pgx/v5` and `pgxpool`. The target API baseline is **v0.1.0**, requiring **Go 1.26+**, **Pulse v0.5.0**.
+Root `BuildHistoryCompressionBatch` provides authoritative-record replanning, exact CAS deletion using complete old objects, same-batch AppliedRevision/CommitIndex, and recovery closure. This does not establish delivery of first authoritative backend evidence materialization or a complete semantic-compression maintenance entry point. `PlanHistoryCompression` remains read-only with `Executable=false`. First materialization and positioned derived replay remain unfinished; injected snapshots test read boundaries only.
 
-This is release preparation, not a claim of publication. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases). The commands above are unavailable until root `v0.1.0` and submodule `postgresstore/v0.1.0` tags are published.
+go.mod now pins downloadable root development commit `v0.1.1-0.20261108162459-ccc90d4b53c3`, which includes this round's root contract. It is a public commit pseudo-version, not a release tag. Current root and standalone PostgreSQL source passed real-database validation, including three-process runs of both language tutorials. The complete postgresstore development pin is `v0.1.1-0.20261108164227-4babad07420f`, downloadable and validated by independent consumer build/race checks without replace; it is not a release tag.
+
+This optional PostgreSQL backend implements Durable `Store` / `Session` with `pgx/v5` and `pgxpool`. The current API is defined by this source checkout, requiring **Go 1.26+**, **Pulse v0.5.2**.
+
+The public development commits above are installable and are not formal release tags. Check [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) for tag status.
 
 - [Complete PostgreSQL tutorial](../site/en/guide/postgresql.md): database permissions, environment DSN, complete Run/Resume program, persistent output reading, Initialize/Apply/Load and Codec, connections and shutdown.
-- [Installation and versions](../site/en/guide/installation.md): three tag names and pre-release development pin alternatives.
+- [Installation and versions](../site/en/guide/installation.md): current root development pin, submodule source validation, and release boundaries.
 - [Contributing](../CONTRIBUTING.md): independent-module and source-workspace validation. Root `./...` excludes this module.
 
 Initialization creates and strictly checks dedicated schema `pulse_durable` v3. Each Session occupies a pool connection until Close. Across Stores, Acquire pool waiting and advisory-lock detection share a default maximum of 30 seconds, with shorter caller deadlines taking precedence. Pool-exhaustion timeout is `context.DeadlineExceeded`, not fabricated `ErrBusy`. Uncertain unlock destroys the connection, with cleanup bounded to five seconds. Advisory locks are not leases/fencing, dispatch, or automatic takeover; external effects still require idempotency. Initialize/Apply commit errors are not automatically retried: stop the original call, wait for ownership release, and Load again. Never log DSNs or passwords; stop business execution before closing Sessions/Store.

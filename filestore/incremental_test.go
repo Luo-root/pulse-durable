@@ -12,7 +12,7 @@ import (
 )
 
 func incrementalSeed(id string) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: id, Revision: 1, Version: "1", Definition: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Inputs: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "g", Inputs: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Nodes: map[string]durable.NodeRecord{}}}}
+	return durable.RunRecord{RunID: id, Revision: 1, Version: "1", Definition: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Inputs: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "g", Inputs: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Nodes: map[string]durable.NodeRecord{}}}}
 }
 func TestIncrementalInitializationIsolationAndLegacy(t *testing.T) {
 	st, err := New(t.TempDir())

@@ -1,6 +1,6 @@
 # 安装
 
-本文与现行教程以目标 **Durable v0.1.0** 为 API 基线，需要 **Go 1.26+**，依赖 **Pulse v0.5.0**。这是发版准备，不代表已发布：tag 状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准；相应 tag 发布前，下列 v0.1.0 命令尚不可用。历史性能页保留测量时的版本。
+本文说明当前**未发 tag 的开发源码**与公开安装版本的关系，需要 **Go 1.26+**，当前根模块依赖 **Pulse v0.5.2**。现行存储契约包含无格式号领域记录、wire `2`、snapshot envelope `2` 与 Task 顶层 protocol `2` / payload_format `1`。本轮根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3` 已由 `go list -m` 解析并可下载，对应完整 Hash `ccc90d4b53c318696328cf0fbed7f876e996b7a8`；它是公开提交伪版本，不是发布 tag。子模块 go.mod 已固定该根依赖；SQLite/独立 PostgreSQL 已解析为 `v0.1.1-0.20261108164227-4babad07420f`，distributed 为 `v0.0.0-20261108164227-4babad07420f`，对应完整 Hash `4babad07420f7114729455eaf7fcff9ee5818002`。这些同为开发提交而非 tag；此前源码测试不等于完整下载包已验证。tag 状态以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 为准。历史性能页保留测量时的版本。
 
 ## 1. 检查前置条件
 
@@ -10,43 +10,32 @@ go version
 
 预期 `go1.26.0` 或更新版本。下载模块需要访问 Go 模块代理或 GitHub；失败时先检查网络与 `GOPROXY`。
 
-## 2. 创建模块并安装
+## 2. 安装根开发提交与验证子模块源码
+
+根模块可使用已解析的公开开发 pin：
 
 ```sh
 mkdir durable-quickstart
 cd durable-quickstart
 go mod init example.com/durable-quickstart
-go get github.com/Luo-root/pulse-durable@v0.1.0
+go get github.com/Luo-root/pulse-durable@v0.1.1-0.20261108162459-ccc90d4b53c3
 ```
 
-可选后端按需安装，不使用它们时根模块不会引入数据库驱动：
+按需安装可选模块，完整开发 pin 已由 `go list -m` 解析：
 
 ```sh
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.0
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.0
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.1-0.20261108164227-4babad07420f
+go get github.com/Luo-root/pulse-durable/postgresstore@v0.1.1-0.20261108164227-4babad07420f
+go get github.com/Luo-root/pulse-durable/distributed@v0.0.0-20261108164227-4babad07420f
 ```
 
-仓库包含三个独立模块，因此发布需分别提供三个 tag：
+全新消费者在 `GOWORK=off`、无 replace 下完成下载、四版本核对、Store/Coordinator/worker 接口装配与 snapshot2 检查，`go test -race .` 通过（4.858s）。这是公开开发 pin 的独立消费验证，不是正式 tag 发版或对消费者包运行全部后端实库测试。源码验证见[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)。
 
-| 模块 | 仓库 tag | go get 版本 |
-| --- | --- | --- |
-| 根模块 | `v0.1.0` | `@v0.1.0` |
-| SQLite | `sqlitestore/v0.1.0` | `@v0.1.0` |
-| PostgreSQL | `postgresstore/v0.1.0` | `@v0.1.0` |
+根与子模块分别发布，根 pin 不会自动发布子模块。当前使用见 [SQLite](sqlite.md)、[PostgreSQL](postgresql.md) 与[分布式入口](https://github.com/Luo-root/pulse-durable/blob/main/distributed/README.md)。
 
-根 tag 不会自动发布子模块。这里只说明命名，不执行 tag 创建或发布。完整用法见 [SQLite](sqlite.md) 和 [PostgreSQL](postgresql.md)。
+### 历史开发 pin
 
-### 发布前开发 pin 备选
-
-如果目标 tag 尚未发布，可选择此前已验证可解析的公开开发 pin；这是旧开发快照，不是 v0.1.0 发布安装验收，也不保证包含当前源码的全部修正：
-
-```sh
-go get github.com/Luo-root/pulse-durable@v0.0.0-20261023040750-1b397e91c878
-go get github.com/Luo-root/pulse-durable/sqlitestore@v0.0.0-20261023051404-bc57abd1d7c3
-go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc57abd1d7c3
-```
-
-验证当前 checkout 时，按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)使用临时 `go.work`，不在发布依赖中加入本地 `replace`。
+旧开发 pin 不提供当前契约，不用于现行示例。历史性能页面保留当时测量版本；当前根开发 pin 以上述可下载提交为准。
 
 ## 3. 核对依赖
 
@@ -54,7 +43,7 @@ go get github.com/Luo-root/pulse-durable/postgresstore@v0.0.0-20261023051404-bc5
 go list -m github.com/Luo-root/pulse-durable github.com/Luo-root/pulse
 ```
 
-目标发布安装的新模块预期 Durable `v0.1.0`、Pulse `v0.5.0`；使用开发 pin 时预期对应伪版本。已有项目可能通过 Go 模块版本选择保留更高的依赖，须核对并验证实际组合。安装后不要立即 `go mod tidy`：尚无源码导入时它会移除未使用依赖。
+当前根开发安装应解析 `v0.1.1-0.20261108162459-ccc90d4b53c3`、Pulse `v0.5.2`；工作区验证时根模块可指向本地 checkout。子模块 go.mod 已固定该根 pin，完整子模块按上面的开发版本解析。已有项目可能通过 Go 模块版本选择保留更高的依赖，须核对并验证实际组合。安装后不要立即 `go mod tidy`：尚无源码导入时它会移除未使用依赖。
 
 独立核对模块时，可暂时关闭工作区。PowerShell：
 

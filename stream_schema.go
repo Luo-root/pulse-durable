@@ -128,8 +128,9 @@ func (d *definition) decodePayload(value ValueRecord) (pulse.CheckpointState, er
 	return pulse.CheckpointState{Name: value.Name, Type: typ, Value: output.Value}, err
 }
 
-// Bindings 包含尚未到达的 In，故只对固定输入编码；绑定身份自身参与指纹。
-// 无绑定时保持格式 1 的原指纹，固定值变化仍会在 OpenChild 处拒绝。
+// childFingerprint 的 In 只编码稳定绑定身份；即使绑定值已经到达，也不把
+// 该值加入指纹，因此 pending/ready 的到达时序不会改变同一次子图的身份。
+// 其余固定输入始终按值编码；没有 In 时直接使用固定输入的值指纹。
 func (s *runState) childFingerprint(loc location, req pulse.CheckpointChild, parentScope string) (string, error) {
 	if len(req.Bindings) == 0 {
 		return s.def.inputsFingerprint(loc, req.Inputs)

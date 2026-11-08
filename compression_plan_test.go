@@ -126,7 +126,7 @@ func TestHistoryCompressionRejectsOverlappingSummaryGroups(t *testing.T) {
 func BenchmarkHistoryCompressionIndependentRetryGroups(b *testing.B) {
 	for _, groups := range []int{128, 256, 512, 1024} {
 		b.Run(fmt.Sprint(groups), func(b *testing.B) {
-			r := RunRecord{Format: SemanticRecordFormat, RunID: "scale", Revision: 1, Attempts: make(map[string]AttemptRecord),
+			r := RunRecord{RunID: "scale", Revision: 1, Attempts: make(map[string]AttemptRecord),
 				CommitIndex: []CommitIndexEntry{{Revision: 1, BatchDigest: strings.Repeat("b", 64)}},
 				Provenance:  &Provenance{OriginRunID: "scale", OriginRevision: 1, OriginRecordDigest: strings.Repeat("c", 64), CompressionID: "scale"}}
 			r.Provenance.Digest = provenanceDigest("scale", 1, r.Provenance.OriginRecordDigest, "scale")
@@ -157,9 +157,9 @@ func BenchmarkHistoryCompressionIndependentRetryGroups(b *testing.B) {
 func TestHistoryCompressionPlanRejectsLegacyAndBudget(t *testing.T) {
 	record := compressionPlanRecord(t)
 	legacy := record
-	legacy.Format = RecordFormat
-	if _, err := PlanHistoryCompression(legacy, HistoryCompressionRequest{RunID: record.RunID, ThroughRevision: record.Revision, MaxObjects: 10, MaxBytes: 1 << 20}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("legacy record accepted: %v", err)
+	legacy.HistorySummaries = nil
+	if _, err := PlanHistoryCompression(legacy, HistoryCompressionRequest{RunID: record.RunID, ThroughRevision: record.Revision, MaxObjects: 10, MaxBytes: 1 << 20}); err == nil {
+		t.Fatalf("incomplete evidence record accepted")
 	}
 	request := HistoryCompressionRequest{RunID: record.RunID, ThroughRevision: record.Revision, MaxObjects: 1, MaxBytes: 1 << 20}
 	if _, err := PlanHistoryCompression(record, request); !errors.Is(err, ErrLimitExceeded) {

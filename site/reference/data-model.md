@@ -4,14 +4,13 @@
 
 ## RunRecord
 
-当前 `RecordFormat` 为 `2`，新建普通与流式运行均使用该版本。Runtime 的逻辑校验仍识别不含增量字段的普通格式 `1`，后续业务提交使用 `2`；这不表示新版耐久后端会读取或迁移旧物理 JSON/schema。新版 Initialize 只接受当前逻辑格式；旧物理格式必须明确拒绝并保留原数据，使用旧版读取或另建新目录/新库。旧 Runtime 会拒绝新格式，避免忽略流字段后覆盖。RunRecord 只包含可序列化数据，不保存函数、Go 调用栈或自动采集的业务错误文本。
+当前未发布 checkout 的 `RunRecord` 只包含可序列化的领域事实，不携带 schema、格式或能力版本号，不保存函数、Go 调用栈或自动采集的业务错误文本。`Version` 是宿主业务语义身份，仍须保留并在恢复时精确匹配。可组合证据不通过版本开关启用。
 
 | 字段 | 含义 |
 | --- | --- |
-| `Format int` | 记录格式版本，恢复时须为当前支持的格式 |
 | `RunID string` | 业务运行身份，须与 Session 和调用一致 |
 | `Revision uint64` | CAS 修订号，从 `1` 开始，不能为零 |
-| `Version string` | 宿主的业务语义版本 |
+| `Version string` | 宿主的业务语义版本，不是存储格式版本 |
 | `Definition string` | 完整定义的 SHA-256 指纹 |
 | `Inputs string` | 根输入的 SHA-256 指纹；不是可直接还原业务输入的输入副本 |
 | `RootScope string` | 根图的持久随机身份 |
@@ -20,19 +19,25 @@
 | `Streams map[string]StreamRecord` | 逻辑来源、读取组、消息日志及确认前沿 |
 | `Messages map[string]MessageAttemptRecord` | 每条输入的持久失败预算与处理状态 |
 | `Managed map[string]ManagedRecord` | 处理节点显式状态及已提交普通值 |
+| `HistorySummaries []HistorySummary` | 按 `(Kind, ID)` 唯一标识、Payload 带摘要的历史证据 |
+| `CommitIndex []CommitIndexEntry` | 从 revision 1 到 head 的连续批次承诺 |
+| `Provenance *Provenance` | 来源身份与摘要；不是权限凭证 |
+
+三个可选证据字段全为 nil 表示普通记录；任一出现都必须三者齐全，且摘要、连续索引与来源形成有效闭包。`ValidateSemanticEvidence` 校验证据完整性，不代替图、Codec、引用或所有权校验。摘要与来源不独立证明历史真实，也不授予恢复、删除或执行权限。不可变 `historySummaryRegistry` 统一分派摘要解码、应用标记、候选规划、恢复与普通修改检查，内置 Retry/Message 前缀两个 handler；未知 Kind 可在底层只读路径保留为 opaque 证据，但恢复或任何修改前必须拒绝。
 
 RootScope 与尝试身份是 16 字节随机数的十六进制表示。它们保存在记录中，不能按图路径、内存计数或进程启动顺序重新生成。恢复仍须由宿主提供原始外部输入。
+
+编码版本只属于边界：ChangeBatch wire `2`、无损 snapshot envelope `2`，Task 顶层 `protocol=2` / `payload_format=1`。Task 的业务 Route 仅含 TaskType、BusinessVersion、Definition、ManifestDigest。`RunRecord.Format`、`RecordFormat` / `RecordFormat3` / `SemanticRecordFormat` 与 `ChangeHeader.BatchFormat` / `LogicalFormat` 已删除；ChangeHeader 保留业务身份和修订转换。首版明确拒绝旧 wire/snapshot/Task 并保留原字节，不自动迁移、重签或重编码；物理后端 schema/layout 独立校验，需旧数据时继续使用旧版及隔离存储。
 
 ## ScopeRecord
 
 | 字段 | 含义 |
 | --- | --- |
 | `Graph string`、`Path string` | 定义中的图身份与静态挂载位置 |
-| `Inputs string` | 该作用域实际输入的指纹 |
+| `Inputs string` | 根作用域的输入指纹，或子图的稳定 In 绑定与固定输入值指纹 |
 | `Nodes map[string]NodeRecord` | 此作用域中已经确认的完整节点成果 |
-| `Bindings bool` | 子图指纹按稳定 In 绑定与固定值生成；false 保留原格式的输入值指纹 |
 
-根作用域的输入指纹与 RunRecord.Inputs 一致。子图作用域直接使用父节点当前最深 Attempt 的身份，挂载路径仅描述位置，不能代替一次父尝试的持久身份。
+根作用域的输入指纹与 RunRecord.Inputs 一致。子图仅使用当前稳定绑定指纹，不再有 `ScopeRecord.Bindings` 兼容标记或旧输入值指纹回退。子图作用域直接使用父节点当前最深 Attempt 的身份，挂载路径仅描述位置，不能代替一次父尝试的持久身份。
 
 同一张子图在不同挂载位置或不同父尝试中具有不同执行作用域。父尝试失败后，旧作用域留在记录中，但不再用于新的尝试。
 
@@ -99,11 +104,11 @@ ready 恢复时会核对 Codec ID/版本、摘要格式与实际字节校验和�
 
 真实失败的 `Finish` 将实际写端根尝试和该根全部已打开流的 failed 终态在同一次 Apply 中确认，不提前确认父 Sub 或父 Retry 的结论。Core 后续逐个 Finish 和 FailAttempt 只做严格幂等收尾；旧来源仍不得 Open、Send 或 Ack，位置、游标和代际不得改变。canceled 终态不是这条业务失败事实。
 
-旧格式 2 可能只保存部分 failed 终态而根仍 active。Resume 先完整校验全部历史，再以一次可靠 CAS 收敛仍有效作用域内同根全部端点和根失败；修复 Apply 报错立即停止，由下次 Load 认回。不修改 confirmed/failed 祖先下的旧成果，不猜修损坏历史；同根 failed 与 canceled/成功终态混合视为不一致。普通格式 1 仍按原兼容路径，不允许增量字段。该修复不增加存储字段，也不补充任何 Retry 预算。
+对于通过当前边界解码、仅部分来源为 failed 而根仍 active 的记录，Resume 先完整校验全部历史，再以一次可靠 CAS 收敛仍有效作用域内同根全部端点和根失败；修复 Apply 报错立即停止，由下次 Load 认回。不修改 confirmed/failed 祖先下的旧成果，不猜修损坏历史；同根 failed 与 canceled/成功终态混合视为不一致。该收敛不增加存储字段或 Retry 预算，也不允许读取旧 snapshot/wire。
 
 `MessageAttemptRecord` 保存输入来源/组/序号、处理父尝试、Index/Limit 和状态；重启不补预算。`ManagedRecord.State` 是显式完整快照，Values 是已到达普通值。消息输入 Ack、状态、普通值和输出消息在一次 typed ChangeBatch Apply 中原子确认；前置条件校验失败不发布批内任何变更，提交结果不确定时停止并由新会话 Load 裁决。Stop 显式结束读取义务，不伪装逐条 Ack。外部副作用仍需要业务幂等、事务或 outbox。
 
-每个 confirmed 消息尝试都必须对应以 Scope/Parent/NodeID 定位、归属字段相同的 `ManagedRecord`；反向也要求每个容器至少有一条同归属的 confirmed 消息。即使 State 和 Values 都为空，合法消息提交也保存这个带身份的容器。恢复若发现容器缺失或归属错误，会在恢复事件、Start、业务调用及 Revision/Generation 推进前拒绝，不把丢失的状态当作初始零值。手动 Ack 不创建消息尝试，不要求容器；尚未确认的 active/failed 消息也不要求已有容器，格式 1 的无消息记录仍可恢复。历史 confirmed 记录不因父尝试或祖先后来失败、输入流代际后来提升而损坏，但失败祖先下的成果不能复用。这些是记录完整性检查，不表示健康 filestore 会自行丢失容器，也不是对任意篡改的认证。
+每个 confirmed 消息尝试都必须对应以 Scope/Parent/NodeID 定位、归属字段相同的 `ManagedRecord`；反向也要求每个容器至少有一条同归属的 confirmed 消息。即使 State 和 Values 都为空，合法消息提交也保存这个带身份的容器。恢复若发现容器缺失或归属错误，会在恢复事件、Start、业务调用及 Revision/Generation 推进前拒绝，不把丢失的状态当作初始零值。手动 Ack 不创建消息尝试，不要求容器；尚未确认的 active/failed 消息也不要求已有容器，无消息的普通记录同样按当前字段不变量校验。历史 confirmed 记录不因父尝试或祖先后来失败、输入流代际后来提升而损坏，但失败祖先下的成果不能复用。这些是记录完整性检查，不表示健康 filestore 会自行丢失容器，也不是对任意篡改的认证。
 
 消息已确认、完整节点仍 active 时，根 `CheckpointAttempt.Values` 从同 Scope/Parent/NodeID 的 ManagedRecord.Values 解码普通成果（ready 或 skipped），恢复进 Core 的完整链暂存外帧，完整节点 Commit 后才发布执行槽。认回不增加修订号、不重新处理已 Ack 输入；失败祖先不允许认回。流引用、未声明或重复键、类型/编码版本错误和 pending 都被拒绝；Retry 及 OpenMessage 的嵌套 CheckpointAttempt.Values 始终为空。此接缝不增加存储字段。
 
@@ -146,11 +151,11 @@ type Session interface {
 
 Store 须并发安全，不同 RunID 可以独立使用。Acquire 检测到同一 RunID 已被持有时返回 `ErrBusy`，不等待该运行释放所有权；连接容量及网络检测仍可能需要等待，具体边界由后端说明。Session 从 Acquire 到 Close 独占该运行。PostgreSQL 的本地 pending 检查、30 秒申请上限及关闭清理边界见[存储指南](../guide/storage.md)。
 
-Load 校验完整性后返回隔离完整投影；仅无检查点时返回 `ErrNotFound`，不能把旧格式、损坏或权限错误当作不存在。Initialize 只在检查点不存在时原子发布 Revision `1` 的合法初始空执行状态，核对会话 RunID、当前逻辑格式、业务身份及空根作用域；不是导入历史记录的入口。业务通过 Runtime Run 构造初始状态，不应手写业务 records。
+Load 校验完整性后返回隔离完整投影；仅无检查点时返回 `ErrNotFound`，不能把旧格式、损坏或权限错误当作不存在。Initialize 只在检查点不存在时原子发布 Revision `1` 的合法初始空执行状态，核对会话 RunID、业务身份、空根作用域与初始记录不变量；不是导入历史记录的入口。业务通过 Runtime Run 构造初始状态，不应手写业务 records。
 
 Apply 是唯一普通写入口：typed ChangeBatch 原子核对身份、业务版本、expected/next revision 严格加一及精确对象前置条件，成功返回与批头精确匹配的 CommitAck。前置条件或 CAS 冲突返回 `ErrConflict`，不发布部分变更；uint64 修订号耗尽必须拒绝。没有兼容 Save、可选 DeltaSession、RequireDelta 或全量回退。
 
-`ChangeBatch.SnapshotSizeDelta(before RunRecord) (int64, error)` 为后端提供无损快照格式 1 的精确字节差额。它验证与 ApplyTo 相同的批头和对象前置条件，不修改记录，也不克隆全量状态。大小编码只处理变更对象；对象前置条件检查仍可能线性查找同组 State/Values 条目。调用方须独占且已完整验证 before；初始化/Load 时建立完整大小，确认后累加差额。nil/空容器、JSON 转义、base64 与 revision 位数均参与计数。字节差额不代表磁盘、WAL 或网络开销，不授予提交权，也不替代后端的服务端限额与 CAS。
+`ChangeBatch.SnapshotSizeDelta(before RunRecord) (int64, error)` 为后端提供无损 snapshot envelope `2` 的精确字节差额。它验证与 ApplyTo 相同的批头和对象前置条件，不修改记录，也不克隆全量状态。大小编码只处理变更对象；对象前置条件检查仍可能线性查找同组 State/Values 条目。调用方须独占且已完整验证 before；初始化/Load 时建立完整大小，确认后累加差额。nil/空容器、JSON 转义、base64 与 revision 位数均参与计数。字节差额不代表磁盘、WAL 或网络开销，不授予提交权，也不替代后端的服务端限额与 CAS。
 
 耐久后端保存初始快照、连续不可变批及权威 head。快照摘要、批 wire 摘要、父修订号和链锚点由后端验证与维护；物理链不属于 ChangeHeader。新会话必须权威加载并校验链，普通 Apply 不得每次重放整个历史或重写完整快照。Initialize 可以写完整初始快照；显式快照合成属于单独维护能力，不是普通提交的回退。
 
@@ -176,7 +181,7 @@ type HistoryAuditor interface {
 
 `AuditHistoryRequest` 指定 RunID；成功结果包含一致观察的 State，以及全部已提交 Snapshots/Batches/BatchBytes 计数，BatchBytes 包含批文件的寻址头。审计完整验证权威 head 引用的原始链、所有已提交快照及其锚点、两类索引，不采纳孤立文件，不创建 pin、不执行业务、不回收或修复数据。审计成本随全部保留历史增长；结果不覆盖观察后的写入。
 
-合成修订号 R 的新快照摘要独立于原提交链 `C(R)`，必须保留该锚点，不由新摘要重置链；发布只改变表示 generation/base，业务 revision/head 不变，后续 suffix 保留。所有历史修订、原快照与批全部保留，无 GC。保留链缺失或损坏是 `ErrInvalidRecord`，不能冒充 `ErrHistoryExpired`；后者为显式 retention 删除后的语义预留，`ErrPinned` 为保护历史阻止回收预留。未支持能力可用 `ErrUnsupportedCapability`，维护预算超限用 `ErrLimitExceeded`。物理合成不执行业务代码；业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成。
+合成修订号 R 的新快照摘要独立于原提交链 `C(R)`，必须保留该锚点，不由新摘要重置链；发布只改变表示 generation/base，业务 revision/head 不变，后续 suffix 保留。所有历史修订、原快照与批全部保留，无 GC。保留链缺失或损坏是 `ErrInvalidRecord`，不能冒充 `ErrHistoryExpired`；后者为显式 retention 删除后的语义预留，`ErrPinned` 为保护历史阻止回收预留。未支持能力可用 `ErrUnsupportedCapability`，维护预算超限用 `ErrLimitExceeded`。根包 `BuildHistoryCompressionBatch` 已提供权威记录重规划、完整旧对象精确 CAS 删除、同批 AppliedRevision/CommitIndex 和恢复闭包校验；`PlanHistoryCompression` 仍只读且 `Executable=false`。首次权威证据物化、distributed 语义压缩/floor/永久 receipt、retention 删除与指定位置 `ReplayCreateDerived` 尚未完成。物理合成、GC、retention、语义压缩与 Replay 是独立能力，详见[存储指南](../guide/storage.md)。
 
 FileStore 与独立 PostgreSQL 的全部维护操作使用运行独占锁，活跃 Session 返回 `ErrBusy`；SQLite 的 InspectStorage/LoadRevision 使用一致读事务，不需要 runlock，但 CompactStorage 排他。MemoryStore 在锁外重建、发布时校验 generation，仍不耐久。构建取消不发布；发布后错误或取消可能结果不确定，应重新 Inspect 核对 generation/base，不盲重试。distributed PostgreSQL 使用独立的 namespace-qualified 维护 API（Coordinator.InspectStorage/CompactStorage/FindMaintenance）、maintain 授权与 pin/receipt；当前无对外 LoadRevision，不能视为满足上述 root 接口。
 
@@ -188,7 +193,7 @@ MemoryStore 的零值可用，Initialize 复制初始记录，Apply 校验后仅
 
 FileStore 必须通过 `filestore.New` 创建。它使用每个 RunID 的 OS 文件锁，锁在 Close 或进程退出时释放，锁文件保留。提供 Windows，以及 Linux、macOS、FreeBSD、OpenBSD、NetBSD、DragonFly 的锁实现；其他平台拒绝取得会话，不退化为无锁运行。仍须使用支持所需锁与同目录原子替换的文件系统。
 
-FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `3`，旧 manifest `1`、`2` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。每个批文件包含固定 256 字节路由头与原 canonical wire，路由头保存父批及跳转引用并受 head 的摘要链保护；每次合成只追加一个快照和一个常量大小的 `.history` 索引节点。普通 Apply 写一个新批和小 head，不复制完整历史索引；精确读取通过索引寻址后只重放所选快照到目标的连续区间。SQLite 与独立 PostgreSQL 仍各自检查其当前物理布局；distributed PostgreSQL 使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 及安全属性检查，不维护递增物理 schema 版本链。布局不匹配只拒绝，不写入、删除或迁移旧数据，新版使用新库。逻辑记录 format `2` 与协调 protocol `1` 不因此改变。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
+FileStore 使用不可变首快照和批文件，以同目录同步和原子替换的小 `.head` 发布权威状态，不再以单个 `.json` 为权威。未被 head 引用的文件不能认作已提交；head 发布后确认失败可能造成提交结果不确定。当前 `.head` manifest 为物理格式 `3`，旧 manifest `1`、`2` 和旧 `.json` 均明确拒绝，不自动清除、修改或迁移；新版使用新目录。每个批文件包含固定 256 字节路由头与原 canonical wire，路由头保存父批及跳转引用并受 head 的摘要链保护；每次合成只追加一个快照和一个常量大小的 `.history` 索引节点。普通 Apply 写一个新批和小 head，不复制完整历史索引；精确读取通过索引寻址后只重放所选快照到目标的连续区间。SQLite 与独立 PostgreSQL 仍各自检查其当前物理布局；distributed PostgreSQL 使用固定 layout marker `pulse-durable-distributed-layout-v1`、catalog signature 及安全属性检查，不维护递增物理 schema 版本链。布局不匹配只拒绝，不写入、删除或迁移旧数据，新版使用新库。物理布局版本留在后端；固定 distributed marker 不改号，但旧 catalog signature 不匹配仍拒绝。当前边界使用 wire `2`、snapshot envelope `2`、Task protocol `2` / payload_format `1` 与 snapshot_budget_version `2`，不在领域记录或业务 Route 中添加版本号。单宿主保证不扩展为分布式租约、fencing 或断电持久性。增量写入也不承诺所有规模都更快，测量范围见[检查点成本](../guide/checkpoint-cost.md)。
 
 distributed mutation 的身份、结果凭据与诊断分开保存：永久 `mutation_guards`、独立 `mutation_receipts` 与诊断 `events`。`Coordinator.FindMutation(ctx, MutationQuery)` 匹配 Identity、Mutation ID/Digest、Operation 与闭区间 RequestedWindow；ExpectedEpoch/ExpectedRevision 可选指针 nil 表示未知，非 nil（含 0）精确匹配。`Found` 只裁决精确协调 mutation，不证明外部副作用或授予 lease/执行权限；`AbsentWithinWindow` 要求完整覆盖请求窗口；`Expired` 要求请求下界早于覆盖且观察已达到请求上界，未来上界会被拒绝。缺回执、缺席或过期均不证明从未提交，也不授权业务重放。
 

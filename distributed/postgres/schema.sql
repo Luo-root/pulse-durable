@@ -6,7 +6,7 @@ CREATE TABLE pulse_durable_distributed.runs(
  namespace text NOT NULL, run_id text NOT NULL, task bytea NOT NULL, digest text NOT NULL, route jsonb NOT NULL,
  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','blocked','succeeded','failed','canceled')),
  epoch bigint NOT NULL DEFAULT 0 CHECK(epoch>=0), revision numeric(20,0) NOT NULL DEFAULT 0 CHECK(revision>=0 AND revision<=18446744073709551615),
- record bytea, snapshot_digest text, head_chain text, root_scope text, snapshot_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_bytes BETWEEN 0 AND 16777216), snapshot_fixed_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_fixed_bytes>=0), snapshot_budget_version integer NOT NULL DEFAULT 1 CHECK(snapshot_budget_version=1), active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
+ record bytea, snapshot_digest text, head_chain text, root_scope text, snapshot_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_bytes BETWEEN 0 AND 16777216), snapshot_fixed_bytes bigint NOT NULL DEFAULT 0 CHECK(snapshot_fixed_bytes>=0), snapshot_budget_version integer NOT NULL DEFAULT 2 CHECK(snapshot_budget_version=2), active_log_bytes bigint NOT NULL DEFAULT 0 CHECK(active_log_bytes BETWEEN 0 AND 268435456), active_log_count bigint NOT NULL DEFAULT 0 CHECK(active_log_count BETWEEN 0 AND 100000), lease_id text, worker_id text, boot_id text, lease_until timestamptz,
  receipt_coverage_floor timestamptz NOT NULL DEFAULT statement_timestamp(), receipt_observed_through timestamptz,
  representation_generation bigint NOT NULL DEFAULT 1 CHECK(representation_generation>0), active_snapshot bigint, maintenance_watermark timestamptz,
  history_floor numeric(20,0) NOT NULL DEFAULT 1 CHECK(history_floor BETWEEN 1 AND 18446744073709551615), history_gc_through numeric(20,0) NOT NULL DEFAULT 1 CHECK(history_gc_through>=1),
@@ -43,7 +43,7 @@ DECLARE
  ns text:=a->>'namespace'; rid text:=a->>'run_id'; r pulse_durable_distributed.runs; l pulse_durable_distributed.leases; t timestamptz;
  first_sample timestamptz; needed text; b bytea; d jsonb; j jsonb; rev numeric; result jsonb:='[]'::jsonb; slot integer:=0; ttl bigint; lid text; changed boolean:=false;
 BEGIN
- IF jsonb_typeof(a->'snapshot_budget_version') IS DISTINCT FROM 'number' OR a->>'snapshot_budget_version' IS DISTINCT FROM '1' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unsupported snapshot budget client'; END IF;
+ IF jsonb_typeof(a->'snapshot_budget_version') IS DISTINCT FROM 'number' OR a->>'snapshot_budget_version' IS DISTINCT FROM '2' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unsupported snapshot budget client'; END IF;
  IF NOT check_schema() THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unsafe schema or credentials'; END IF;
  needed:=CASE WHEN op IN ('get','list','find','receipt') THEN 'query' WHEN op IN ('resolve','claim','reject','load','renew','initialize','apply','finish','release','block') THEN 'worker' WHEN op='submit' THEN 'submit' WHEN op='cancel' THEN 'cancel' END;
  IF needed IS NULL THEN RAISE EXCEPTION USING ERRCODE='42501',MESSAGE='unknown operation'; END IF;
@@ -55,14 +55,18 @@ BEGIN
   IF b IS NULL OR octet_length(b) NOT BETWEEN 1 AND 8388608 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid'; END IF;
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid JSON'; END IF;
   d:=convert_from(b,'UTF8')::jsonb;
+  -- 协议/输入编码版本属于任务封装；route 仅作为业务装配身份。
+  IF jsonb_typeof(d) IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(d))<>8 OR NOT(d ?& ARRAY['protocol','payload_format','identity','route','codec_manifest','inputs','payload','payload_digest'])
+   OR jsonb_typeof(d->'route') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(d->'route'))<>4 OR NOT(d->'route' ?& ARRAY['task_type','business_version','definition','manifest_digest'])
+   OR jsonb_typeof(d->'identity') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(d->'identity'))<>2 OR NOT(d->'identity' ?& ARRAY['namespace','run_id'])
+  THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unsupported task envelope'; END IF;
   IF jsonb_typeof(d->'identity'->'namespace') IS DISTINCT FROM 'string' OR jsonb_typeof(d->'identity'->'run_id') IS DISTINCT FROM 'string'
    OR jsonb_typeof(d->'route'->'task_type') IS DISTINCT FROM 'string' OR coalesce(octet_length(d->'route'->>'task_type'),0) NOT BETWEEN 1 AND 256
    OR jsonb_typeof(d->'route'->'business_version') IS DISTINCT FROM 'string' OR coalesce(octet_length(d->'route'->>'business_version'),0) NOT BETWEEN 1 AND 256
    OR jsonb_typeof(d->'route'->'definition') IS DISTINCT FROM 'string' OR jsonb_typeof(d->'inputs') IS DISTINCT FROM 'string'
    OR d->'identity'->>'namespace' IS DISTINCT FROM ns OR d->'identity'->>'run_id' IS DISTINCT FROM rid OR rid IS NULL OR octet_length(rid) NOT BETWEEN 1 AND 256
-   OR jsonb_typeof(d->'route'->'protocol') IS DISTINCT FROM 'number' OR jsonb_typeof(d->'route'->'record_format') IS DISTINCT FROM 'number' OR jsonb_typeof(d->'route'->'payload_format') IS DISTINCT FROM 'number'
-   OR d->'route'->>'protocol' IS DISTINCT FROM '1' OR d->'route'->>'payload_format' IS DISTINCT FROM '1'
-   OR d->'route'->>'record_format' IS DISTINCT FROM '2'
+   OR jsonb_typeof(d->'protocol') IS DISTINCT FROM 'number' OR jsonb_typeof(d->'payload_format') IS DISTINCT FROM 'number'
+   OR d->>'protocol' IS DISTINCT FROM '2' OR d->>'payload_format' IS DISTINCT FROM '1'
    OR d->'route'->>'definition' !~ '^[0-9a-f]{64}$' OR d->>'inputs' !~ '^[0-9a-f]{64}$'
    OR jsonb_typeof(d->'route'->'manifest_digest') IS DISTINCT FROM 'string' OR d->'route'->>'manifest_digest' !~ '^[0-9a-f]{64}$'
    OR jsonb_typeof(d->'payload') IS DISTINCT FROM 'string' OR jsonb_typeof(d->'payload_digest') IS DISTINCT FROM 'string'
@@ -209,7 +213,7 @@ BEGIN
   IF r.active_log_bytes+octet_length(b)>268435456 OR r.active_log_count>=100000 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='checkpoint log budget exhausted'; END IF;
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid batch JSON'; END IF;
   j:=convert_from(b,'UTF8')::jsonb; d:=convert_from(r.task,'UTF8')::jsonb;
-  IF j->>'version' IS DISTINCT FROM '1' OR j->'header'->>'batch_format' IS DISTINCT FROM '1' OR j->'header'->>'logical_format' IS DISTINCT FROM '2'
+  IF j->>'version' IS DISTINCT FROM '2'
    OR j->'header'->>'run_id' IS DISTINCT FROM rid OR j->'header'->>'business_version' IS DISTINCT FROM d->'route'->>'business_version' OR j->'header'->>'definition_digest' IS DISTINCT FROM d->'route'->>'definition' OR j->'header'->>'inputs_digest' IS DISTINCT FROM d->>'inputs' OR j->'header'->>'root_scope' IS DISTINCT FROM r.root_scope
    OR j->'header'->>'expected_revision' IS DISTINCT FROM rev::text OR j->'header'->>'revision' IS DISTINCT FROM (rev+1)::text
    OR a->>'next_chain' IS DISTINCT FROM encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(r.head_chain,'hex')||sha256(b)||decode(lpad(to_hex(trunc((rev+1)/4294967296)::bigint),8,'0')||lpad(to_hex(mod(rev+1,4294967296)::bigint),8,'0'),'hex')),'hex') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='batch identity'; END IF;
@@ -223,12 +227,12 @@ BEGIN
   IF NOT (convert_from(b,'UTF8') IS JSON OBJECT WITH UNIQUE KEYS) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid JSON'; END IF;
   j:=convert_from(b,'UTF8')::jsonb; d:=convert_from(r.task,'UTF8')::jsonb;
   PERFORM snapshot_value_bytes(j,'snapshot',false);
-  IF j->>'version' IS DISTINCT FROM '1' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot version'; END IF;
+  IF j->>'version' IS DISTINCT FROM '2' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot version'; END IF;
   j:=j->'record';
   IF jsonb_typeof(j->'run_id') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'version') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'definition') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'inputs') IS DISTINCT FROM 'string' OR jsonb_typeof(j->'root_scope') IS DISTINCT FROM 'string'
    OR j->>'run_id' IS DISTINCT FROM rid OR j->>'version' IS DISTINCT FROM d->'route'->>'business_version' OR j->>'definition' IS DISTINCT FROM d->'route'->>'definition' OR j->>'inputs' IS DISTINCT FROM d->>'inputs'
-   OR j->>'format' IS DISTINCT FROM d->'route'->>'record_format' OR (j->>'revision')::numeric IS DISTINCT FROM rev+1
-   OR jsonb_typeof(j->'revision') IS DISTINCT FROM 'number' OR jsonb_typeof(j->'format') IS DISTINCT FROM 'number'
+   OR (j->>'revision')::numeric IS DISTINCT FROM rev+1
+   OR jsonb_typeof(j->'revision') IS DISTINCT FROM 'number'
    OR j->>'revision' !~ '^[1-9][0-9]*$' OR coalesce(j->>'root_scope','')='' OR jsonb_typeof(j->'scopes') IS DISTINCT FROM 'object' OR jsonb_typeof(j->'attempts') IS DISTINCT FROM 'object'
   THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid record'; END IF;
   IF (SELECT count(*) FROM jsonb_object_keys(j->'scopes'))<>1 OR j->'scopes'->(j->>'root_scope') IS NULL OR j->'attempts'<>'{}'::jsonb OR j->'streams' NOT IN ('null'::jsonb,'{}'::jsonb) OR j->'messages' NOT IN ('null'::jsonb,'{}'::jsonb) OR j->'managed' NOT IN ('null'::jsonb,'{}'::jsonb) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noninitial state'; END IF;

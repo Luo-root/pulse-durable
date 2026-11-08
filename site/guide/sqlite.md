@@ -1,8 +1,8 @@
 # SQLite 使用教程
 
-本文描述当前开发分支的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.0**，不代表已发布版本。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一实现新协议，没有可选增量模式或整记录写入回退。示例使用 `durable.New` 和 Runtime Run/Resume，无需额外开关。
+本文描述当前开发分支的破坏性 `Initialize`/`Apply` API，需要 **Go 1.26+**、**Pulse v0.5.2**，不代表已发布版本。旧版 `Session.Save` 和 `RunOptions.RequireDelta` 不再提供；所有官方后端统一实现新协议，没有可选增量模式或整记录写入回退。示例使用 `durable.New` 和 Runtime Run/Resume，无需额外开关。
 
-本页尚未提供新 API 的已发布安装 pin；旧版 v0.1.0 不能代替此开发分支。请按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout，并以 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases) 核实发布状态。安装 pin 将随跨模块发版统一更新，不能把下面程序当作旧 tag 的已验证示例。
+sqlitestore/go.mod 已固定可下载根开发提交 `v0.1.1-0.20261108162459-ccc90d4b53c3`，包含本轮根包契约，是开发提交而非 tag。当前根与 SQLite 源码实库、中英文教程三进程验证均已通过；完整 sqlitestore 开发 pin 为 `v0.1.1-0.20261108164227-4babad07420f`，已可下载并通过无 replace 的独立消费者构建与 race 检查；它不是正式 tag。按[贡献指南](https://github.com/Luo-root/pulse-durable/blob/main/CONTRIBUTING.md)验证本地 checkout，tag 状态见 [GitHub Releases](https://github.com/Luo-root/pulse-durable/releases)。
 
 ## 1. 安装独立模块
 
@@ -12,7 +12,7 @@
 mkdir durable-sqlite
 cd durable-sqlite
 go mod init example.com/durable-sqlite
-# 新 API 尚无本页可用的发布 pin；先按贡献指南配置本地源码工作区。
+go get github.com/Luo-root/pulse-durable/sqlitestore@v0.1.1-0.20261108164227-4babad07420f
 ```
 
 SQLite 驱动为纯 Go `modernc.org/sqlite v1.60.1`，内嵌 SQLite 3.53.4，不需要单独安装 SQLite 服务。不要把本例数据库与业务表混用：初始化会严格检查专用物理 schema v3，拒绝旧版、未知版本、修改的 DDL 或额外 schema 对象；不自动删除、修改或迁移旧数据。需保留旧历史时继续用旧版及旧库，新版另用新目录/新数据库文件，不通过清库或覆盖绕过拒绝。
@@ -136,7 +136,7 @@ result: 42 ready
 
 ## 5. Initialize / Apply 确认、Load 与 Codec
 
-物理 schema v3 使用 `durable_snapshots`、`durable_batches`、`durable_heads` 与 `durable_manifests`，分别保存原始/合成快照、连续不可变批、权威 revision/chain 和表示 generation/base；revision 为十进制 TEXT，保留完整 uint64 范围。每次 Apply 在同一事务中插批并 CAS 推进 head，不重写完整 RunRecord。首次 Load 在一致事务中验证摘要和链并重放，显式 Load 返回隔离完整投影；普通 Apply 使用会话私有投影。当前未合成链限制为 100000 批、256 MiB wire，超限拒绝提交，不自动丢历史或拆开原子批。可通过 Store 的 `durable.Maintenance` 显式合成：先 `InspectStorage` 取得 generation，再以 `CompactStorageRequest{RunID, ThroughRevision, ExpectedGeneration}` 调用 `CompactStorage`。目标须位于当前 base/head 之间，generation 变化返回 `ErrConflict`；活跃业务 Session 占有 runlock 时合成返回 `ErrBusy`。`InspectStorage` 与 `LoadRevision` 则使用一致读事务，无需 runlock；后者返回精确历史修订号的隔离投影及链锚点，不创建持久 pin。新物理快照有独立 digest，保留原 `C(R)`；只推进表示 generation/base，业务 revision/head 不变，全部历史保留，无 GC。发布后错误须先 Inspect 核对状态。业务语义历史压缩、retention 与 `ReplayCreateDerived` 尚未完成，不承诺无限保留；这些逻辑 wire bytes 不是 SQLite WAL、磁盘写入量或实测空间回收。成本边界见[检查点成本](checkpoint-cost.md)。后端不负责业务值编码。`durable.NewCodecs()` 处理本例的 int；结构体和自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不是普通持久值。检查点包含业务数据，不是加密容器。
+物理 schema v3 使用 `durable_snapshots`、`durable_batches`、`durable_heads` 与 `durable_manifests`，分别保存原始/合成快照、连续不可变批、权威 revision/chain 和表示 generation/base；revision 为十进制 TEXT，保留完整 uint64 范围。每次 Apply 在同一事务中插批并 CAS 推进 head，不重写完整 RunRecord。首次 Load 在一致事务中验证摘要和链并重放，显式 Load 返回隔离完整投影；普通 Apply 使用会话私有投影。当前未合成链限制为 100000 批、256 MiB wire，超限拒绝提交，不自动丢历史或拆开原子批。可通过 Store 的 `durable.Maintenance` 显式合成：先 `InspectStorage` 取得 generation，再以 `CompactStorageRequest{RunID, ThroughRevision, ExpectedGeneration}` 调用 `CompactStorage`。目标须位于当前 base/head 之间，generation 变化返回 `ErrConflict`；活跃业务 Session 占有 runlock 时合成返回 `ErrBusy`。`InspectStorage` 与 `LoadRevision` 则使用一致读事务，无需 runlock；后者返回精确历史修订号的隔离投影及链锚点，不创建持久 pin。新物理快照有独立 digest，保留原 `C(R)`；只推进表示 generation/base，业务 revision/head 不变，全部历史保留，无 GC。发布后错误须先 Inspect 核对状态。根包已实现 `BuildHistoryCompressionBatch` 的精确 CAS 删除与恢复闭包，`PlanHistoryCompression` 仍只读且 `Executable=false`；本后端首次权威证据物化、完整语义压缩维护入口、retention 删除与指定位置 `ReplayCreateDerived` 尚未完成，不承诺无限保留。wire `2` 与 snapshot envelope `2` 的旧字节拒绝规则见[存储](storage.md)；物理 schema 版本不能替代编码边界检查。这些逻辑 wire bytes 不是 SQLite WAL、磁盘写入量或实测空间回收。成本边界见[检查点成本](checkpoint-cost.md)。后端不负责业务值编码。`durable.NewCodecs()` 处理本例的 int；结构体和自定义类型按[值编码](codecs.md)注册，恢复时保留 Codec ID/版本。channel、函数、unsafe.Pointer 不受支持；受管流端点不是普通持久值。检查点包含业务数据，不是加密容器。
 
 Runtime Run 负责构造合法初始状态并 Initialize（Revision=1），不用于导入已有业务历史；重复初始化返回 `ErrConflict`。后续 typed Apply 核对身份、expected/next revision 严格 +1、对象前置条件，并返回精确 CommitAck；这是后端协议，不要求业务手写 records 或批。**Initialize/Apply 返回错误不证明未提交**：停止原调用，等待运行和所有权释放，再 Acquire 同一 RunID、Load 权威记录，关闭检查 Session 后决定 Resume。不要用旧快照或批自动重试，也不要把旧格式、权限或损坏误判为 `ErrNotFound` 后创建新记录。下面是放在返回 error 的函数中的检查片段，需要已有 `ctx`、`store`；不要与同 RunID 的 Run/Resume 并行：
 

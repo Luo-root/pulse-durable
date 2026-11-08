@@ -31,7 +31,6 @@ var (
 	ErrInvalidRecordStatus     = errors.New("postgres: invalid record status")
 	ErrInvalidRecordIdentity   = errors.New("postgres: invalid record identity")
 	ErrInvalidRecordRevision   = errors.New("postgres: invalid record revision")
-	ErrInvalidRecordFormat     = errors.New("postgres: invalid record format")
 	ErrInvalidRecordVersion    = errors.New("postgres: invalid record version")
 	ErrInvalidRecordDefinition = errors.New("postgres: invalid record definition")
 	ErrInvalidRecordInputs     = errors.New("postgres: invalid record inputs")
@@ -295,14 +294,9 @@ func decodeRecord(t d.Task, n uint64, b []byte) (durable.RunRecord, error) {
 	if len(b) == 0 || len(b) > MaxRecordBytes {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
 	}
-	// 初始或旧版工作进程检查点为裸 RunRecord JSON。已发布的
-	// 维护表示是无损、带版本的快照封装。
-	// 在此边界接受两者，但下方保持单一的身份及修订号验证
-	// 路径，确保压缩不能削弱普通检查点检查。
+	// 当前检查点只接受带版本的快照封装。已识别但损坏或未知的
+	// envelope 必须在这里失败，不能尝试裸 JSON 并忽略不认识的字段。
 	r, e := recordio.DecodeSnapshot(b)
-	if e != nil {
-		r, e = recordio.Decode(b)
-	}
 	if e != nil {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
 	}
@@ -312,8 +306,8 @@ func decodeRecord(t d.Task, n uint64, b []byte) (durable.RunRecord, error) {
 	if r.Revision != n {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordRevision)
 	}
-	if r.Format != t.Route().RecordFormat {
-		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordFormat)
+	if err := durable.ValidateSemanticEvidence(r); err != nil {
+		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordSnapshot)
 	}
 	if r.Version != t.Route().BusinessVersion {
 		return durable.RunRecord{}, invalidRecord(ErrInvalidRecordVersion)

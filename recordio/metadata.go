@@ -4,8 +4,11 @@
 package recordio
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"strconv"
 	"unicode/utf8"
 
@@ -24,7 +27,8 @@ func Encode(record durable.RunRecord) ([]byte, error) {
 	return data, nil
 }
 
-// Decode 检查 JSON 语法及 Unicode，不在错误中暴露记录内容。
+// Decode 只读取当前裸记录 JSON。它不是 snapshot envelope 的降级解码器；
+// 未知字段（包括旧 format 和 envelope 元数据）明确拒绝，避免忽略证据后重写。
 // Store 实现仍负责运行身份、修订号及 CAS 检查。
 func Decode(data []byte) (durable.RunRecord, error) {
 	if !json.Valid(data) {
@@ -33,9 +37,18 @@ func Decode(data []byte) (durable.RunRecord, error) {
 	if !validJSONText(data) {
 		return durable.RunRecord{}, errors.New("recordio: stored JSON contains invalid Unicode strings")
 	}
+	probe := json.NewDecoder(bytes.NewReader(data))
+	if checkBareJSON(probe, reflect.TypeFor[durable.RunRecord]()) != nil {
+		return durable.RunRecord{}, errors.New("recordio: invalid record JSON fields")
+	}
 	var record durable.RunRecord
-	if err := json.Unmarshal(data, &record); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
 		return durable.RunRecord{}, errors.New("recordio: decode record failed")
+	}
+	if _, err := decoder.Token(); err != io.EOF || !validMetadata(record) {
+		return durable.RunRecord{}, errors.New("recordio: invalid record")
 	}
 	return record, nil
 }

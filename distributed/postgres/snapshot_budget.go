@@ -9,7 +9,9 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
-const snapshotBudgetVersion = 1
+// snapshotBudgetVersion 属于 Go/SQL 编码与精确计数确认协议。
+// 版本 2 对应 snapshot2/wire2，不参与领域记录身份或业务路由。
+const snapshotBudgetVersion = 2
 
 var (
 	// ErrSnapshotLimit 表示当前完整快照将超过 16 MiB；拒绝不会发布任何业务状态。

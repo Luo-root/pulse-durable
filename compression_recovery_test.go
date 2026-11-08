@@ -15,7 +15,6 @@ import (
 
 func semanticRecoveryFixture(t *testing.T, record RunRecord, summary HistorySummary) RunRecord {
 	t.Helper()
-	record.Format = SemanticRecordFormat
 	record.HistorySummaries = []HistorySummary{summary}
 	record.CommitIndex = make([]CommitIndexEntry, record.Revision)
 	for i := range record.CommitIndex {

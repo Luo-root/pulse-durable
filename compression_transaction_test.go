@@ -5,14 +5,84 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/Luo-root/pulse"
 	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 )
+
+// compressionRetryCommitRecord 先通过真实 Runtime 钩子建立两条失败 Retry，
+// 再显式安装候选证据。这里只构造测试来源，不代表后端首次物化已经实现；
+// parent、scope 和持久 ID 必须能通过与生产恢复相同的闭包检查。
+func compressionRetryCommitRecord(t *testing.T) (streamProtocol, pulse.CheckpointAttemptRequest) {
+	t.Helper()
+	p := newStreamProtocol(t)
+	request := pulse.CheckpointAttemptRequest{Site: p.site, Parent: p.processor.Scope, NodeID: "processor", Boundary: "aspect/0", Limit: 3}
+	lastID := ""
+	for range 2 {
+		attempt, err := p.s.openAttempt(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.s.failAttempt(t.Context(), attempt.Scope); err != nil {
+			t.Fatal(err)
+		}
+		lastID = attempt.Scope
+	}
+	record := CloneRecord(p.s.record)
+	last := record.Attempts[lastID]
+	payload := raw(retryPrefixSummaryPayload{LastPrunedID: lastID, Parent: request.Parent, NodeID: request.NodeID, Boundary: request.Boundary, ThroughIndex: last.Index, Limit: last.Limit,
+		LastPrunedDigest: summaryDigest("retry", record.RunID, record.Revision, request.Parent, request.NodeID, request.Boundary, last.Index, last.Limit, string(last.State))})
+	summary := HistorySummary{Kind: RetryPrefixSummaryKind, ID: "retry", SourceRevision: record.Revision, SourceDigest: compressionSourceDigest(record), Payload: payload, Digest: digest(payload)}
+	p.s.record = semanticRecoveryFixture(t, record, summary)
+	p.s.summaryIndex = nil
+	if err := p.s.validateLoaded(); err != nil {
+		t.Fatal(err)
+	}
+	return p, request
+}
+
+// compressionMessageCommitRecord 的确认与 Managed 状态来自真实消息提交，
+// 防止短字符串身份或缺少 owner/witness 的合成记录冒充可恢复成功路径。
+func compressionMessageCommitRecord(t *testing.T) streamProtocol {
+	t.Helper()
+	p := newStreamProtocol(t)
+	for sequence := uint64(1); sequence <= 2; sequence++ {
+		if err := p.append(sequence); err != nil {
+			t.Fatal(err)
+		}
+		attempt, err := p.s.openMessage(t.Context(), p.messageRequest(sequence, 2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.s.commitMessage(t.Context(), pulse.CheckpointMessageCommit{Site: p.site, Scope: p.s.record.RootScope, Attempt: attempt.Attempt.Scope,
+			Inputs: []pulse.CheckpointStreamAcknowledgement{{Stream: p.input.Stream.ID, Sequence: sequence}}, State: []pulse.CheckpointState{{Name: "sum", Type: reflect.TypeFor[int](), Value: int(sequence)}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record := CloneRecord(p.s.record)
+	key := managedKey(record.RootScope, p.processor.Scope, "processor")
+	payload := messagePrefixSummaryPayload{ProcessingScope: record.RootScope, ProcessingAttempt: p.processor.Scope, NodeID: "processor", Input: streamID(p.input.Stream.ID), ThroughSequence: 2}
+	index := indexCompressionCandidates(record)
+	_, budget, err := messagePrefixForCompression(record, payload, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload.BudgetDigest, payload.ManagedDigest, payload.ConfirmationIDs = budget, compressionManagedDigest(record.Managed[key]), index.confirmations[key]
+	encoded := raw(payload)
+	summary := HistorySummary{Kind: MessagePrefixSummaryKind, ID: "messages", SourceRevision: record.Revision, SourceDigest: compressionSourceDigest(record), Payload: encoded, Digest: digest(encoded)}
+	p.s.record = semanticRecoveryFixture(t, record, summary)
+	p.s.summaryIndex = nil
+	if err := p.s.validateLoaded(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 // TestBuildHistoryCompressionBatchBindsDeleteSummaryAndIndex 验证压缩批次的
 // 三个不可拆分部分：对象精确删除、摘要应用位置和下一条 CommitIndex。
 // 任一部分缺失，批次都不应被当成已完成的语义压缩。
 func TestBuildHistoryCompressionBatchBindsDeleteSummaryAndIndex(t *testing.T) {
-	before := compressionPlanRecord(t)
+	p, _ := compressionRetryCommitRecord(t)
+	before := CloneRecord(p.s.record)
 	request := HistoryCompressionRequest{RunID: before.RunID, ThroughRevision: before.Revision, MaxObjects: 100, MaxBytes: 1 << 20}
 	plan, err := PlanHistoryCompression(before, request)
 	if err != nil {
@@ -60,7 +130,8 @@ func TestBuildHistoryCompressionBatchBindsDeleteSummaryAndIndex(t *testing.T) {
 // TestHistoryCompressionBatchWireRoundTrip 保证压缩操作标记和 null 删除
 // 形状经过后端 wire 仍保持同一批次语义，解码批次不能退化成普通元数据写入。
 func TestHistoryCompressionBatchWireRoundTrip(t *testing.T) {
-	before := compressionPlanRecord(t)
+	p, _ := compressionRetryCommitRecord(t)
+	before := CloneRecord(p.s.record)
 	request := HistoryCompressionRequest{RunID: before.RunID, ThroughRevision: before.Revision, MaxObjects: 100, MaxBytes: 1 << 20}
 	plan, err := PlanHistoryCompression(before, request)
 	if err != nil {
@@ -100,7 +171,8 @@ func TestHistoryCompressionBatchWireRoundTrip(t *testing.T) {
 // TestHistoryCompressionBatchRejectsStaleDeleteAtomically 验证删除使用完整旧值
 // CAS。对象在构造后发生变化时，ApplyTo 必须在修改任何字段前失败。
 func TestHistoryCompressionBatchRejectsStaleDeleteAtomically(t *testing.T) {
-	before := compressionPlanRecord(t)
+	p, _ := compressionRetryCommitRecord(t)
+	before := CloneRecord(p.s.record)
 	request := HistoryCompressionRequest{RunID: before.RunID, ThroughRevision: before.Revision, MaxObjects: 100, MaxBytes: 1 << 20}
 	plan, err := PlanHistoryCompression(before, request)
 	if err != nil {
@@ -125,7 +197,8 @@ func TestHistoryCompressionBatchRejectsStaleDeleteAtomically(t *testing.T) {
 }
 
 func TestHistoryCompressionBatchRejectsPlanDigestWithPartialOperations(t *testing.T) {
-	before := compressionPlanRecord(t)
+	p, _ := compressionRetryCommitRecord(t)
+	before := CloneRecord(p.s.record)
 	request := HistoryCompressionRequest{RunID: before.RunID, ThroughRevision: before.Revision, MaxObjects: 100, MaxBytes: 1 << 20}
 	plan, err := PlanHistoryCompression(before, request)
 	if err != nil {
@@ -152,7 +225,8 @@ func TestHistoryCompressionBatchRejectsPlanDigestWithPartialOperations(t *testin
 // 同时检查 Message 删除与有符号快照差额。差额必须等于完整编码前后长度，
 // 不能把删除误算成零字节替换。
 func TestHistoryCompressionMessageDeleteAndSnapshotDelta(t *testing.T) {
-	before := compressionMessageRecord(t)
+	p := compressionMessageCommitRecord(t)
+	before := CloneRecord(p.s.record)
 	request := HistoryCompressionRequest{RunID: before.RunID, ThroughRevision: before.Revision, MaxObjects: 100, MaxBytes: 1 << 20}
 	plan, err := PlanHistoryCompression(before, request)
 	if err != nil {

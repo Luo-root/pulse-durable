@@ -138,7 +138,7 @@ func TestProtocolRejectsFailedAncestorsAndCommitsNodeRootAtomically(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "1", Definition: def.fingerprint,
+	state := &runState{session: session, def: def, record: RunRecord{RunID: "run", Version: "1", Definition: def.fingerprint,
 		RootScope: rootScope, Scopes: make(map[string]ScopeRecord), Attempts: make(map[string]AttemptRecord)}}
 	proposed := cloneRecord(state.record)
 	proposed.Inputs = hash

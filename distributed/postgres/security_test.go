@@ -25,10 +25,10 @@ func TestTemporaryTablesCannotShadowDefinerAuthority(t *testing.T) {
 		t.Fatal(scrub(e, false))
 	}
 	var b []byte
-	if e = conn.QueryRow(ctx, `SELECT pulse_durable_distributed.api('get',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'snapshot_budget_version',1))`, other, task.Identity().RunID).Scan(&b); e == nil {
+	if e = conn.QueryRow(ctx, `SELECT pulse_durable_distributed.api('get',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'snapshot_budget_version',2))`, other, task.Identity().RunID).Scan(&b); e == nil {
 		t.Fatal("temporary access granted unauthorized cross-namespace read")
 	}
-	if e = conn.QueryRow(ctx, `SELECT pulse_durable_distributed.api('cancel',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'mutation_id','bad','mutation_digest',repeat('a',64),'snapshot_budget_version',1))`, other, task.Identity().RunID).Scan(&b); e == nil {
+	if e = conn.QueryRow(ctx, `SELECT pulse_durable_distributed.api('cancel',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'mutation_id','bad','mutation_digest',repeat('a',64),'snapshot_budget_version',2))`, other, task.Identity().RunID).Scan(&b); e == nil {
 		t.Fatal("temporary access granted unauthorized cross-namespace cancel")
 	}
 	var status string
@@ -40,7 +40,7 @@ func TestTemporaryTablesCannotShadowDefinerAuthority(t *testing.T) {
 		t.Fatal(scrub(e, false))
 	}
 	own := taskFixture(t, ns, "shadow")
-	if _, e = conn.Exec(ctx, `SELECT pulse_durable_distributed.api('submit',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'task',encode($3::bytea,'base64'),'digest',$4::text,'snapshot_budget_version',1))`, ns, own.Identity().RunID, own.Bytes(), own.SubmissionDigest()); e != nil {
+	if _, e = conn.Exec(ctx, `SELECT pulse_durable_distributed.api('submit',jsonb_build_object('namespace',$1::text,'run_id',$2::text,'task',encode($3::bytea,'base64'),'digest',$4::text,'snapshot_budget_version',2))`, ns, own.Identity().RunID, own.Bytes(), own.SubmissionDigest()); e != nil {
 		t.Fatalf("authorized submit diverted to temp tables: %v", scrub(e, false))
 	}
 	var n int

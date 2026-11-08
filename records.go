@@ -53,19 +53,14 @@ func (s *runState) openChildLocked(ctx context.Context, req pulse.CheckpointChil
 		return nil, err
 	}
 	if scope, exists := s.record.Scopes[req.Attempt]; exists {
-		if !scope.Bindings && len(req.Bindings) > 0 {
-			// 格式 1 的 In 当时全到齐后按值编码，允许该原契约继续恢复。
-			inputHash, err = s.def.inputsFingerprint(childLoc, req.Inputs)
-			if err != nil {
-				return nil, err
-			}
-		}
+		// 所有子图统一核对稳定绑定指纹；旧输入值指纹只会产生冲突，
+		// 不能在恢复时降级匹配，也不能借此改写已经持久化的作用域。
 		if scope.Graph != childLoc.graph || scope.Path != childLoc.path || scope.Inputs != inputHash {
 			return nil, fmt.Errorf("%w: child scope identity or input mismatch", ErrConflict)
 		}
 	} else {
 		tx := newRecordTransaction(s.record.Revision)
-		if err := tx.createScope(req.Attempt, ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash, Bindings: len(req.Bindings) > 0}); err != nil {
+		if err := tx.createScope(req.Attempt, ScopeRecord{Graph: childLoc.graph, Path: childLoc.path, Inputs: inputHash}); err != nil {
 			return nil, err
 		}
 		if err := s.commitRecordTransaction(ctx, tx); err != nil {
@@ -244,7 +239,7 @@ func (s *runState) checkDependencies(scopeID string, nodes map[string]NodeRecord
 func (s *runState) validateLoaded() error {
 	r := s.record
 	root, ok := r.Scopes[r.RootScope]
-	if !IsLogicalRecordFormat(r.Format) || r.Revision == 0 || !validIdentity(r.RootScope) || !ok ||
+	if r.Revision == 0 || !validIdentity(r.RootScope) || !ok ||
 		(location{root.Graph, root.Path}) != s.def.root || root.Inputs != r.Inputs || !validDigest(r.Inputs) ||
 		r.Scopes == nil || r.Attempts == nil || validateSemanticEvidence(r) != nil {
 		return fmt.Errorf("durable: invalid run record header or root scope")

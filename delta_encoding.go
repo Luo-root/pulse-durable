@@ -14,8 +14,10 @@ import (
 	"unicode/utf8"
 )
 
-// ChangeBatchWireVersion 标识规范的 ChangeBatch JSON 封装。
-const ChangeBatchWireVersion = 1
+// ChangeBatchWireVersion 仅标识序列化封装，不进入 ChangeHeader 或 RunRecord。
+// 版本 2 移除历史上的 batch_format/logical_format；旧字节明确拒绝，不能
+// 先用新编码重写，再把新摘要冒充原批次的历史链承诺。
+const ChangeBatchWireVersion = 2
 
 const (
 	MaxChangeBatchBytes = 4 << 20
@@ -25,9 +27,9 @@ const (
 
 var errInvalidChangeWire = errors.New("durable: invalid change batch wire")
 
+// wireHeader 是编码边界的 DTO；业务批头只保留身份和修订转换。
+// 压缩协议字段用于携带提案见证，仍须在 ApplyTo 对权威记录重新规划。
 type wireHeader struct {
-	BatchFormat           string `json:"batch_format"`
-	LogicalFormat         string `json:"logical_format"`
 	RunID                 string `json:"run_id"`
 	BusinessVersion       string `json:"business_version"`
 	DefinitionDigest      string `json:"definition_digest"`
@@ -173,6 +175,19 @@ func encodeWireReflect(v reflect.Value, encode bool, depth int) ([]byte, bool) {
 		if v.IsNil() {
 			return []byte("null"), true
 		}
+		// wire 使用整数数组而非 encoding/json 对 []byte 的 Base64 特例。
+		// 一次追加到缓冲区，避免每个字节都产生 reflect/RawMessage 分配。
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			out := make([]byte, 0, v.Len()*4+2)
+			out = append(out, '[')
+			for i := 0; i < v.Len(); i++ {
+				if i != 0 {
+					out = append(out, ',')
+				}
+				out = strconv.AppendUint(out, uint64(v.Index(i).Uint()), 10)
+			}
+			return append(out, ']'), true
+		}
 		a := make([]json.RawMessage, v.Len())
 		for i := range a {
 			b, ok := encodeWireReflect(v.Index(i), encode, depth+1)
@@ -212,7 +227,7 @@ func headerWireFor(h ChangeHeader, tx *recordTransaction) wireHeader {
 		planDigest = tx.compressionPlanDigest
 		maxObjects, maxBytes = u64(tx.compressionRequest.MaxObjects), u64(tx.compressionRequest.MaxBytes)
 	}
-	return wireHeader{BatchFormat: u64(uint64(h.BatchFormat)), LogicalFormat: u64(uint64(h.LogicalFormat)), RunID: h.RunID,
+	return wireHeader{RunID: h.RunID,
 		BusinessVersion: h.BusinessVersion, DefinitionDigest: h.DefinitionDigest, InputsDigest: h.InputsDigest, RootScope: h.RootScope,
 		ExpectedRevision: u64(h.ExpectedRevision), Revision: u64(h.Revision), Operation: operation, CompressionPlanDigest: planDigest,
 		CompressionMaxObjects: maxObjects, CompressionMaxBytes: maxBytes}
@@ -220,14 +235,6 @@ func headerWireFor(h ChangeHeader, tx *recordTransaction) wireHeader {
 
 func headerWire(h ChangeHeader) wireHeader { return headerWireFor(h, nil) }
 func headerUnwire(h wireHeader) (ChangeHeader, error) {
-	a, ok := parseU64(h.BatchFormat)
-	if !ok || a > uint64(^uint(0)>>1) {
-		return ChangeHeader{}, errInvalidChangeWire
-	}
-	l, ok := parseU64(h.LogicalFormat)
-	if !ok || l > uint64(^uint(0)>>1) {
-		return ChangeHeader{}, errInvalidChangeWire
-	}
 	e, ok := parseU64(h.ExpectedRevision)
 	if !ok {
 		return ChangeHeader{}, errInvalidChangeWire
@@ -247,14 +254,14 @@ func headerUnwire(h wireHeader) (ChangeHeader, error) {
 			return ChangeHeader{}, errInvalidChangeWire
 		}
 	}
-	if a != 1 || (l != RecordFormat && l != SemanticRecordFormat) || e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" ||
+	if e == ^uint64(0) || r != e+1 || h.RunID == "" || h.RootScope == "" ||
 		(h.Operation != "" && h.Operation != "history_compression") ||
 		(h.Operation == "" && (h.CompressionPlanDigest != "" || h.CompressionMaxObjects != "" || h.CompressionMaxBytes != "")) ||
 		(h.Operation == "history_compression" && (!validDigest(h.CompressionPlanDigest) || maxObjects == 0 || maxBytes == 0 ||
 			(HistoryCompressionRequest{RunID: h.RunID, ThroughRevision: e, MaxObjects: maxObjects, MaxBytes: maxBytes}).Validate() != nil)) {
 		return ChangeHeader{}, errInvalidChangeWire
 	}
-	return ChangeHeader{BatchFormat: int(a), LogicalFormat: int(l), RunID: h.RunID, BusinessVersion: h.BusinessVersion,
+	return ChangeHeader{RunID: h.RunID, BusinessVersion: h.BusinessVersion,
 		DefinitionDigest: h.DefinitionDigest, InputsDigest: h.InputsDigest, RootScope: h.RootScope,
 		ExpectedRevision: e, Revision: r}, nil
 }
@@ -364,21 +371,6 @@ func ChangeBatchDigest(b ChangeBatch) ([32]byte, error) {
 	return sha256.Sum256(p), nil
 }
 
-func rejectJSON(data []byte) error {
-	if len(data) == 0 || len(data) > MaxChangeBatchBytes || !utf8.Valid(data) || !validWireUnicode(data) {
-		return errInvalidChangeWire
-	}
-	d := json.NewDecoder(bytes.NewReader(data))
-	if err := scanJSON(d, 0); err != nil {
-		return err
-	}
-	var extra any
-	if err := d.Decode(&extra); err != io.EOF {
-		return errInvalidChangeWire
-	}
-	return nil
-}
-
 func validWireUnicode(data []byte) bool {
 	for i := 0; i < len(data); i++ {
 		if data[i] != '"' {
@@ -417,62 +409,6 @@ func validWireUnicode(data []byte) bool {
 	return true
 }
 
-// scanJSON 在任何类型化反序列化修复或丢弃数据前，消费恰好一个 JSON 值，
-// 并检查重复对象键、Unicode 字符串和嵌套深度。
-func scanJSON(d *json.Decoder, depth int) error {
-	if depth > MaxChangeBatchDepth {
-		return errInvalidChangeWire
-	}
-	t, err := d.Token()
-	if err != nil {
-		return errInvalidChangeWire
-	}
-	switch x := t.(type) {
-	case json.Delim:
-		switch x {
-		case '{':
-			seen := map[string]bool{}
-			for d.More() {
-				kt, e := d.Token()
-				if e != nil {
-					return errInvalidChangeWire
-				}
-				key, ok := kt.(string)
-				if !ok || !utf8.ValidString(key) || seen[key] {
-					return errInvalidChangeWire
-				}
-				seen[key] = true
-				if e := scanJSON(d, depth+1); e != nil {
-					return e
-				}
-			}
-			end, e := d.Token()
-			if e != nil || end != json.Delim('}') {
-				return errInvalidChangeWire
-			}
-		case '[':
-			for d.More() {
-				if e := scanJSON(d, depth+1); e != nil {
-					return e
-				}
-			}
-			end, e := d.Token()
-			if e != nil || end != json.Delim(']') {
-				return errInvalidChangeWire
-			}
-		default:
-			return errInvalidChangeWire
-		}
-	case string:
-		if !utf8.ValidString(x) {
-			return errInvalidChangeWire
-		}
-	case float64, bool, nil:
-	default:
-		return errInvalidChangeWire
-	}
-	return nil
-}
 func decodeStrict(data []byte, dst any) error {
 	if e := rejectJSON(data); e != nil {
 		return e
@@ -487,7 +423,7 @@ func decodeStrict(data []byte, dst any) error {
 		return errInvalidChangeWire
 	}
 	var extra any
-	if d.Decode(&extra) != nil {
+	if e := d.Decode(&extra); e == io.EOF {
 		return nil
 	}
 	return errInvalidChangeWire
@@ -599,9 +535,6 @@ func UnmarshalChangeBatch(data []byte) (ChangeBatch, error) {
 // 字段形状、对象值、顺序或字节上限检查，不能把错误编码当成有效承诺。
 func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) {
 	var z ChangeBatch
-	if e := rejectJSON(data); e != nil {
-		return z, e
-	}
 	var w wireBatch
 	if e := decodeStrict(data, &w); e != nil {
 		return z, e
@@ -835,34 +768,51 @@ func unmarshalChangeBatch(data []byte, requireCommit bool) (ChangeBatch, error) 
 			return z, errInvalidChangeWire
 		}
 	}
-	if tx.err != nil || h.LogicalFormat == RecordFormat && tx.hasSemanticEvidence() {
+	if tx.err != nil {
 		return z, errInvalidChangeWire
 	}
-	if h.LogicalFormat == SemanticRecordFormat {
-		if h.ExpectedRevision == 0 {
+	// 操作模式由边界 DTO 明确带入，但任何删除必须和专用见证同批。
+	// 摘要计算也带着压缩模式，不能借 requireCommit=false 放宽普通删除。
+	if w.Header.Operation == "history_compression" {
+		maxObjects, objectsOK := parseU64(w.Header.CompressionMaxObjects)
+		maxBytes, bytesOK := parseU64(w.Header.CompressionMaxBytes)
+		if !objectsOK || !bytesOK {
 			return z, errInvalidChangeWire
 		}
-		if w.Header.Operation == "history_compression" && requireCommit {
-			tx.historyCompression = true
-			tx.compressionPlanDigest = w.Header.CompressionPlanDigest
-			maxObjects, objectsOK := parseU64(w.Header.CompressionMaxObjects)
-			maxBytes, bytesOK := parseU64(w.Header.CompressionMaxBytes)
-			if !objectsOK || !bytesOK {
-				return z, errInvalidChangeWire
-			}
-			tx.compressionRequest = HistoryCompressionRequest{RunID: w.Header.RunID, ThroughRevision: h.ExpectedRevision, MaxObjects: maxObjects, MaxBytes: maxBytes}
+		tx.historyCompression = true
+		tx.compressionPlanDigest = w.Header.CompressionPlanDigest
+		tx.compressionRequest = HistoryCompressionRequest{RunID: h.RunID, ThroughRevision: h.ExpectedRevision, MaxObjects: maxObjects, MaxBytes: maxBytes}
+		if requireCommit {
 			if err := validateHistoryCompressionOperationShape(w.Header.Operation, w.Header.CompressionPlanDigest, tx, h.Revision); err != nil {
 				return z, errInvalidChangeWire
 			}
 		}
-		if requireCommit {
-			op, ok := tx.commitIndex[h.Revision]
-			if len(tx.commitIndex) != 1 || !ok || !op.absent || op.remove {
+	} else {
+		for _, op := range tx.attempts {
+			if op.remove {
 				return z, errInvalidChangeWire
 			}
-		} else if len(tx.commitIndex) != 0 {
+		}
+		for _, op := range tx.messages {
+			if op.remove {
+				return z, errInvalidChangeWire
+			}
+		}
+		for _, op := range tx.summaries {
+			if err := checkOrdinarySummaryOperation(op); err != nil {
+				return z, errInvalidChangeWire
+			}
+		}
+	}
+	// 索引与其他证据操作组合，不再使用 logical_format=3 开启语义。
+	// 记录是否已拥有证据仍由 ApplyTo 对权威源验证；这里仅检查本批形状。
+	if requireCommit && tx.hasSemanticEvidence() {
+		op, ok := tx.commitIndex[h.Revision]
+		if h.ExpectedRevision == 0 || len(tx.commitIndex) != 1 || !ok || !op.absent || op.remove || op.value.validate(h.Revision) != nil {
 			return z, errInvalidChangeWire
 		}
+	} else if !requireCommit && len(tx.commitIndex) != 0 {
+		return z, errInvalidChangeWire
 	}
 	return ChangeBatch{header: h, tx: tx}, nil
 }

@@ -31,31 +31,16 @@ func compressionManagedDigest(managed ManagedRecord) string {
 	return digest(encoded)
 }
 
-// validRetryRecoveryPayload 和 validMessageRecoveryPayload 是候选/已应用
-// Payload 的公共字段约束；来源事实与提交位置分别由规划/恢复路径继续检查。
-func validRetryRecoveryPayload(p retryPrefixSummaryPayload) bool {
-	return validIdentity(p.Parent) && validIdentity(p.LastPrunedID) && validSemanticText(p.NodeID) && validSemanticText(p.Boundary) && p.ThroughIndex >= 1 && p.Limit >= p.ThroughIndex && validDigest(p.LastPrunedDigest)
-}
-
-func validMessageRecoveryPayload(p messagePrefixSummaryPayload) bool {
-	if !validIdentity(p.ProcessingScope) || !validIdentity(p.ProcessingAttempt) || !validSemanticText(p.NodeID) || !validIdentity(p.Input.Scope) || !validSemanticText(p.Input.NodeID) || !validSemanticText(p.Input.Key) || !validSemanticText(p.Input.Group) || p.Input.Generation == 0 || p.ThroughSequence == 0 || !validDigest(p.BudgetDigest) || !validDigest(p.ManagedDigest) || len(p.ConfirmationIDs) == 0 {
-		return false
-	}
-	for i, id := range p.ConfirmationIDs {
-		if !validIdentity(id) || i > 0 && p.ConfirmationIDs[i-1] >= id {
-			return false
-		}
-	}
-	return true
-}
-
 // buildRecoverySummaryIndex 仅在完整恢复校验时读取摘要与当前事实。
 // applied=source+1 是摘要与删除同一逻辑提交的必要关系，不能用 head 最新值
 // 代替来源；提交链真实性仍由后端校验，字段自洽不等于授权。
 func buildRecoverySummaryIndex(record RunRecord) (*recoverySummaryIndex, error) {
 	index := &recoverySummaryIndex{retries: make(map[retrySummaryGroup]retryPrefixSummaryPayload), messages: make(map[messageSummaryGroup]messagePrefixSummaryPayload), managed: make(map[string]bool), reserved: make(map[string]bool)}
-	if record.Format != SemanticRecordFormat {
+	if !hasAnySemanticEvidence(record) {
 		return index, nil
+	}
+	if !hasCompleteSemanticEvidence(record) {
+		return nil, validateSemanticEvidence(record)
 	}
 	if err := ValidateSemanticEvidence(record); err != nil {
 		return nil, err
@@ -64,60 +49,21 @@ func buildRecoverySummaryIndex(record RunRecord) (*recoverySummaryIndex, error) 
 		return revision != 0 && summary.SourceRevision != math.MaxUint64 && revision == summary.SourceRevision+1 && revision <= record.Revision && commitIndexPosition(record.CommitIndex, revision) >= 0
 	}
 	for _, summary := range record.HistorySummaries {
-		switch summary.Kind {
-		case RetryPrefixSummaryKind:
-			var p retryPrefixSummaryPayload
-			if err := unmarshalRecord(summary.Payload, &p); err != nil || !validRetryRecoveryPayload(p) {
-				return nil, fmt.Errorf("%w: invalid retry recovery summary", ErrInvalidRecord)
-			}
-			if p.AppliedRevision == 0 {
-				continue
-			}
-			if !applied(summary, p.AppliedRevision) {
-				return nil, fmt.Errorf("%w: retry summary has no committed application position", ErrInvalidRecord)
-			}
-			parent, exists := record.Attempts[p.Parent]
-			if !exists || parent.NodeID != p.NodeID {
-				return nil, fmt.Errorf("%w: retry summary parent changed", ErrInvalidRecord)
-			}
-			if _, exists := record.Attempts[p.LastPrunedID]; exists {
-				return nil, fmt.Errorf("%w: pruned retry identity reappeared", ErrInvalidRecord)
-			}
-			key := retrySummaryGroup{p.Parent, p.NodeID, p.Boundary}
-			if _, duplicate := index.retries[key]; duplicate {
-				return nil, fmt.Errorf("%w: duplicate retry recovery summary", ErrInvalidRecord)
-			}
-			_, scopeCollision := record.Scopes[p.LastPrunedID]
-			if index.reserved[p.LastPrunedID] || p.LastPrunedID == record.RootScope || scopeCollision {
-				return nil, fmt.Errorf("%w: pruned retry identity collides with retained evidence", ErrInvalidRecord)
-			}
-			index.reserved[p.LastPrunedID] = true
-			index.retries[key] = p
-		case MessagePrefixSummaryKind:
-			var p messagePrefixSummaryPayload
-			if err := unmarshalRecord(summary.Payload, &p); err != nil || !validMessageRecoveryPayload(p) {
-				return nil, fmt.Errorf("%w: invalid message recovery summary", ErrInvalidRecord)
-			}
-			if p.AppliedRevision == 0 {
-				continue
-			}
-			if !applied(summary, p.AppliedRevision) {
-				return nil, fmt.Errorf("%w: message summary has no committed application position", ErrInvalidRecord)
-			}
-			stream, exists := record.Streams[streamKey(p.Input)]
-			if !exists || p.Input.Generation == 0 || p.Input.Generation > stream.Stream.ID.Generation || p.ThroughSequence > stream.AckedThrough || stream.AckedThrough > stream.LastSequence {
-				return nil, fmt.Errorf("%w: message recovery summary exceeds ACK frontier", ErrInvalidRecord)
-			}
-			managedKey := managedKey(p.ProcessingScope, p.ProcessingAttempt, p.NodeID)
-			managed, exists := record.Managed[managedKey]
-			if !exists || managed.Scope != p.ProcessingScope || managed.Parent != p.ProcessingAttempt || managed.NodeID != p.NodeID {
-				return nil, fmt.Errorf("%w: message summary lost managed state", ErrInvalidRecord)
-			}
-			key := messageSummaryGroup{p.ProcessingScope, p.ProcessingAttempt, p.NodeID, streamKey(p.Input)}
-			if _, duplicate := index.messages[key]; duplicate {
-				return nil, fmt.Errorf("%w: duplicate message recovery summary", ErrInvalidRecord)
-			}
-			index.messages[key] = p
+		payload, err := defaultHistorySummaryRegistry.decode(summary)
+		if err != nil {
+			return nil, err
+		}
+		if err := payload.validateRecovery(); err != nil {
+			return nil, err
+		}
+		if payload.applicationRevision() == 0 {
+			continue
+		}
+		if !applied(summary, payload.applicationRevision()) {
+			return nil, fmt.Errorf("%w: summary has no committed application position", ErrInvalidRecord)
+		}
+		if err := payload.restore(record, index); err != nil {
+			return nil, err
 		}
 	}
 	// 当前保留对象不能与已删除前缀重叠，也不能把剩余 Retry 预算改成另一档。
@@ -171,25 +117,18 @@ func buildRecoverySummaryIndex(record RunRecord) (*recoverySummaryIndex, error) 
 }
 
 // checkOrdinarySummaryOperation 将已应用摘要保留给专门压缩协议。
-// 未知 Kind 仍按通用证据保存；它不会获得 Retry/Message 高水位语义。
+// 未注册 Kind 只允许通过底层记录编码保存；修改入口不能把 opaque 证据
+// 当成未应用候选，更不能因此绕过未知必需能力的拒绝。
 func checkOrdinarySummaryOperation(op putHistorySummary) error {
 	check := func(summary HistorySummary) error {
-		var applied uint64
-		switch summary.Kind {
-		case RetryPrefixSummaryKind:
-			var payload retryPrefixSummaryPayload
-			if err := unmarshalRecord(summary.Payload, &payload); err != nil || !validRetryRecoveryPayload(payload) {
-				return fmt.Errorf("%w: invalid retry summary operation", ErrInvalidRecord)
-			}
-			applied = payload.AppliedRevision
-		case MessagePrefixSummaryKind:
-			var payload messagePrefixSummaryPayload
-			if err := unmarshalRecord(summary.Payload, &payload); err != nil || !validMessageRecoveryPayload(payload) {
-				return fmt.Errorf("%w: invalid message summary operation", ErrInvalidRecord)
-			}
-			applied = payload.AppliedRevision
+		payload, err := defaultHistorySummaryRegistry.decode(summary)
+		if err != nil {
+			return err
 		}
-		if applied != 0 {
+		if err := payload.validateRecovery(); err != nil {
+			return err
+		}
+		if payload.applicationRevision() != 0 {
 			return fmt.Errorf("%w: applied summary requires a dedicated compression transaction", ErrConflict)
 		}
 		return nil

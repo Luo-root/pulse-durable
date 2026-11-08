@@ -51,7 +51,7 @@ Input encoding must be deterministic: equal values produce equal bytes every tim
 
 ## Confirmation, re-entry, and Retry
 
-Ordinary confirmation covers the complete node chain, including Aspects. Returning success or calling `Set` does not by itself prove node confirmation. Complete results, the node root attempt's `confirmed` state, and successful writer terminals share one Save. Managed appends and `HandleMessage` input acknowledgements, explicit state, and results use separate incremental transactions. Stream delivery follows the corresponding storage confirmation; it does not mean the complete node has finished. Ordinary message values restore into the outer complete-node staging frame and publish after complete node confirmation, without replaying acknowledged inputs.
+Ordinary confirmation covers the complete node chain, including Aspects. Returning success or calling `Set` does not by itself prove node confirmation. Complete results, the node root attempt's `confirmed` state, and successful writer terminals share one `ChangeBatch` applied atomically through `Apply`. Managed appends and `HandleMessage` input acknowledgements, explicit state, and results use separate incremental transactions. Stream delivery follows the corresponding storage confirmation; it does not mean the complete node has finished. Ordinary message values restore into the outer complete-node staging frame and publish after complete node confirmation, without replaying acknowledged inputs.
 
 Recovery reuses confirmed nodes in valid scopes without executing their complete chains again. Unconfirmed nodes restart from the beginning of their functions, so external effects occurring before confirmation may repeat.
 

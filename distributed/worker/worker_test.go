@@ -225,6 +225,59 @@ func until(t *testing.T, fn func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// claimCapture 只记录领取请求并返回空集合，不启动任何业务或后台查询。
+// 它让测试直接核对 worker 发布的能力是否完整来自 Registry。
+type claimCapture struct {
+	d.Coordinator
+	request d.ClaimRequest
+}
+
+func (c *claimCapture) Claim(_ context.Context, request d.ClaimRequest) ([]d.Claim, error) {
+	c.request = request
+	return nil, nil
+}
+
+func TestClaimPublishesExactBusinessRouteSet(t *testing.T) {
+	w, f := fixture(t, func(*pulse.RunCtx) error { return nil })
+	_, err := w.cfg.Registry.Register("task", "v2", func() (d.Assembly, error) {
+		g, err := pulse.New("other-work", "second business route")
+		if err != nil {
+			return d.Assembly{}, err
+		}
+		if err := g.Add(pulse.NewNode("node", "", nil, nil, func(*pulse.RunCtx) error { return nil })); err != nil {
+			return d.Assembly{}, err
+		}
+		return d.Assembly{Graph: g, Codecs: durable.NewCodecs(), Keys: pulse.NewRegistry()}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make(map[d.Route]bool)
+	for _, route := range w.cfg.Registry.Capabilities() {
+		want[route] = true
+	}
+	if len(want) != 2 || !want[f.task.Route()] {
+		t.Fatal("fixture route set is incomplete")
+	}
+	capture := &claimCapture{}
+	w.cfg.Coordinator = capture
+	n, _ := w.reserve()
+	w.claim(context.Background(), n)
+	if len(capture.request.Capabilities) != len(want) {
+		t.Fatal("worker did not publish the complete route set")
+	}
+	for _, route := range capture.request.Capabilities {
+		if !want[route] {
+			t.Fatal("worker published an unregistered or duplicate route")
+		}
+		delete(want, route)
+	}
+	if len(want) != 0 || w.Active() != 0 {
+		t.Fatal("empty claim lost a route or retained its reservation")
+	}
+}
+
 func TestUnknownClaimOriginalIdentityAndRuntimeFinish(t *testing.T) {
 	var calls atomic.Int32
 	w, f := fixture(t, func(*pulse.RunCtx) error { calls.Add(1); return nil })
@@ -350,7 +403,7 @@ func TestSessionSealWaitsForInflightSave(t *testing.T) {
 func TestRuntimeRejectedRecordBlocksBeforeBusiness(t *testing.T) {
 	var calls atomic.Int32
 	w, f := fixture(t, func(*pulse.RunCtx) error { calls.Add(1); return nil })
-	f.record = &durable.RunRecord{RunID: "wrong", Format: durable.RecordFormat}
+	f.record = &durable.RunRecord{RunID: "wrong"}
 	runWorker(t, w)
 	if got := await(t, f.block); got != "invalid_record" {
 		t.Fatalf("block reason=%s", got)

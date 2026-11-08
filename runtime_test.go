@@ -491,7 +491,7 @@ func testCheckpointState(t *testing.T, ctx context.Context, g *pulse.Graph) (*ru
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "business/1",
+	s := &runState{session: session, def: def, record: RunRecord{RunID: "run", Version: "business/1",
 		Definition: def.fingerprint, Inputs: inputs, RootScope: root, Attempts: make(map[string]AttemptRecord),
 		Scopes: map[string]ScopeRecord{root: {Graph: def.root.graph, Inputs: inputs, Nodes: make(map[string]NodeRecord)}}}}
 	if err := s.initialize(ctx, cloneRecord(s.record)); err != nil {

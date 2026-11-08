@@ -19,7 +19,15 @@ func TestFormat3SnapshotSizeDeltaMatchesFullEncoding(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/%d/%t", mode, len(payload), payload == nil), func(t *testing.T) {
 				before, _ := format3Fixture(t)
 				tx := newRecordTransaction(before.Revision)
-				summary := HistorySummary{Kind: "future", ID: "键<>&", SourceRevision: 1, SourceDigest: strings.Repeat("a", 64), Payload: payload, Digest: digest(payload)}
+				summary := copyHistorySummary(before.HistorySummaries[0])
+				summary.ID = "键<>&"
+				var summaryPayload retryPrefixSummaryPayload
+				if err := unmarshalRecord(summary.Payload, &summaryPayload); err != nil {
+					t.Fatal(err)
+				}
+				summaryPayload.NodeID = "node<>&" + strings.Repeat("x", len(payload))
+				summary.Payload = raw(summaryPayload)
+				summary.Digest = digest(summary.Payload)
 				var err error
 				switch mode {
 				case "ordinary":
@@ -110,7 +118,6 @@ func TestFormat3RejectsInvalidTransitionsWithoutMutation(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "legacy-upgrade":
-				before.Format = RecordFormat
 				before.HistorySummaries, before.CommitIndex, before.Provenance = nil, nil, nil
 			case "invalid-metadata":
 				if err := tx.putAttempt("bad", nil, AttemptRecord{NodeID: string([]byte{0xff})}); err != nil {
@@ -248,9 +255,9 @@ func TestFormat3MemoryLoadAndHistoryEvidence(t *testing.T) {
 func BenchmarkFormat3SnapshotSizeDeltaUnrelatedHistory(b *testing.B) {
 	for _, count := range []int{0, 1024, 16384} {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
-			payload := []byte("evidence")
-			r := RunRecord{Format: SemanticRecordFormat, RunID: "cost", Revision: 1, RootScope: "root",
-				HistorySummaries: []HistorySummary{{Kind: "future", ID: "id", SourceRevision: 1, SourceDigest: strings.Repeat("a", 64), Payload: payload, Digest: digest(payload)}},
+			payload := raw(retryPrefixSummaryPayload{LastPrunedID: strings.Repeat("a", 32), Parent: strings.Repeat("c", 32), NodeID: "node", Boundary: "retry", ThroughIndex: 1, Limit: 2, LastPrunedDigest: strings.Repeat("d", 64)})
+			r := RunRecord{RunID: "cost", Revision: 1, RootScope: "root",
+				HistorySummaries: []HistorySummary{{Kind: RetryPrefixSummaryKind, ID: "id", SourceRevision: 1, SourceDigest: strings.Repeat("a", 64), Payload: payload, Digest: digest(payload)}},
 				CommitIndex:      []CommitIndexEntry{{Revision: 1, BatchDigest: strings.Repeat("b", 64)}},
 				Provenance:       &Provenance{OriginRunID: "cost", OriginRevision: 1, OriginRecordDigest: strings.Repeat("c", 64), CompressionID: "id"},
 				Messages:         make(map[string]MessageAttemptRecord, count)}
