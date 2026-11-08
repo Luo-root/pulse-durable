@@ -403,6 +403,12 @@ jobs:
         with:
           go-version-file: benchmarks/workflow/go.mod
           cache-dependency-path: benchmarks/workflow/go.sum
+      - name: Check independently downloadable benchmark dependencies
+        run: |
+          go mod download
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -race -count=1 -timeout=180s ./...
       - name: Use current checkout for benchmark API regression
         shell: bash
         run: |
