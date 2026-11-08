@@ -3,9 +3,10 @@ package durable
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 )
 
 // MemoryStore 以进程内互斥和 CAS 验证 Store 协议，不保证进程退出后的恢复。
@@ -103,7 +104,7 @@ func (s *memorySession) Initialize(ctx context.Context, r RunRecord) error {
 	if err := ValidateInitialRecord(r, s.runID); err != nil {
 		return err
 	}
-	data, err := json.Marshal(r)
+	data, err := snapshotfmt.Encode(r)
 	if err != nil {
 		return err
 	}

@@ -3,8 +3,9 @@ package durable
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
+
+	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 )
 
 // HistoryEvidenceMaterializeRequest 绑定一次物化发布到观察到的物理代次。
@@ -52,7 +53,7 @@ func (s *MemoryStore) HistoryEvidenceOrigin(ctx context.Context, id string) (Run
 	if !ok || image.Record.Revision != 1 || image.Record.RunID != id {
 		return RunRecord{}, zero, 0, fmt.Errorf("%w: missing memory origin snapshot", ErrInvalidRecord)
 	}
-	data, err := json.Marshal(image.Record)
+	data, err := snapshotfmt.Encode(image.Record)
 	if err != nil {
 		return RunRecord{}, zero, 0, fmt.Errorf("%w: encode memory origin: %v", ErrInvalidRecord, err)
 	}
