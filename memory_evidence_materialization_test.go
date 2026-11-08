@@ -62,6 +62,29 @@ func TestMemoryHistoryEvidenceMaterializationBuildsClosedComponent(t *testing.T)
 	}
 }
 
+func TestMemoryHistoryEvidenceMaterializationRejectsMaxGeneration(t *testing.T) {
+	store := NewMemoryStore()
+	session, err := store.Acquire(context.Background(), "max-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Initialize(context.Background(), contractSeed("max-generation")); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.history["max-generation"].generation = ^uint64(0)
+	store.mu.Unlock()
+	state, err := store.InspectStorage(context.Background(), "max-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MaterializeHistoryEvidence(context.Background(), HistoryEvidenceMaterializeRequest{RunID: "max-generation", ExpectedGeneration: state.Generation, Bounds: HistoryEvidenceBounds{MaxBatches: 10, MaxBytes: 1 << 20}}); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("max generation was not rejected: %v", err)
+	}
+}
 func TestMemoryHistoryEvidenceMaterializationRejectsActiveSessionAndStaleGeneration(t *testing.T) {
 	store := NewMemoryStore()
 	session, err := store.Acquire(context.Background(), "busy")

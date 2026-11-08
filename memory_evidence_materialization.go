@@ -141,9 +141,15 @@ func (s *MemoryStore) MaterializeHistoryEvidence(ctx context.Context, req Histor
 	if currentState != proposal.State || observedDigest != recordDigest(state.record) {
 		return StorageState{}, ErrConflict
 	}
+	if err := ctx.Err(); err != nil {
+		return StorageState{}, err
+	}
 	h := s.history[req.RunID]
 	if h == nil || h.generation != req.ExpectedGeneration {
 		return StorageState{}, ErrConflict
+	}
+	if h.generation == ^uint64(0) {
+		return StorageState{}, ErrLimitExceeded
 	}
 	h.generation++
 	h.base = currentState.HeadRevision

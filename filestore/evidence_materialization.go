@@ -97,6 +97,13 @@ func (s *Store) MaterializeHistoryEvidence(ctx context.Context, req durable.Hist
 	if h.Generation != req.ExpectedGeneration || h.HeadRevision == 0 {
 		return state, durable.ErrConflict
 	}
+	// revision 1 的 manifest 规定 OriginID/SnapshotID、OriginDigest/
+	// SnapshotDigest 与 SeedChain 必须完全相同。没有批次可推进时，
+	// 不能把带证据的新字节伪装成 origin；等后续专用 envelope 设计完成前
+	// 明确拒绝，避免返回成功后重开损坏。
+	if h.HeadRevision == 1 {
+		return state, durable.ErrUnsupportedCapability
+	}
 	if h.Generation == ^uint64(0) {
 		return state, durable.ErrLimitExceeded
 	}
