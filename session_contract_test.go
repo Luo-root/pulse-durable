@@ -3,16 +3,19 @@ package durable
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/Luo-root/pulse"
+	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 )
 
-func memorySeedDigest(r RunRecord) [32]byte { data, _ := json.Marshal(r); return sha256.Sum256(data) }
+func memorySeedDigest(r RunRecord) [32]byte {
+	data, _ := snapshotfmt.Encode(r)
+	return sha256.Sum256(data)
+}
 
 func contractSeed(id string) RunRecord {
 	return RunRecord{RunID: id, Revision: 1, Version: "1", Definition: digest([]byte("definition")), Inputs: digest([]byte("inputs")), RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Inputs: digest([]byte("inputs")), Nodes: map[string]NodeRecord{}}}}

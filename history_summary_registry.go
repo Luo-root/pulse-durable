@@ -63,6 +63,7 @@ var defaultHistorySummaryRegistry = func() *historySummaryRegistry {
 	r, err := newHistorySummaryRegistry(
 		historySummaryRegistration{RetryPrefixSummaryKind, retryPrefixSummaryHandler{}},
 		historySummaryRegistration{MessagePrefixSummaryKind, messagePrefixSummaryHandler{}},
+		historySummaryRegistration{historyEvidenceSummaryKind, historyEvidenceSummaryHandler{}},
 	)
 	if err != nil {
 		panic(err) // 仅静态内置注册表的编程错误；不处理来自持久数据的输入。
