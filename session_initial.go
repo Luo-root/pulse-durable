@@ -10,7 +10,7 @@ import (
 // 图和编解码器验证仍由 Runtime 负责。
 func ValidateInitialRecord(r RunRecord, runID string) error {
 	if runID == "" || r.RunID != runID || !utf8.ValidString(runID) ||
-		r.Format != RecordFormat || r.Revision != 1 || r.Version == "" || !utf8.ValidString(r.Version) ||
+		r.Revision != 1 || r.Version == "" || !utf8.ValidString(r.Version) ||
 		!validDigest(r.Definition) || !validDigest(r.Inputs) || r.RootScope == "" || !utf8.ValidString(r.RootScope) ||
 		len(r.Scopes) != 1 || len(r.Attempts) != 0 || len(r.Streams) != 0 || len(r.Messages) != 0 || len(r.Managed) != 0 ||
 		r.HistorySummaries != nil || r.CommitIndex != nil || r.Provenance != nil {

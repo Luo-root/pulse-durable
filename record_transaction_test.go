@@ -39,7 +39,7 @@ func (s *transactionSession) Apply(_ context.Context, batch ChangeBatch) (Commit
 func transactionState() (*runState, *transactionSession) {
 	session := &transactionSession{}
 	state := &runState{session: session, record: RunRecord{
-		Format: RecordFormat, RunID: "transaction", Revision: 4, RootScope: "root",
+		RunID: "transaction", Revision: 4, RootScope: "root",
 		Attempts: map[string]AttemptRecord{"old": {Parent: "root", NodeID: "work", Index: 1, Limit: 1, State: AttemptActive}},
 		Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Nodes: map[string]NodeRecord{
 			"result": {NodeID: "result", Outputs: []ValueRecord{{Data: []byte("original")}}},
@@ -99,7 +99,7 @@ func TestRecordTransactionStagesValuesAndCoalesces(t *testing.T) {
 	if err := s.commitRecordTransaction(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
-	if session.calls != 1 || session.expected != before.Revision || s.record.Revision != before.Revision+1 || s.record.Format != 2 {
+	if session.calls != 1 || session.expected != before.Revision || s.record.Revision != before.Revision+1 {
 		t.Fatalf("unexpected legacy Save: calls=%d expected=%d record=%+v", session.calls, session.expected, s.record)
 	}
 	if s.record.Attempts["old"] != final || s.record.Attempts["new"].NodeID != "created" || s.record.Attempts["new"].State != AttemptFailed {

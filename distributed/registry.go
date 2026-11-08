@@ -1,3 +1,5 @@
+// 本文件负责本地业务能力注册与输入恢复；传输版本由 task.go 验证，
+// checkpoint 编码由后端 setup/Load 验证，Registry 只匹配完整业务 Route。
 package distributed
 
 import (
@@ -55,7 +57,12 @@ func routeFor(taskType, version string, a Assembly) (Route, error) {
 		return Route{}, ErrInvalid
 	}
 	m, _ := json.Marshal(i.CodecManifest)
-	return Route{taskType, version, i.Definition, hash(m), Protocol, durable.RecordFormat, PayloadFormat}, nil
+	return Route{
+		TaskType:        taskType,
+		BusinessVersion: version,
+		Definition:      i.Definition,
+		ManifestDigest:  hash(m),
+	}, nil
 }
 
 // Register 调用一次纯组装过程以推导其能力。完全相同的路由重复注册会报错
@@ -98,8 +105,8 @@ func (r *Registry) Capabilities() []Route {
 
 // Resolve 先验证规范字节，再验证精确路由以及新组装的定义和清单，
 // 然后解码并重新计算输入指纹。它只返回通过验证的图和输入。
-// 后续 Runtime 的已认领入口仍必须验证所有已存储的 RunRecord 引用及格式，
-// 并且必须在执行前重新确认所有权。
+// 后端 setup/Load 必须严格验证 checkpoint 编码；后续 Runtime 的已认领入口
+// 仍必须验证所有已存储的 RunRecord 引用，并在执行前重新确认所有权。
 // Resolve 既不确认租约有效，也不启动执行。
 func (r *Registry) Resolve(ctx context.Context, t Task) (Assembly, pulse.Inputs, error) {
 	var in pulse.Inputs

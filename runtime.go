@@ -162,7 +162,7 @@ func (r *Runtime) executeSession(ctx context.Context, g *pulse.Graph, in pulse.I
 		if idErr != nil {
 			return nil, idErr
 		}
-		stored = RunRecord{Format: RecordFormat, RunID: opts.RunID, Version: opts.Version,
+		stored = RunRecord{RunID: opts.RunID, Version: opts.Version,
 			Definition: d.fingerprint, RootScope: id, Scopes: make(map[string]ScopeRecord), Attempts: make(map[string]AttemptRecord)}
 	}
 	state = &runState{session: session, def: d, record: cloneRecord(stored), event: opts.OnEvent}

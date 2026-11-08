@@ -53,23 +53,6 @@ func (s *runState) hasIncrementalSource(scope, key string, historical bool) bool
 
 func (s *runState) validateStreams() error {
 	r := s.record
-	if r.Format == 1 {
-		if len(r.Streams)+len(r.Messages)+len(r.Managed) != 0 {
-			return fmt.Errorf("durable: format 1 cannot contain incremental records")
-		}
-		for _, scope := range r.Scopes {
-			if scope.Bindings {
-				return fmt.Errorf("durable: format 1 cannot contain binding fingerprints")
-			}
-			for _, node := range scope.Nodes {
-				for _, value := range node.Outputs {
-					if value.Stream != nil {
-						return fmt.Errorf("durable: format 1 cannot contain stream descriptors")
-					}
-				}
-			}
-		}
-	}
 	for key, record := range r.Streams {
 		id := record.Stream.ID
 		if key != streamKey(id) {

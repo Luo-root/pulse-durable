@@ -54,7 +54,10 @@ func TestMaintenanceRequestAndStrictReceipt(t *testing.T) {
 func maintenanceImageFixture(t *testing.T) (CompactStorageRequest, []byte) {
 	task := taskFixture(t, "tenant", "maintenance")
 	r := record(task, 1)
-	snapshot, _ := json.Marshal(r)
+	snapshot, err := recordio.EncodeSnapshot(r)
+	if err != nil {
+		t.Fatal(err)
+	}
 	chain := durable.SeedChain(sha256.Sum256(snapshot))
 	batch := nextBatch(t, r)
 	wire, _ := durable.MarshalChangeBatch(batch)
@@ -81,12 +84,12 @@ func TestMaintenanceBuildVerifiesChainAndCancellation(t *testing.T) {
 	}
 	for _, want := range []durable.RunRecord{
 		{
-			Format: durable.RecordFormat, RunID: "shape-nil", Revision: 1,
+			RunID: "shape-nil", Revision: 1,
 			Scopes: map[string]durable.ScopeRecord{}, Attempts: map[string]durable.AttemptRecord{},
 			Streams: nil, Messages: nil, Managed: nil,
 		},
 		{
-			Format: durable.RecordFormat, RunID: "shape-empty", Revision: 2,
+			RunID: "shape-empty", Revision: 2,
 			Scopes: map[string]durable.ScopeRecord{
 				"root": {Nodes: map[string]durable.NodeRecord{
 					"node": {Outputs: []durable.ValueRecord{
@@ -107,7 +110,7 @@ func TestMaintenanceBuildVerifiesChainAndCancellation(t *testing.T) {
 			Version int               `json:"version"`
 			Record  durable.RunRecord `json:"record"`
 		}
-		if err = json.Unmarshal(wire, &envelope); err != nil || envelope.Version != 1 || !reflect.DeepEqual(envelope.Record, want) {
+		if err = json.Unmarshal(wire, &envelope); err != nil || envelope.Version != 2 || !reflect.DeepEqual(envelope.Record, want) {
 			t.Fatalf("snapshot envelope changed shape %q: got %#v, want %#v (err=%v)", want.RunID, envelope, want, err)
 		}
 		got, err := recordio.DecodeSnapshot(wire)
@@ -138,7 +141,7 @@ func TestMaintenanceSQLBoundaryContract(t *testing.T) {
 			t.Fatal("missing schema contract", s)
 		}
 	}
-	for _, s := range []string{"SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp", "x.permission='maintain'", "pg_advisory_xact_lock", "FOR UPDATE", "p.expires_at<=t", "r.representation_generation<>p.generation", "r.revision<p.source_revision", "maintenance_watermark", "INSERT INTO pulse_durable_distributed.maintenance_receipts", "worker token forbidden", "jsonb_object_keys(j)", "j->'version' IS DISTINCT FROM '1'::jsonb", "j->'record'->>'run_id'", "j->'record'->>'revision'", "j->'record'->>'format'", "j->'record'->>'definition'", "j->'record'->>'inputs'", "j->'record'->>'root_scope'", "jsonb_object_keys(j->'record')"} {
+	for _, s := range []string{"SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp", "x.permission='maintain'", "pg_advisory_xact_lock", "FOR UPDATE", "p.expires_at<=t", "r.representation_generation<>p.generation", "r.revision<p.source_revision", "maintenance_watermark", "INSERT INTO pulse_durable_distributed.maintenance_receipts", "worker token forbidden", "snapshot_value_bytes(j,'snapshot',false)", "j->>'version' IS DISTINCT FROM '2'", "j->'record'->>'run_id'", "j->'record'->>'revision'", "j->'record'->>'definition'", "j->'record'->>'inputs'", "j->'record'->>'root_scope'"} {
 		if !strings.Contains(maintenanceSQL, s) {
 			t.Fatal("missing publication contract", s)
 		}

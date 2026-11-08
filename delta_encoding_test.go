@@ -16,7 +16,7 @@ func wireTestBatch(t *testing.T) ChangeBatch {
 	if err := tx.putPending("s", ^uint64(0), nil, &StreamMessageRecord{Sequence: ^uint64(0), Value: ValueRecord{Name: "v", State: "ready", Data: []byte{1, 2}}}); err != nil {
 		t.Fatal(err)
 	}
-	return ChangeBatch{header: ChangeHeader{BatchFormat: 1, LogicalFormat: 2, RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "root", ExpectedRevision: 7, Revision: 8}, tx: tx}
+	return ChangeBatch{header: ChangeHeader{RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "r", ExpectedRevision: 7, Revision: 8}, tx: tx}
 }
 
 func TestChangeBatchWireCanonicalRoundTrip(t *testing.T) {
@@ -76,7 +76,7 @@ func TestWirePreservesNilAndEmptyData(t *testing.T) {
 	_ = tx1.putAttempt("a", nil, AttemptRecord{Parent: "p", NodeID: "n", Index: 1, Limit: 1, State: AttemptActive})
 	tx2 := newRecordTransaction(1)
 	_ = tx2.putAttempt("a", nil, AttemptRecord{Parent: "p", NodeID: "n", Index: 1, Limit: 1, State: AttemptActive})
-	h := ChangeHeader{BatchFormat: 1, LogicalFormat: 2, RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "r", ExpectedRevision: 1, Revision: 2}
+	h := ChangeHeader{RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "r", ExpectedRevision: 1, Revision: 2}
 	_ = tx1.putNode("s", "n", nil, NodeRecord{NodeID: "n", Outputs: []ValueRecord{{Name: "x", State: "ready", Data: nil}}})
 	_ = tx2.putNode("s", "n", nil, NodeRecord{NodeID: "n", Outputs: []ValueRecord{{Name: "x", State: "ready", Data: []byte{}}}})
 	a, e := MarshalChangeBatch(ChangeBatch{header: h, tx: tx1})

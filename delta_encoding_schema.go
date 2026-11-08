@@ -82,6 +82,9 @@ func normalizeWire(data []byte, typ reflect.Type, payload bool, depth int) ([]by
 		if null {
 			return []byte("null"), nil
 		}
+		if typ.Elem().Kind() == reflect.Uint8 {
+			return normalizeWireBytes(data, depth)
+		}
 		var a []json.RawMessage
 		if json.Unmarshal(data, &a) != nil {
 			return nil, errInvalidChangeWire

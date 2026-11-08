@@ -58,7 +58,6 @@ func (s *runState) initialize(ctx context.Context, proposed RunRecord) (err erro
 	if s.record.Revision != 0 {
 		return s.stop(fmt.Errorf("%w: already initialized", ErrConflict))
 	}
-	proposed.Format = RecordFormat
 	proposed.Revision = 1
 	// panic(nil) 在兼容模式下 recover 为 nil，须按调用是否正常返回判定。
 	// Store panic 沿原契约不保留原值；Initialize 异常仍须锁存 stopped。
@@ -132,7 +131,7 @@ func (s *runState) openAttempt(ctx context.Context, req pulse.CheckpointAttemptR
 	}
 	var latest AttemptRecord
 	var latestID string
-	if s.record.Format == SemanticRecordFormat && req.Boundary != "" {
+	if hasAnySemanticEvidence(s.record) && req.Boundary != "" {
 		index, err := s.recoverySummaries()
 		if err != nil {
 			return pulse.CheckpointAttempt{}, err
@@ -298,7 +297,7 @@ func (s *runState) newID() (string, error) {
 		_, attemptExists := s.record.Attempts[id]
 		_, messageExists := s.record.Messages[id]
 		reserved := false
-		if s.record.Format == SemanticRecordFormat {
+		if hasAnySemanticEvidence(s.record) {
 			index, err := s.recoverySummaries()
 			if err != nil {
 				return "", err

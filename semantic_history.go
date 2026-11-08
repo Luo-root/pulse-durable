@@ -1,5 +1,5 @@
-// 本文件定义逻辑历史证据，类似记录层的一组值对象与公共校验函数。
-// 它负责格式闭合和批次承诺，不读取后端、不决定历史保留，也不授予删除或回放权限。
+// 本文件定义逻辑历史证据，类似记录层的一组可组合值对象与公共校验函数。
+// 它负责证据组件的闭合和批次承诺，不读取后端、不决定历史保留，也不授予删除或回放权限。
 package durable
 
 import (
@@ -8,13 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"unicode/utf8"
-)
-
-// RecordFormat3 是携带语义历史证据的逻辑记录格式。
-// SemanticRecordFormat 是同一格式的语义别名，代码中优先使用它表达用途。
-const (
-	RecordFormat3        = 3
-	SemanticRecordFormat = RecordFormat3
 )
 
 // HistorySummaryKey 标识一条由语义历史压缩产生的摘要。
@@ -49,7 +42,7 @@ type CommitIndexEntry struct {
 	BatchDigest    string `json:"batch_digest"`
 }
 
-// Provenance 描述当前 Format3 记录由哪一条逻辑来源链产生。
+// Provenance 描述当前记录由哪一条逻辑来源链产生。
 // Digest 是固定字段的 canonical 摘要，用于防止调用方提交互相矛盾的
 // 来源元数据。它不是签名，也不是授权凭据；OriginRunID 可以指向另一个
 // Run，这为后续指定位置派生回放保留来源边界。
@@ -158,26 +151,36 @@ func validUTF8Text(s string) bool {
 	return true
 }
 
-// ValidateSemanticEvidence 检查记录的逻辑格式与语义历史证据是否闭合。
-// 它只负责 Format1/2/3 与摘要、CommitIndex、Provenance 的公共结构关系；
-// 不检查图定义、Codec、运行所有权、物理链或数据库 head。各后端在解码
-// 记录后调用它，Runtime 还会继续执行图和恢复投影校验。
+// hasAnySemanticEvidence reports whether a record carries any member of the
+// semantic evidence component. All three members must be present for the
+// component to be meaningful; a partial component is invalid.
+func hasAnySemanticEvidence(r RunRecord) bool {
+	return r.HistorySummaries != nil || r.CommitIndex != nil || r.Provenance != nil
+}
+
+// hasCompleteSemanticEvidence reports only component shape. Field validity,
+// revision coverage, and digests are checked by validateSemanticEvidence.
+func hasCompleteSemanticEvidence(r RunRecord) bool {
+	return r.HistorySummaries != nil && r.CommitIndex != nil && r.Provenance != nil
+}
+
+// ValidateSemanticEvidence 检查记录的语义历史证据是否闭合。
+// 三类证据全 nil 时记录是普通记录；任一组件出现时，三者必须同时出现，
+// 并通过摘要、CommitIndex、Provenance 的字段校验。格式/编码版本属于
+// recordio/backend 边界，不由 RunRecord 或本函数判断。
 func ValidateSemanticEvidence(r RunRecord) error {
 	return validateSemanticEvidence(r)
 }
 
 func validateSemanticEvidence(r RunRecord) error {
-	if !IsLogicalRecordFormat(r.Format) {
-		return fmt.Errorf("%w: unsupported logical record format", ErrInvalidRecord)
-	}
-	if r.Format != SemanticRecordFormat {
-		if r.HistorySummaries != nil || r.CommitIndex != nil || r.Provenance != nil {
-			return fmt.Errorf("%w: format 2 record contains format 3 evidence", ErrInvalidRecord)
-		}
+	if !hasAnySemanticEvidence(r) {
 		return nil
 	}
+	if !hasCompleteSemanticEvidence(r) {
+		return fmt.Errorf("%w: semantic evidence component is incomplete", ErrInvalidRecord)
+	}
 	if len(r.HistorySummaries) == 0 || r.CommitIndex == nil || r.Provenance == nil {
-		return fmt.Errorf("%w: format 3 record lacks semantic evidence", ErrInvalidRecord)
+		return fmt.Errorf("%w: semantic evidence component is empty", ErrInvalidRecord)
 	}
 	if err := r.Provenance.validate(); err != nil {
 		return err
@@ -245,7 +248,7 @@ func commitIndexPosition(values []CommitIndexEntry, revision uint64) int {
 	return -1
 }
 
-// semanticBatchContentDigest 计算 Format3 批次的内容摘要。
+// semanticBatchContentDigest 计算语义证据批次的内容摘要。
 // CommitIndexEntry 自身不参与这个摘要，避免“索引记录自身的 Digest
 // 又依赖包含该索引的 wire”形成循环；它绑定的是同一 header 和同一业务
 // 操作集合、但去掉 commit_index 操作后的 canonical wire。
@@ -265,15 +268,28 @@ func semanticBatchContentDigest(b ChangeBatch) (string, error) {
 // 每批恰好追加下一条索引、摘要至少保留一条、来源不能消失。所有可能失败的
 // 检查先于 tx.apply，因此失败不会污染调用方拥有的映射或业务 Data。
 func (b ChangeBatch) validateSemanticTransition(record RunRecord) error {
-	if b.header.LogicalFormat != SemanticRecordFormat {
+	if !hasAnySemanticEvidence(record) {
+		if b.tx.hasSemanticEvidence() || b.tx.historyCompression {
+			return fmt.Errorf("%w: semantic changes require an existing evidence component", ErrConflict)
+		}
 		return nil
+	}
+	if !hasCompleteSemanticEvidence(record) {
+		return validateSemanticEvidence(record)
+	}
+	// 底层只读保存 opaque 摘要不代表它可执行。即使本批没有触碰摘要，
+	// 修改前也要确认现有每种必需语义已装配；只查 Kind，不重扫业务历史。
+	for _, summary := range record.HistorySummaries {
+		if _, known := defaultHistorySummaryRegistry.handlers[summary.Kind]; !known {
+			return fmt.Errorf("%w: summary kind %q has no registered semantics", ErrUnsupportedCapability, summary.Kind)
+		}
 	}
 	if b.tx.historyCompression {
 		if err := b.validateHistoryCompressionTransition(record); err != nil {
 			return err
 		}
 	}
-	if record.Format != SemanticRecordFormat || len(record.HistorySummaries) == 0 ||
+	if len(record.HistorySummaries) == 0 ||
 		uint64(len(record.CommitIndex)) != record.Revision || record.Revision == 0 || record.Provenance == nil {
 		return fmt.Errorf("%w: source semantic evidence is incomplete", ErrInvalidRecord)
 	}

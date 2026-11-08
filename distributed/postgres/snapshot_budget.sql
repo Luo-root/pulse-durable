@@ -73,7 +73,7 @@ BEGIN
  END IF;
  fields:=CASE shape
   WHEN 'attempt' THEN '{"parent":"text","node_id":"text","boundary":"text","index":"int","limit":"int","state":"text"}'::jsonb
-  WHEN 'scope' THEN '{"graph":"text","path":"text","inputs":"text","nodes":"nodemap?","bindings":"bool"}'::jsonb
+  WHEN 'scope' THEN '{"graph":"text","path":"text","inputs":"text","nodes":"nodemap?"}'::jsonb
   WHEN 'node' THEN '{"node_id":"text","attempt":"text","reason":"text","outputs":"value[]?"}'::jsonb
   WHEN 'value' THEN '{"name":"text","type_id":"text","version":"text","state":"text","digest":"text","data":"bytes","stream":"descriptor?"}'::jsonb
   WHEN 'id' THEN '{"scope":"text","node_id":"text","key":"text","group":"text","generation":"uint"}'::jsonb
@@ -84,7 +84,7 @@ BEGIN
   WHEN 'message' THEN '{"scope":"text","parent":"text","node_id":"text","input":"id","sequence":"uint","index":"int","limit":"int","state":"text"}'::jsonb
   WHEN 'managed' THEN '{"scope":"text","parent":"text","node_id":"text","state":"value[]?","values":"value[]?"}'::jsonb
   WHEN 'managed_header' THEN '{"scope":"text","parent":"text","node_id":"text"}'::jsonb
-  WHEN 'record' THEN '{"format":"int","run_id":"text","revision":"uint","version":"text","definition":"text","inputs":"text","root_scope":"text","scopes":"scopemap?","attempts":"attemptmap?","streams":"streammap?","messages":"messagemap?","managed":"managedmap?"}'::jsonb
+  WHEN 'record' THEN '{"run_id":"text","revision":"uint","version":"text","definition":"text","inputs":"text","root_scope":"text","scopes":"scopemap?","attempts":"attemptmap?","streams":"streammap?","messages":"messagemap?","managed":"managedmap?"}'::jsonb
   WHEN 'snapshot' THEN '{"version":"int","record":"record"}'::jsonb
  END;
  IF fields IS NULL OR typ<>'object' OR (SELECT count(*) FROM jsonb_object_keys(v))<>(SELECT count(*) FROM jsonb_object_keys(fields)) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot object'; END IF;
@@ -102,7 +102,7 @@ CREATE FUNCTION pulse_durable_distributed.snapshot_budget_initialize(ns text,rid
 DECLARE rec jsonb:=j->'record'; k text; root text:=rec->>'root_scope'; n bigint; total bigint; top_bytes bigint:=0; value jsonb;
 BEGIN
  total:=snapshot_value_bytes(j,'snapshot',false);
- IF j->>'version' IS DISTINCT FROM '1' OR total IS DISTINCT FROM actual_bytes THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noncanonical initial snapshot'; END IF;
+ IF j->>'version' IS DISTINCT FROM '2' OR total IS DISTINCT FROM actual_bytes THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='noncanonical initial snapshot'; END IF;
  IF total>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD008',MESSAGE='snapshot budget exhausted'; END IF;
  FOR k IN SELECT unnest(ARRAY['scopes','attempts','streams','messages','managed']) LOOP
   value:=rec->k; n:=CASE WHEN value='null'::jsonb THEN 0 ELSE (SELECT count(*) FROM jsonb_object_keys(value)) END;
@@ -111,7 +111,7 @@ BEGIN
  END LOOP;
  INSERT INTO snapshot_objects VALUES(ns,rid,'scope',root,'','',snapshot_value_bytes(rec->'scopes'->root,'scope',false)-2);
  INSERT INTO snapshot_containers VALUES(ns,rid,'nodes',root,false,0,0);
- UPDATE runs SET snapshot_bytes=total,snapshot_fixed_bytes=total-top_bytes,snapshot_budget_version=1 WHERE namespace=ns AND run_id=rid;
+ UPDATE runs SET snapshot_bytes=total,snapshot_fixed_bytes=total-top_bytes,snapshot_budget_version=2 WHERE namespace=ns AND run_id=rid;
 END $$;
 
 -- JSON 对象键采用数组编码，避免用户键中的分隔符产生复合键碰撞。
@@ -123,8 +123,8 @@ CREATE FUNCTION pulse_durable_distributed.snapshot_budget_apply(r pulse_durable_
 <<budget>>
 DECLARE op jsonb; v jsonb; e jsonb; seen jsonb:='{}'; deltas jsonb:='{}'; delta jsonb; kind text; shape text; k1 text; k2 text; k3 text; ck text; cp text; state boolean; old_bytes bigint; new_bytes bigint; entry_delta bigint; dc bigint; initial_children bigint; n bigint; s bigint; was_nil boolean; now_nil boolean; before_bytes bigint; after_bytes bigint; candidate bigint:=r.snapshot_bytes+length((r.revision+1)::text)-length(r.revision::text); old_exists boolean; tuple text; c snapshot_containers;
 BEGIN
- IF r.snapshot_budget_version<>1 OR r.snapshot_bytes<1 OR r.snapshot_bytes>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot ledger'; END IF;
- IF jsonb_typeof(j)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(j))<>3 OR NOT(j ?& ARRAY['version','header','ops']) OR jsonb_typeof(j->'version') IS DISTINCT FROM 'number' OR j->>'version'<>'1' OR jsonb_typeof(j->'header') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(j->'header'))<>9 OR NOT(j->'header' ?& ARRAY['batch_format','logical_format','run_id','business_version','definition_digest','inputs_digest','root_scope','expected_revision','revision']) OR EXISTS(SELECT 1 FROM jsonb_each(j->'header') x WHERE jsonb_typeof(x.value)<>'string') OR jsonb_typeof(j->'ops') NOT IN ('array','null') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget wire envelope'; END IF;
+ IF r.snapshot_budget_version<>2 OR r.snapshot_bytes<1 OR r.snapshot_bytes>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot ledger'; END IF;
+ IF jsonb_typeof(j)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(j))<>3 OR NOT(j ?& ARRAY['version','header','ops']) OR jsonb_typeof(j->'version') IS DISTINCT FROM 'number' OR j->>'version'<>'2' OR jsonb_typeof(j->'header') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(j->'header'))<>7 OR NOT(j->'header' ?& ARRAY['run_id','business_version','definition_digest','inputs_digest','root_scope','expected_revision','revision']) OR EXISTS(SELECT 1 FROM jsonb_each(j->'header') x WHERE jsonb_typeof(x.value)<>'string') OR jsonb_typeof(j->'ops') NOT IN ('array','null') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget wire envelope'; END IF;
  IF j->'ops'='null'::jsonb THEN j:=jsonb_set(j,'{ops}','[]'::jsonb); END IF;
  IF jsonb_array_length(j->'ops')>4096 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='too many budget operations'; END IF;
  -- 先建父对象，子操作与 wire 中的排序无关。

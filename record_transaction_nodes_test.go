@@ -12,7 +12,7 @@ func TestRecordTransactionScopeAndNodeBatch(t *testing.T) {
 	for _, nodeFirst := range []bool{false, true} {
 		s, session := transactionState()
 		tx := newRecordTransaction(s.record.Revision)
-		header := ScopeRecord{Graph: "child", Path: "mount", Inputs: "hash", Bindings: true, Nodes: map[string]NodeRecord{}}
+		header := ScopeRecord{Graph: "child", Path: "mount", Inputs: "hash", Nodes: map[string]NodeRecord{}}
 		node := NodeRecord{NodeID: "result", Outputs: []ValueRecord{{Data: []byte("child")}}}
 		stageNode := func() {
 			t.Helper()
@@ -31,7 +31,7 @@ func TestRecordTransactionScopeAndNodeBatch(t *testing.T) {
 		}
 		// 头不能保留调用方映射，即使它原本为空。
 		header.Nodes["injected"] = node
-		if err := tx.createScope("child", ScopeRecord{Graph: "child", Path: "mount", Inputs: "hash", Bindings: true}); err != nil {
+		if err := tx.createScope("child", ScopeRecord{Graph: "child", Path: "mount", Inputs: "hash"}); err != nil {
 			t.Fatal(err)
 		}
 		old := s.record.Scopes["root"].Nodes["result"]
@@ -42,7 +42,7 @@ func TestRecordTransactionScopeAndNodeBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 		child := s.record.Scopes["child"]
-		if session.calls != 1 || child.Graph != "child" || !child.Bindings || len(child.Nodes) != 1 || string(child.Nodes["result"].Outputs[0].Data) != "child" {
+		if session.calls != 1 || child.Graph != "child" || child.Path != "mount" || child.Inputs != "hash" || len(child.Nodes) != 1 || string(child.Nodes["result"].Outputs[0].Data) != "child" {
 			t.Fatalf("scope header and node did not merge: %+v calls=%d", child, session.calls)
 		}
 	}

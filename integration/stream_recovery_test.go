@@ -56,8 +56,8 @@ func TestStreamRecoveryAcrossProcessExit(t *testing.T) {
 			}
 			after := loadStreamRecord(t, dir)
 			assertStreamTransactions(t, after)
-			if after.RootScope != before.RootScope || after.Revision <= before.Revision || after.Format != 2 {
-				t.Fatal("lost run identity, revision or format")
+			if after.RootScope != before.RootScope || after.Revision <= before.Revision {
+				t.Fatal("lost run identity or revision")
 			}
 			if scenario == "completed-tail" || scenario == "finish-after" {
 				if got := callCount(dir, "source"); got != 1 {

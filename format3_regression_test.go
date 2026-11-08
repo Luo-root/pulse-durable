@@ -11,7 +11,6 @@ import (
 func format3Fixture(t *testing.T) (RunRecord, ChangeBatch) {
 	t.Helper()
 	base := RunRecord{
-		Format:     SemanticRecordFormat,
 		RunID:      "semantic-run",
 		Revision:   1,
 		Version:    "v1",
@@ -26,11 +25,12 @@ func format3Fixture(t *testing.T) (RunRecord, ChangeBatch) {
 		Provenance:  &Provenance{OriginRunID: "semantic-run", OriginRevision: 1, OriginRecordDigest: strings.Repeat("0", 64), CompressionID: "semantic-compression-v1"},
 	}
 	base.Provenance.Digest = provenanceDigest(base.Provenance.OriginRunID, base.Provenance.OriginRevision, base.Provenance.OriginRecordDigest, base.Provenance.CompressionID)
-	payload := []byte(`{"through":1,"kind":"retry"}`)
-	base.HistorySummaries = []HistorySummary{{Kind: "fixture", ID: "root/node/retry", SourceRevision: 1, SourceDigest: strings.Repeat("1", 64), Payload: []byte("old"), Digest: digest([]byte("old"))}}
+	payload := raw(retryPrefixSummaryPayload{LastPrunedID: strings.Repeat("b", 32), Parent: strings.Repeat("c", 32), NodeID: "node", Boundary: "retry", ThroughIndex: 2, Limit: 3, LastPrunedDigest: strings.Repeat("d", 64)})
+	oldPayload := raw(retryPrefixSummaryPayload{LastPrunedID: strings.Repeat("a", 32), Parent: strings.Repeat("c", 32), NodeID: "node", Boundary: "retry", ThroughIndex: 1, Limit: 3, LastPrunedDigest: strings.Repeat("e", 64)})
+	base.HistorySummaries = []HistorySummary{{Kind: RetryPrefixSummaryKind, ID: "root/node/retry", SourceRevision: 1, SourceDigest: strings.Repeat("1", 64), Payload: oldPayload, Digest: digest(oldPayload)}}
 	base.CommitIndex = []CommitIndexEntry{{Revision: 1, ParentRevision: 0, BatchDigest: strings.Repeat("0", 64)}}
 	summary := HistorySummary{
-		Kind:           "fixture",
+		Kind:           RetryPrefixSummaryKind,
 		ID:             "root/node/retry",
 		SourceRevision: 1,
 		SourceDigest:   strings.Repeat("c", 64),
@@ -102,7 +102,7 @@ func TestFormat3ApplyAndRecoveryEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ack.Header.LogicalFormat != SemanticRecordFormat || base.Format != SemanticRecordFormat || base.Revision != 2 {
+	if !hasCompleteSemanticEvidence(base) || base.Revision != 2 {
 		t.Fatalf("format3 upgrade did not publish: ack=%+v record=%+v", ack, base)
 	}
 	if err := validateSemanticEvidence(base); err != nil {
@@ -116,8 +116,8 @@ func TestFormat3ApplyAndRecoveryEvidence(t *testing.T) {
 	}
 
 	base.HistorySummaries[0].Payload[0] = 'X'
-	stored := batch.tx.summaries[historySummaryKey{kind: "fixture", id: "root/node/retry"}].value.Payload
-	if string(stored) != `{"through":1,"kind":"retry"}` {
+	stored := batch.tx.summaries[historySummaryKey{kind: RetryPrefixSummaryKind, id: "root/node/retry"}].value.Payload
+	if !bytes.Equal(stored, raw(retryPrefixSummaryPayload{LastPrunedID: strings.Repeat("b", 32), Parent: strings.Repeat("c", 32), NodeID: "node", Boundary: "retry", ThroughIndex: 2, Limit: 3, LastPrunedDigest: strings.Repeat("d", 64)})) {
 		t.Fatal("summary transaction retained an alias")
 	}
 }
@@ -128,7 +128,7 @@ func TestFormat3WireCanonicalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{`"logical_format":"3"`, `"kind":"history_summary"`, `"kind":"commit_index"`, `"kind":"provenance"`} {
+	for _, marker := range []string{`"version":2`, `"kind":"history_summary"`, `"kind":"commit_index"`, `"kind":"provenance"`} {
 		if !bytes.Contains(wire, []byte(marker)) {
 			t.Fatalf("format3 wire lacks %s: %s", marker, wire)
 		}
@@ -168,27 +168,25 @@ func TestFormat3WireCanonicalRoundTrip(t *testing.T) {
 func TestFormat3PreconditionsAndStrictRecordValidation(t *testing.T) {
 	base, batch := format3Fixture(t)
 	changed := CloneRecord(base)
-	changed.Format = SemanticRecordFormat
-	changed.HistorySummaries = []HistorySummary{{Kind: "other", ID: "id"}}
-	if err := validateSemanticEvidence(changed); err == nil {
-		t.Fatal("incomplete format3 record accepted")
+	changed.Provenance = nil
+	if err := validateSemanticEvidence(changed); !errors.Is(err, ErrInvalidRecord) {
+		t.Fatalf("partial evidence component accepted: %v", err)
 	}
 
 	legacy := CloneRecord(base)
-	legacy.Format = RecordFormat
-	legacy.HistorySummaries = []HistorySummary{{Kind: "fixture", ID: "id"}}
+	legacy.HistorySummaries = nil
 	if err := validateSemanticEvidence(legacy); !errors.Is(err, ErrInvalidRecord) {
-		t.Fatalf("format2 evidence was not rejected: %v", err)
+		t.Fatalf("missing summaries were not rejected: %v", err)
 	}
 
 	proposal := CloneRecord(base)
 	bad := batch
 	bad.tx = batch.tx.copy()
-	key := historySummaryKey{kind: "fixture", id: "root/node/retry"}
+	key := historySummaryKey{kind: RetryPrefixSummaryKind, id: "root/node/retry"}
 	op := bad.tx.summaries[key]
 	op.absent = false
 	op.expected = HistorySummary{
-		Kind:           "fixture",
+		Kind:           RetryPrefixSummaryKind,
 		ID:             "root/node/retry",
 		SourceRevision: 1,
 		SourceDigest:   strings.Repeat("0", 64),
@@ -204,27 +202,24 @@ func TestFormat3PreconditionsAndStrictRecordValidation(t *testing.T) {
 	}
 }
 
-func TestFormat3WireRejectsMismatchedFormatAndMissingEvidence(t *testing.T) {
+func TestEvidenceWireRejectsLegacyVersion(t *testing.T) {
 	base, batch := format3Fixture(t)
 	wire, err := MarshalChangeBatch(batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	format2 := bytes.Replace(wire, []byte(`"logical_format":"3"`), []byte(`"logical_format":"2"`), 1)
-	if _, err := UnmarshalChangeBatch(format2); err == nil {
-		t.Fatal("format2 wire carrying semantic operations accepted")
+	legacyWire := bytes.Replace(wire, []byte(`"version":2`), []byte(`"version":1`), 1)
+	if _, err := UnmarshalChangeBatch(legacyWire); err == nil {
+		t.Fatal("legacy wire version accepted")
 	}
 
-	noEvidence := ChangeBatch{
-		header: ChangeHeader{
-			BatchFormat: 1, LogicalFormat: SemanticRecordFormat,
-			RunID: base.RunID, BusinessVersion: base.Version,
+	ordinary := ChangeBatch{
+		header: ChangeHeader{RunID: base.RunID, BusinessVersion: base.Version,
 			DefinitionDigest: base.Definition, InputsDigest: base.Inputs,
-			RootScope: base.RootScope, ExpectedRevision: 1, Revision: 2,
-		},
+			RootScope: base.RootScope, ExpectedRevision: 1, Revision: 2},
 		tx: newRecordTransaction(1),
 	}
-	if _, err := MarshalChangeBatch(noEvidence); err == nil {
-		t.Fatal("format3 wire without semantic operations accepted")
+	if _, err := MarshalChangeBatch(ordinary); err != nil {
+		t.Fatalf("ordinary wire without semantic evidence rejected: %v", err)
 	}
 }

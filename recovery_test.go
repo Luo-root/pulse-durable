@@ -159,7 +159,7 @@ func TestCorruptRecordsFailBeforeEventsOrBusiness(t *testing.T) {
 				n := s.Nodes["last"]
 				switch corruption {
 				case "format":
-					r.Format++
+					r.HistorySummaries = []HistorySummary{{Kind: "partial"}}
 				case "missing-bytes":
 					n.Outputs[0].Data = nil
 				case "checksum":
@@ -374,15 +374,15 @@ func TestResumeFailedRootStopsBeforeRestoreOrStart(t *testing.T) {
 }
 
 func TestLegacyFailedStreamValidationPrecedesRepair(t *testing.T) {
-	for _, corruption := range []string{"none", "format-one", "association", "sibling-canceled"} {
+	for _, corruption := range []string{"none", "partial-evidence", "association", "sibling-canceled"} {
 		t.Run(corruption, func(t *testing.T) {
 			p := newStreamProtocol(t)
 			key := streamKey(streamID(p.input.Stream.ID))
 			stream := p.s.record.Streams[key]
 			stream.Stream.Terminal = "failed"
 			p.s.record.Streams[key] = stream
-			if corruption == "format-one" {
-				p.s.record.Format = 1
+			if corruption == "partial-evidence" {
+				p.s.record.HistorySummaries = []HistorySummary{{Kind: "partial"}}
 			}
 			if corruption == "association" {
 				stream.Stream.Attempt = p.processor.Scope
@@ -409,8 +409,20 @@ func TestLegacyFailedStreamValidationPrecedesRepair(t *testing.T) {
 			_, err := testRuntime(t, store, NewCodecs()).Resume(context.Background(), g, pulse.Inputs{}, opts)
 			var checkpoint *pulse.CheckpointError
 			if corruption != "none" {
-				if !errors.As(err, &checkpoint) || checkpoint.Operation != "validate restore" || !reflect.DeepEqual(stored, readRecord(t, store, "run")) {
+				wantOperation := "validate restore"
+				if corruption == "partial-evidence" {
+					wantOperation = "load run"
+				}
+				if !errors.As(err, &checkpoint) || checkpoint.Operation != wantOperation {
 					t.Fatalf("damaged history was guessed/repaired: %v", err)
+				}
+				// 损坏证据会被 Store.Load 拒绝，不能用同一拒绝入口读回
+				// 作为“不变”的判据；直接在测试后端锁内比较权威来源。
+				store.mu.Lock()
+				unchanged := reflect.DeepEqual(stored, store.records[stored.RunID])
+				store.mu.Unlock()
+				if !unchanged {
+					t.Fatal("rejected restore modified stored facts")
 				}
 			} else {
 				var signal *pulse.CheckpointScopeFailure
@@ -592,10 +604,10 @@ func TestResumeFixedFormatOneRecord(t *testing.T) {
 	}
 }
 
-func TestFormatOneRejectsIncrementalFields(t *testing.T) {
+func TestPartialEvidenceRejectsIncrementalFields(t *testing.T) {
 	p := newStreamProtocol(t)
-	p.s.record.Format = 1
+	p.s.record.HistorySummaries = []HistorySummary{{Kind: "partial"}}
 	if err := p.s.validateLoaded(); err == nil {
-		t.Fatal("format 1 accepted incremental stream fields")
+		t.Fatal("partial evidence accepted incremental stream fields")
 	}
 }

@@ -136,14 +136,17 @@ func findHistorySummary(values []HistorySummary, key HistorySummaryKey) (History
 	return values[index], true
 }
 
-// checkSemanticEvidence 只检查本批涉及的精确旧值。普通事务要求来源已经是
-// 格式 3；格式 2 的首次证据物化由显式压缩入口单独完成。
+// checkSemanticEvidence 只检查本批涉及的精确旧值。普通事务要求来源已经
+// 携带完整语义证据组件；首次物化由显式边界协议单独完成。
 func (tx *recordTransaction) checkSemanticEvidence(record RunRecord) error {
 	if !tx.hasSemanticEvidence() {
 		return nil
 	}
-	if record.Format != SemanticRecordFormat {
-		return fmt.Errorf("%w: semantic evidence requires an existing format 3 record", ErrConflict)
+	if !hasAnySemanticEvidence(record) {
+		return fmt.Errorf("%w: semantic evidence requires an existing complete evidence component", ErrConflict)
+	}
+	if !hasCompleteSemanticEvidence(record) {
+		return validateSemanticEvidence(record)
 	}
 	for key, op := range tx.summaries {
 		current, exists := findHistorySummary(record.HistorySummaries, HistorySummaryKey{Kind: key.kind, ID: key.id})
@@ -253,11 +256,11 @@ func sortedCommitTransactionRevisions(values map[uint64]putCommitIndex) []uint64
 	return revisions
 }
 
-// ensureSemanticCommitIndex 为已有 Format3 记录的每次普通业务提交补齐下一条
-// 因果索引。索引摘要绑定去掉 commit_index 操作后的 canonical batch，避免
-// CommitIndexEntry.BatchDigest 与它自身循环引用。
+// ensureSemanticCommitIndex 为已有完整语义证据记录的每次普通业务提交
+// 补齐下一条因果索引。索引摘要绑定去掉 commit_index 操作后的 canonical
+// batch，避免 CommitIndexEntry.BatchDigest 与它自身循环引用。
 func (tx *recordTransaction) ensureSemanticCommitIndex(record RunRecord) error {
-	if record.Format != SemanticRecordFormat {
+	if !hasCompleteSemanticEvidence(record) {
 		return nil
 	}
 	if record.Revision == ^uint64(0) {

@@ -52,7 +52,7 @@ func TestSizeMatchesAllFieldEncoding(t *testing.T) {
 		N int    `json:"n"`
 		B []byte `json:"b,omitempty"`
 	}{})
-	if err != nil || string(b) != `{"record":{"b":null,"n":0},"version":1}` {
+	if err != nil || string(b) != `{"record":{"b":null,"n":0},"version":2}` {
 		t.Fatalf("wire changed: %s %v", b, err)
 	}
 }

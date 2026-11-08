@@ -57,7 +57,7 @@ func TestDecodeCorruptIsNotMissingAndRedacted(t *testing.T) {
 			t.Fatalf("corrupt decode: %v", err)
 		}
 	}
-	for _, data := range []string{`{"RunID":"\ud83d\ude80"}`, `{"RunID":"\\uD800"}`, `{"RunID":"\ufffd"}`} {
+	for _, data := range []string{`{"run_id":"\ud83d\ude80"}`, `{"run_id":"\\uD800"}`, `{"run_id":"\ufffd"}`} {
 		if _, err := recordio.Decode([]byte(data)); err != nil {
 			t.Fatal(err)
 		}

@@ -13,7 +13,9 @@ import (
 	"unicode/utf8"
 )
 
-const Version = 1
+// Version 仅标识编码封装，领域记录不携带对应版本字段。
+// 版本 2 使用无领域格式号的固定 DTO；旧字节由边界明确拒绝，不原地迁移。
+const Version = 2
 
 var ErrInvalid = errors.New("snapshot: unsupported field, invalid metadata or size overflow")
 
@@ -32,7 +34,7 @@ func RecordSize(record any) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return Add(n, int64(len(`{"record":,"version":1}`)))
+	return Add(n, int64(len(`{"record":,"version":}`)+len(strconv.Itoa(Version))))
 }
 
 // Size 使用与 Encode 相同的遍历规则计算单个快照值。

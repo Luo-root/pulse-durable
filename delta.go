@@ -7,9 +7,9 @@ import (
 )
 
 // ChangeHeader 将批次绑定到一次不可变运行和一次 revision 转换。
-// 命名空间/所有权栅栏属于 session，而不是调用方提供的字段。
+// 格式/编码版本属于 recordio/backend 边界；根 ChangeHeader 只携带业务身份、
+// CAS 修订位置和本次转换的运行身份，不从 RunRecord 派生任何格式号。
 type ChangeHeader struct {
-	BatchFormat, LogicalFormat                                        int
 	RunID, BusinessVersion, DefinitionDigest, InputsDigest, RootScope string
 	ExpectedRevision, Revision                                        uint64
 }
@@ -46,42 +46,20 @@ func (b ChangeBatch) OperationCount() int {
 }
 
 func changeHeader(r RunRecord) ChangeHeader {
-	return ChangeHeader{BatchFormat: 1, LogicalFormat: RecordFormat, RunID: r.RunID,
-		BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
+	return ChangeHeader{RunID: r.RunID, BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
 		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
 }
 
 func changeHeaderFor(r RunRecord, tx *recordTransaction) ChangeHeader {
-	header := baseChangeHeaderFor(r)
-	if tx != nil && tx.hasSemanticEvidence() {
-		header.LogicalFormat = SemanticRecordFormat
-	}
-	return header
+	return baseChangeHeaderFor(r)
 }
 
 func validChangeHeader(r RunRecord, header ChangeHeader, tx *recordTransaction) bool {
-	if header != baseChangeHeaderFor(r) {
-		return false
-	}
-	if tx != nil && tx.historyCompression {
-		return r.Format == SemanticRecordFormat
-	}
-	if tx != nil && tx.hasSemanticEvidence() {
-		return header.LogicalFormat == SemanticRecordFormat && r.Format == SemanticRecordFormat
-	}
-	if header.LogicalFormat == SemanticRecordFormat {
-		return r.Format == SemanticRecordFormat
-	}
-	return header.LogicalFormat == RecordFormat && (r.Format == 1 || r.Format == RecordFormat)
+	return header == baseChangeHeaderFor(r) && tx != nil
 }
 
 func baseChangeHeaderFor(r RunRecord) ChangeHeader {
-	logical := r.Format
-	if logical == 1 || logical == 0 {
-		logical = RecordFormat
-	}
-	return ChangeHeader{BatchFormat: 1, LogicalFormat: logical, RunID: r.RunID,
-		BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
+	return ChangeHeader{RunID: r.RunID, BusinessVersion: r.Version, DefinitionDigest: r.Definition, InputsDigest: r.Inputs,
 		RootScope: r.RootScope, ExpectedRevision: r.Revision, Revision: r.Revision + 1}
 }
 
@@ -99,7 +77,7 @@ func (b ChangeBatch) ApplyTo(record *RunRecord) (CommitAck, error) {
 		return CommitAck{}, err
 	}
 	b.tx.apply(record)
-	record.Format, record.Revision = b.header.LogicalFormat, b.header.Revision
+	record.Revision = b.header.Revision
 	return CommitAck{Header: b.header}, nil
 }
 
@@ -245,7 +223,7 @@ func (s *runState) applyDelta(ctx context.Context, tx *recordTransaction) (err e
 	// 所有 Initialize 和 Load 边界值都已隔离，批次拥有独立的事务副本。
 	// 确认后只修改私有 record。
 	tx.apply(&s.record)
-	s.record.Format, s.record.Revision = batch.header.LogicalFormat, batch.header.Revision
+	s.record.Revision = batch.header.Revision
 	if len(tx.summaries) != 0 {
 		s.summaryIndex = nil
 	}

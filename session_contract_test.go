@@ -15,7 +15,7 @@ import (
 func memorySeedDigest(r RunRecord) [32]byte { data, _ := json.Marshal(r); return sha256.Sum256(data) }
 
 func contractSeed(id string) RunRecord {
-	return RunRecord{Format: RecordFormat, RunID: id, Revision: 1, Version: "1", Definition: digest([]byte("definition")), Inputs: digest([]byte("inputs")), RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Inputs: digest([]byte("inputs")), Nodes: map[string]NodeRecord{}}}}
+	return RunRecord{RunID: id, Revision: 1, Version: "1", Definition: digest([]byte("definition")), Inputs: digest([]byte("inputs")), RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Graph: "graph", Inputs: digest([]byte("inputs")), Nodes: map[string]NodeRecord{}}}}
 }
 
 func TestUnifiedMemoryInitializeAndApply(t *testing.T) {
@@ -28,7 +28,7 @@ func TestUnifiedMemoryInitializeAndApply(t *testing.T) {
 	seed := contractSeed("run")
 	for _, edit := range []func(*RunRecord){
 		func(r *RunRecord) { r.Revision = 2 }, func(r *RunRecord) { r.RunID = "other" },
-		func(r *RunRecord) { r.Format = 1 }, func(r *RunRecord) { r.Version = "" },
+		func(r *RunRecord) { r.HistorySummaries = []HistorySummary{{Kind: "partial"}} }, func(r *RunRecord) { r.Version = "" },
 		func(r *RunRecord) { r.Attempts = map[string]AttemptRecord{"a": {}} },
 		func(r *RunRecord) { s := r.Scopes["root"]; s.Nodes["n"] = NodeRecord{}; r.Scopes["root"] = s },
 	} {

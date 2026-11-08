@@ -19,11 +19,11 @@ import (
 
 func initialRecord(id string) durable.RunRecord {
 	d := strings.Repeat("0", 64)
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: id, Revision: 1, Version: "v1", Definition: d, Inputs: d, RootScope: "scope", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "g", Inputs: d, Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
+	return durable.RunRecord{RunID: id, Revision: 1, Version: "v1", Definition: d, Inputs: d, RootScope: "scope", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "g", Inputs: d, Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
 }
 func wireBatch(t testing.TB, r durable.RunRecord, ops []any) durable.ChangeBatch {
 	t.Helper()
-	wire, err := json.Marshal(map[string]any{"version": 1, "header": map[string]string{"batch_format": "1", "logical_format": "2", "run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": strconv.FormatUint(r.Revision, 10), "revision": strconv.FormatUint(r.Revision+1, 10)}, "ops": ops})
+	wire, err := json.Marshal(map[string]any{"version": durable.ChangeBatchWireVersion, "header": map[string]string{"run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": strconv.FormatUint(r.Revision, 10), "revision": strconv.FormatUint(r.Revision+1, 10)}, "ops": ops})
 	if err != nil {
 		t.Fatal(err)
 	}

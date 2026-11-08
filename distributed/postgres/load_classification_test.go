@@ -21,7 +21,7 @@ func TestOwnedLoadCorruptionClassification(t *testing.T) {
 	token := d.Token{Identity: task.Identity(), Worker: d.Worker{ID: "worker", BootID: strings.Repeat("a", 32)}, LeaseID: strings.Repeat("b", 32), Epoch: 1}
 	now := time.Now().UTC()
 	until := now.Add(time.Minute)
-	initial, err := json.Marshal(record(task, 1))
+	initial, err := recordio.EncodeSnapshot(record(task, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestOwnedLoadCorruptionClassification(t *testing.T) {
 				Ledger string          `json:"snapshot_ledger_bytes"`
 				Valid  bool            `json:"snapshot_ledger_valid"`
 				Image  json.RawMessage `json:"snapshot_ledger"`
-			}{w, log, 1, strconv.Itoa(len(snapshot)), strconv.Itoa(len(snapshot)), true, snapshotLedgerFixture(t, snapshot)})
+			}{w, log, snapshotBudgetVersion, strconv.Itoa(len(snapshot)), strconv.Itoa(len(snapshot)), true, snapshotLedgerFixture(t, snapshot)})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -98,7 +98,13 @@ func TestDecodeRecordInvalidCategories(t *testing.T) {
 		{name: "snapshot", want: ErrInvalidRecordSnapshot, wire: func(durable.RunRecord) []byte { return []byte(`{"version":`) }},
 		{name: "identity", want: ErrInvalidRecordIdentity, mutate: func(r *durable.RunRecord) { r.RunID = "other" }},
 		{name: "revision", want: ErrInvalidRecordRevision, mutate: func(r *durable.RunRecord) { r.Revision = 2 }},
-		{name: "format", want: ErrInvalidRecordFormat, mutate: func(r *durable.RunRecord) { r.Format++ }},
+		{name: "format", want: ErrInvalidRecordSnapshot, wire: func(r durable.RunRecord) []byte {
+			data, err := recordio.EncodeSnapshot(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return []byte(strings.Replace(string(data), `"version":2`, `"version":999`, 1))
+		}},
 		{name: "version", want: ErrInvalidRecordVersion, mutate: func(r *durable.RunRecord) { r.Version = "other" }},
 		{name: "definition", want: ErrInvalidRecordDefinition, mutate: func(r *durable.RunRecord) { r.Definition = strings.Repeat("a", 64) }},
 		{name: "inputs", want: ErrInvalidRecordInputs, mutate: func(r *durable.RunRecord) { r.Inputs = strings.Repeat("b", 64) }},
@@ -114,7 +120,7 @@ func TestDecodeRecordInvalidCategories(t *testing.T) {
 			encode := tc.wire
 			if encode == nil {
 				encode = func(r durable.RunRecord) []byte {
-					wire, err := recordio.Encode(r)
+					wire, err := recordio.EncodeSnapshot(r)
 					if err != nil {
 						t.Fatal(err)
 					}

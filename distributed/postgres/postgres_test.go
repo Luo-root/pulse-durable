@@ -16,6 +16,7 @@ import (
 	"github.com/Luo-root/pulse"
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/Luo-root/pulse-durable/recordio"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,13 +38,13 @@ func taskFixture(t *testing.T, ns, id string) d.Task {
 	return task
 }
 func record(t d.Task, rev uint64) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: t.Identity().RunID, Revision: rev, Version: t.Route().BusinessVersion, Definition: t.Route().Definition, Inputs: t.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: t.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
+	return durable.RunRecord{RunID: t.Identity().RunID, Revision: rev, Version: t.Route().BusinessVersion, Definition: t.Route().Definition, Inputs: t.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: t.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
 }
 func mut(id string) d.Mutation { return d.Mutation{ID: id, Digest: digest([]byte(id))} }
 func TestValidationAndLosslessRevision(t *testing.T) {
 	task := taskFixture(t, "tenant", "run")
 	r := record(task, math.MaxUint64)
-	b, e := json.Marshal(r)
+	b, e := recordio.EncodeSnapshot(r)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -51,7 +52,7 @@ func TestValidationAndLosslessRevision(t *testing.T) {
 		t.Fatal(e)
 	}
 	r.Inputs = "wrong"
-	b, _ = json.Marshal(r)
+	b, _ = recordio.EncodeSnapshot(r)
 	if _, e = decodeRecord(task, math.MaxUint64, b); !errors.Is(e, d.ErrInvalid) {
 		t.Fatal(e)
 	}
@@ -459,19 +460,33 @@ func TestPostgresProtocol(t *testing.T) {
 			t.Fatal(e)
 		}
 		a := claimOne(t, c, task, "e", time.Minute)
-		good, _ := json.Marshal(record(task, 1))
-		for i, b := range [][]byte{[]byte("not json"), []byte{0xff}, []byte(strings.Replace(string(good), `"revision":1`, `"revision":"1"`, 1)), []byte(strings.Replace(string(good), `"run_id":"direct"`, `"run_id":"different"`, 1)), []byte(strings.Replace(string(good), `"inputs":"`+task.InputsFingerprint()+`"`, `"inputs":"different"`, 1)), []byte(strings.Replace(string(good), `"format":2`, `"format":2,"format":2`, 1))} {
+		good, err := recordio.EncodeSnapshot(record(task, 1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, b := range [][]byte{[]byte("not json"), []byte{0xff}, []byte(strings.Replace(string(good), `"revision":1`, `"revision":"1"`, 1)), []byte(strings.Replace(string(good), `"run_id":"direct"`, `"run_id":"different"`, 1)), []byte(strings.Replace(string(good), `"inputs":"`+task.InputsFingerprint()+`"`, `"inputs":"different"`, 1)), []byte(strings.Replace(string(good), `"version":2`, `"version":2,"version":2`, 1)), []byte(strings.Replace(string(good), `"version":2`, `"version":1`, 1))} {
 			args := owned(a.Token)
 			mutate(args, mut("direct-"+strconv.Itoa(i)))
 			args["expected"] = "0"
 			args["record"] = b
-			if _, e := c.call(ctx, "save", args, true); e == nil {
-				t.Fatalf("malformed record %d accepted", i)
+			if _, e := c.call(ctx, "initialize", args, true); !errors.Is(e, d.ErrInvalid) {
+				t.Fatalf("malformed record %d accepted or rejected for an unrelated reason: %v", i, e)
 			}
 		}
 		s, e := c.Get(ctx, task.Identity())
 		if e != nil || s.Revision != 0 {
 			t.Fatal("invalid writes changed authority", e)
+		}
+		// 正控命中同一个原始 SQL 入口，排除所有负控因为失效操作名
+		// 或缺失权限而一起失败的假验收。
+		args := owned(a.Token)
+		mutate(args, mut("direct-valid"))
+		args["expected"], args["record"] = "0", good
+		if _, e = c.call(ctx, "initialize", args, true); e != nil {
+			t.Fatalf("valid raw initialize rejected: %v", e)
+		}
+		if s, e = c.Get(ctx, task.Identity()); e != nil || s.Revision != 1 {
+			t.Fatal("valid raw initialize was not published", e)
 		}
 		if _, e = c.Cancel(ctx, task.Identity(), mut("cancel-direct")); e != nil {
 			t.Fatal(e)

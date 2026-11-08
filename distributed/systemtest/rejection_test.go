@@ -2,7 +2,6 @@ package systemtest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"sync/atomic"
@@ -14,6 +13,7 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 	"github.com/Luo-root/pulse-durable/distributed/postgres"
 	"github.com/Luo-root/pulse-durable/distributed/worker"
+	"github.com/Luo-root/pulse-durable/recordio"
 )
 
 // 真实协调器集成测试，仅由授权管理员有意破坏任务记录。
@@ -62,7 +62,12 @@ func TestWorkerRejectionBlocks(t *testing.T) {
 				fail.Store(true)
 			} else {
 				expected = "invalid_record"
-				data, _ := json.Marshal(durable.RunRecord{RunID: id.RunID, Revision: 1, Format: durable.RecordFormat, Version: "v1", Definition: route.Definition, Inputs: task.InputsFingerprint(), RootScope: "missing-root", Scopes: map[string]durable.ScopeRecord{}, Attempts: map[string]durable.AttemptRecord{}})
+				// 使用当前快照封装，让 Load 检查到缺失 root 的领域损坏，
+				// 避免裸 JSON 在解码边界提前失败而掩盖本例的验证目标。
+				data, err := recordio.EncodeSnapshot(durable.RunRecord{RunID: id.RunID, Revision: 1, Version: "v1", Definition: route.Definition, Inputs: task.InputsFingerprint(), RootScope: "missing-root", Scopes: map[string]durable.ScopeRecord{}, Attempts: map[string]durable.AttemptRecord{}})
+				if err != nil {
+					t.Fatal("record fixture encoding failed")
+				}
 				if _, err = f.admin.Exec(ctx, "UPDATE pulse_durable_distributed.runs SET record=$1,revision=1 WHERE namespace=$2 AND run_id=$3", data, id.Namespace, id.RunID); err != nil {
 					t.Fatal("record injection failed")
 				}

@@ -27,8 +27,8 @@ func ValidateHistoryCompressionEquivalence(before, after RunRecord, plan History
 	if fresh.PlanDigest != plan.PlanDigest {
 		return fmt.Errorf("%w: compression plan differs from source facts", ErrInvalid)
 	}
-	if before.Revision != plan.HeadRevision || after.Revision != before.Revision || before.Format != SemanticRecordFormat || after.Format != SemanticRecordFormat {
-		return fmt.Errorf("%w: compression requires an unchanged format 3 head", ErrConflict)
+	if before.Revision != plan.HeadRevision || after.Revision != before.Revision || !hasCompleteSemanticEvidence(before) || !hasCompleteSemanticEvidence(after) {
+		return fmt.Errorf("%w: compression requires an unchanged head with complete semantic evidence", ErrConflict)
 	}
 	if err := ValidateSemanticEvidence(before); err != nil {
 		return err

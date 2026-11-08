@@ -322,8 +322,8 @@ func (c *Coordinator) CompactStorage(ctx context.Context, q CompactStorageReques
 	return decodeMaintenanceResult(b, q.Mutation)
 }
 
-// 旧格式 2 的 omitempty 编码无法表示所有 nil 与空值状态。
-// 拒绝有损物化，而不是发布细微不同的记录。
+// 快照封装必须精确保留 nil 与空值形状；独立往返核对阻止编码变化
+// 发布出细微不同的投影。当前入口只使用 snapshot envelope，不回退裸记录。
 func encodeMaintenanceRecord(r durable.RunRecord) ([]byte, error) {
 	b, e := recordio.EncodeSnapshot(r)
 	if e != nil {

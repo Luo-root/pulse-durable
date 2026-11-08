@@ -48,7 +48,7 @@ func TestSnapshotSizeDeltaAllOperationsAndShapes(t *testing.T) {
 	for mask := 0; mask < 32; mask++ {
 		for _, rev := range []uint64{1, 9, 99, 999, math.MaxUint64 - 1} {
 			t.Run(fmt.Sprintf("maps-%d-revision-%d", mask, rev), func(t *testing.T) {
-				before := RunRecord{Format: RecordFormat, RunID: "size", Revision: rev, RootScope: "root"}
+				before := RunRecord{RunID: "size", Revision: rev, RootScope: "root"}
 				if mask&1 != 0 {
 					before.Scopes = map[string]ScopeRecord{}
 				}
@@ -73,7 +73,7 @@ func TestSnapshotSizeDeltaAllOperationsAndShapes(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				must(tx.createScope("root", ScopeRecord{Graph: "graph", Bindings: true}))
+				must(tx.createScope("root", ScopeRecord{Graph: "graph"}))
 				must(tx.putNode("root", key, nil, NodeRecord{NodeID: key, Outputs: []ValueRecord{value}}))
 				must(tx.putNode("root", "second", nil, NodeRecord{Outputs: []ValueRecord{}}))
 				must(tx.putAttempt(key, nil, AttemptRecord{Index: 1, Limit: 2, State: AttemptActive}))
@@ -126,7 +126,7 @@ func TestSnapshotSizeDeltaAllOperationsAndShapes(t *testing.T) {
 func TestSnapshotSizeDeltaReplacesAndCoalesces(t *testing.T) {
 	for _, n := range []int{0, 1, 2, 3, 4, 17, 1024} {
 		old := ValueRecord{Name: "x", Data: bytes.Repeat([]byte{0xff}, n)}
-		before := RunRecord{Format: RecordFormat, RunID: "replace", Revision: 9, RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Nodes: nil}}, Streams: map[string]StreamRecord{"s": {Pending: []StreamMessageRecord{{Sequence: 1, Value: old}}}}, Managed: map[string]ManagedRecord{"m": {State: []ValueRecord{old}, Values: []ValueRecord{}}}}
+		before := RunRecord{RunID: "replace", Revision: 9, RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Nodes: nil}}, Streams: map[string]StreamRecord{"s": {Pending: []StreamMessageRecord{{Sequence: 1, Value: old}}}}, Managed: map[string]ManagedRecord{"m": {State: []ValueRecord{old}, Values: []ValueRecord{}}}}
 		tx := newRecordTransaction(before.Revision)
 		next := old
 		next.Data = []byte{}
@@ -151,7 +151,7 @@ func TestSnapshotSizeDeltaReplacesAndCoalesces(t *testing.T) {
 }
 
 func TestSnapshotSizeDeltaRejectsInvalidWithoutMutation(t *testing.T) {
-	before := RunRecord{Format: RecordFormat, RunID: "reject", Revision: 1, RootScope: "root"}
+	before := RunRecord{RunID: "reject", Revision: 1, RootScope: "root"}
 	for _, mode := range []string{"zero", "header", "precondition", "overflow", "bad-key", "bad-value"} {
 		t.Run(mode, func(t *testing.T) {
 			r := cloneRecord(before)
@@ -191,7 +191,7 @@ func TestSnapshotSizeDeltaRejectsInvalidWithoutMutation(t *testing.T) {
 func BenchmarkSnapshotSizeDeltaUnrelatedHistory(b *testing.B) {
 	for _, n := range []int{0, 1024, 16384} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {
-			r := RunRecord{Format: RecordFormat, RunID: "benchmark", Revision: 9, RootScope: "root", Messages: make(map[string]MessageAttemptRecord, n)}
+			r := RunRecord{RunID: "benchmark", Revision: 9, RootScope: "root", Messages: make(map[string]MessageAttemptRecord, n)}
 			for i := 0; i < n; i++ {
 				r.Messages[fmt.Sprint(i)] = MessageAttemptRecord{Index: 1, Limit: 2}
 			}

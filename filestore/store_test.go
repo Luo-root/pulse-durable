@@ -72,7 +72,7 @@ func requireBusy(t *testing.T, s *Store, id string) {
 
 // 完整元数据夹具用于 recordio 验证，而非 Initialize 导入。
 func testRecord(id string) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: id, Revision: 1, Version: "业务版本/α", Definition: strings.Repeat("a", 64), Inputs: strings.Repeat("b", 64), RootScope: "scope", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "图", Inputs: strings.Repeat("b", 64), Nodes: map[string]durable.NodeRecord{"node": {NodeID: "node", Attempt: "attempt", Reason: "opaque", Outputs: []durable.ValueRecord{{Name: "结果", TypeID: "binary", Version: "v1", State: "opaque", Data: []byte{0, 1, 255}}}}}}}, Attempts: map[string]durable.AttemptRecord{"attempt": {Parent: "scope", NodeID: "node", Index: 2, Limit: 5, State: durable.AttemptActive}}}
+	return durable.RunRecord{RunID: id, Revision: 1, Version: "业务版本/α", Definition: strings.Repeat("a", 64), Inputs: strings.Repeat("b", 64), RootScope: "scope", Scopes: map[string]durable.ScopeRecord{"scope": {Graph: "图", Inputs: strings.Repeat("b", 64), Nodes: map[string]durable.NodeRecord{"node": {NodeID: "node", Attempt: "attempt", Reason: "opaque", Outputs: []durable.ValueRecord{{Name: "结果", TypeID: "binary", Version: "v1", State: "opaque", Data: []byte{0, 1, 255}}}}}}}, Attempts: map[string]durable.AttemptRecord{"attempt": {Parent: "scope", NodeID: "node", Index: 2, Limit: 5, State: durable.AttemptActive}}}
 }
 func TestNewAndInvalidArguments(t *testing.T) {
 	if _, e := New(""); e == nil {

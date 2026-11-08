@@ -143,7 +143,7 @@ func (r RunRecord) MessagePrefix(scope, attempt, node string, input StreamIDReco
 }
 
 func validateSummaryRecord(r RunRecord) error {
-	if r.Revision == 0 || r.RunID == "" || (r.Format != RecordFormat && r.Format != SemanticRecordFormat) || r.Attempts == nil {
+	if r.Revision == 0 || r.RunID == "" || r.Attempts == nil {
 		return fmt.Errorf("%w: invalid record identity or revision", ErrInvalid)
 	}
 	if err := validateSemanticEvidence(r); err != nil {

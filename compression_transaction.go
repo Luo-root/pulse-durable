@@ -98,7 +98,7 @@ func validateHistoryCompressionSource(record RunRecord, plan HistoryCompressionP
 	if err := plan.Validate(plan.Request); err != nil {
 		return err
 	}
-	if record.RunID != plan.RunID || record.Format != SemanticRecordFormat ||
+	if record.RunID != plan.RunID || !hasCompleteSemanticEvidence(record) ||
 		record.Revision != plan.HeadRevision || recordDigest(record) != plan.HeadDigest {
 		return fmt.Errorf("%w: compression plan or source record mismatch", ErrConflict)
 	}
@@ -123,32 +123,18 @@ func appliedCompressionSummary(summary HistorySummary, appliedRevision uint64) (
 		return HistorySummary{}, fmt.Errorf("%w: invalid compression application revision", ErrInvalid)
 	}
 	value := copyHistorySummary(summary)
-	switch summary.Kind {
-	case RetryPrefixSummaryKind:
-		var payload retryPrefixSummaryPayload
-		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 {
-			return HistorySummary{}, fmt.Errorf("%w: retry summary is not an unapplied candidate", ErrConflict)
-		}
-		payload.AppliedRevision = appliedRevision
-		encoded := raw(payload)
-		if len(encoded) == 0 {
-			return HistorySummary{}, fmt.Errorf("%w: retry summary payload cannot be encoded", ErrInvalidRecord)
-		}
-		value.Payload = append([]byte(nil), encoded...)
-	case MessagePrefixSummaryKind:
-		var payload messagePrefixSummaryPayload
-		if err := unmarshalRecord(summary.Payload, &payload); err != nil || payload.AppliedRevision != 0 {
-			return HistorySummary{}, fmt.Errorf("%w: message summary is not an unapplied candidate", ErrConflict)
-		}
-		payload.AppliedRevision = appliedRevision
-		encoded := raw(payload)
-		if len(encoded) == 0 {
-			return HistorySummary{}, fmt.Errorf("%w: message summary payload cannot be encoded", ErrInvalidRecord)
-		}
-		value.Payload = append([]byte(nil), encoded...)
-	default:
-		return HistorySummary{}, fmt.Errorf("%w: unsupported compression summary kind %q", ErrUnsupportedCapability, summary.Kind)
+	payload, err := defaultHistorySummaryRegistry.decode(summary)
+	if err != nil {
+		return HistorySummary{}, err
 	}
+	if payload.applicationRevision() != 0 {
+		return HistorySummary{}, fmt.Errorf("%w: summary is not an unapplied candidate", ErrConflict)
+	}
+	encoded, err := payload.withApplication(appliedRevision)
+	if err != nil {
+		return HistorySummary{}, err
+	}
+	value.Payload = append([]byte(nil), encoded...)
 	value.Digest = digest(value.Payload)
 	if err := value.validate(); err != nil {
 		return HistorySummary{}, err
@@ -162,7 +148,7 @@ func appliedCompressionSummary(summary HistorySummary, appliedRevision uint64) (
 // 不会被恢复投影比较掩盖。
 func validateHistoryCompressionCommit(before, after RunRecord, plan HistoryCompressionPlan, batch ChangeBatch) error {
 	if before.Revision == ^uint64(0) || after.Revision != before.Revision+1 ||
-		after.Format != SemanticRecordFormat || batch.Header().ExpectedRevision != before.Revision ||
+		!hasCompleteSemanticEvidence(after) || batch.Header().ExpectedRevision != before.Revision ||
 		batch.Header().Revision != after.Revision {
 		return fmt.Errorf("%w: invalid compression commit revision", ErrInvalidRecord)
 	}
@@ -224,8 +210,8 @@ func (b ChangeBatch) validateHistoryCompressionTransition(record RunRecord) erro
 	if err := validateHistoryCompressionOperationShape("history_compression", b.tx.compressionPlanDigest, b.tx, b.header.Revision); err != nil {
 		return err
 	}
-	if record.Format != SemanticRecordFormat || b.header.LogicalFormat != SemanticRecordFormat {
-		return fmt.Errorf("%w: invalid history compression record format", ErrConflict)
+	if !hasCompleteSemanticEvidence(record) {
+		return fmt.Errorf("%w: history compression requires a complete evidence component", ErrConflict)
 	}
 	if b.tx.compressionPlanDigest == "" {
 		return fmt.Errorf("%w: history compression plan digest is missing", ErrConflict)
@@ -242,6 +228,14 @@ func (b ChangeBatch) validateHistoryCompressionTransition(record RunRecord) erro
 		return fmt.Errorf("%w: history compression plan no longer matches source facts", ErrConflict)
 	}
 	if err := validateHistoryCompressionBatchOperations(record, fresh, b.tx, b.header.Revision); err != nil {
+		return err
+	}
+	// 压缩属于有界维护路径，允许在隔离副本上验证恢复闭包；不能只证明
+	// 删除集合相同，就把缺父身份或 Managed 见证的结果发布为可恢复状态。
+	proposal := CloneRecord(record)
+	b.tx.apply(&proposal)
+	proposal.Revision = b.header.Revision
+	if _, err := buildRecoverySummaryIndex(proposal); err != nil {
 		return err
 	}
 	return nil
@@ -327,19 +321,12 @@ func validateHistoryCompressionOperationShape(operation, planDigest string, tx *
 		if op.absent || op.remove || op.value.SourceRevision >= appliedRevision || op.value.SourceRevision != op.expected.SourceRevision || op.value.SourceDigest != op.expected.SourceDigest {
 			return fmt.Errorf("%w: compression summary source changed", ErrInvalidRecord)
 		}
-		switch op.value.Kind {
-		case RetryPrefixSummaryKind:
-			var payload retryPrefixSummaryPayload
-			if err := unmarshalRecord(op.value.Payload, &payload); err != nil || payload.AppliedRevision != appliedRevision {
-				return fmt.Errorf("%w: retry summary application position is invalid", ErrInvalidRecord)
-			}
-		case MessagePrefixSummaryKind:
-			var payload messagePrefixSummaryPayload
-			if err := unmarshalRecord(op.value.Payload, &payload); err != nil || payload.AppliedRevision != appliedRevision {
-				return fmt.Errorf("%w: message summary application position is invalid", ErrInvalidRecord)
-			}
-		default:
-			return fmt.Errorf("%w: unsupported compression summary kind %q", ErrUnsupportedCapability, op.value.Kind)
+		payload, err := defaultHistorySummaryRegistry.decode(op.value)
+		if err != nil {
+			return err
+		}
+		if payload.applicationRevision() != appliedRevision {
+			return fmt.Errorf("%w: summary application position is invalid", ErrInvalidRecord)
 		}
 	}
 	index, ok := tx.commitIndex[appliedRevision]

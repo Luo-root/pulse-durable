@@ -100,7 +100,7 @@ func snapshotTestBatch(t *testing.T, r durable.RunRecord, ops ...map[string]any)
 			ops[j], ops[j-1] = ops[j-1], ops[j]
 		}
 	}
-	wire, err := json.Marshal(map[string]any{"version": 1, "header": map[string]string{"batch_format": "1", "logical_format": "2", "run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": strconv.FormatUint(r.Revision, 10), "revision": strconv.FormatUint(r.Revision+1, 10)}, "ops": ops})
+	wire, err := json.Marshal(map[string]any{"version": durable.ChangeBatchWireVersion, "header": map[string]string{"run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": strconv.FormatUint(r.Revision, 10), "revision": strconv.FormatUint(r.Revision+1, 10)}, "ops": ops})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func (h *snapshotTestRun) check(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if size != strconv.Itoa(len(encoded)) || ledger != size || !valid || version != 1 {
+	if size != strconv.Itoa(len(encoded)) || ledger != size || !valid || version != snapshotBudgetVersion {
 		t.Fatalf("revision %d SQL=%s ledger=%s valid=%v version=%d EncodeSnapshot=%d", h.r.Revision, size, ledger, valid, version, len(encoded))
 	}
 	h.c.projectionMu.Lock()
@@ -470,7 +470,7 @@ func TestPostgresSnapshotRejectsUnknownMalformedDuplicateAndOldClient(t *testing
 				t.Fatal(err)
 			}
 			if kind == "duplicate_json" {
-				mutated = []byte(strings.Replace(string(mutated), `"version":1`, `"version":1,"version":1`, 1))
+				mutated = []byte(strings.Replace(string(mutated), `"version":2`, `"version":2,"version":2`, 1))
 			}
 			state := h.publication(t)
 			if kind == "old_client" || kind == "storage_missing_budget" {

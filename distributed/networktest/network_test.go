@@ -175,7 +175,7 @@ func claim(t *testing.T, f *fixture, req d.ClaimRequest) d.Claim {
 	return cs[0]
 }
 func record(task d.Task, rev uint64) durable.RunRecord {
-	return durable.RunRecord{Format: durable.RecordFormat, RunID: task.Identity().RunID, Revision: rev, Version: task.Route().BusinessVersion, Definition: task.Route().Definition, Inputs: task.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: task.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
+	return durable.RunRecord{RunID: task.Identity().RunID, Revision: rev, Version: task.Route().BusinessVersion, Definition: task.Route().Definition, Inputs: task.InputsFingerprint(), RootScope: "root", Scopes: map[string]durable.ScopeRecord{"root": {Graph: "test", Inputs: task.InputsFingerprint(), Nodes: map[string]durable.NodeRecord{}}}, Attempts: map[string]durable.AttemptRecord{}}
 }
 func mutation(t *testing.T) d.Mutation {
 	id := opaqueID(t)

@@ -9,23 +9,25 @@ import (
 	"github.com/Luo-root/pulse-durable/recordio"
 )
 
-func TestSnapshotFormat2FrozenBytes(t *testing.T) {
-	// 固定新增证据字段前的版本 1 快照；不能由当前编码器生成期望值。
+func TestLegacySnapshotRejectedWithoutChangingInput(t *testing.T) {
+	// 冻结旧记录字节，不通过当前编码器生成。新领域对象没有 format 字段，
+	// 旧 envelope 必须明确拒绝，不能丢掉字段后把新编码当作原历史承诺。
 	frozen := []byte(`{"record":{"attempts":{},"definition":"definition","format":2,"inputs":"inputs","managed":null,"messages":null,"revision":2,"root_scope":"root","run_id":"legacy","scopes":{},"streams":null,"version":"v1"},"version":1}`)
-	r, err := recordio.DecodeSnapshot(frozen)
-	if err != nil {
-		t.Fatal(err)
+	before := append([]byte(nil), frozen...)
+	if _, err := recordio.DecodeSnapshot(frozen); err == nil {
+		t.Fatal("legacy snapshot silently accepted by the new schema")
 	}
-	encoded, err := recordio.EncodeSnapshot(r)
-	if err != nil || !bytes.Equal(frozen, encoded) {
-		t.Fatalf("format 2 snapshot bytes changed: %v", err)
+	if _, err := recordio.Decode(frozen); err == nil {
+		t.Fatal("legacy envelope downgraded to bare record JSON")
+	}
+	if !bytes.Equal(frozen, before) {
+		t.Fatal("rejected legacy bytes changed")
 	}
 }
 
 func TestSnapshotSemanticEvidenceShapesAndMetadata(t *testing.T) {
 	for _, payload := range [][]byte{nil, {}, {0xff, 0, 1}} {
 		r := durable.RunRecord{
-			Format:           durable.SemanticRecordFormat,
 			HistorySummaries: []durable.HistorySummary{{Kind: "kind", ID: "id", Payload: payload}},
 			CommitIndex:      []durable.CommitIndexEntry{},
 			Provenance:       &durable.Provenance{},

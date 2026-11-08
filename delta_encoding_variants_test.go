@@ -36,7 +36,7 @@ func TestChangeBatchWireAllOperationVariants(t *testing.T) {
 	if err := tx.putManagedEntry(managedEntryKey{"mng", "x", false}, nil, &ValueRecord{Name: "x", State: "ready", Data: []byte{}}); err != nil {
 		t.Fatal(err)
 	}
-	b := ChangeBatch{header: ChangeHeader{BatchFormat: 1, LogicalFormat: 2, RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "root", ExpectedRevision: 1, Revision: 2}, tx: tx}
+	b := ChangeBatch{header: ChangeHeader{RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "root", ExpectedRevision: 1, Revision: 2}, tx: tx}
 	wire, err := MarshalChangeBatch(b)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestChangeBatchWireAllOperationVariants(t *testing.T) {
 		t.Fatal("variant wire not canonical after roundtrip")
 	}
 	// 对满足精确前置条件的记录应用变更，再比较逻辑结果。
-	record := RunRecord{Format: 2, RunID: "r", Revision: 1, Version: "v", Definition: "d", Inputs: "i", RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{}}
+	record := RunRecord{RunID: "r", Revision: 1, Version: "v", Definition: "d", Inputs: "i", RootScope: "root", Scopes: map[string]ScopeRecord{"root": {Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{}}
 	if _, err := decoded.ApplyTo(&record); err != nil {
 		t.Fatalf("decoded variants did not apply: %v", err)
 	}

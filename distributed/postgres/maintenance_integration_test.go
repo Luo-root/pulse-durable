@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
 )
 
@@ -193,7 +192,7 @@ func TestPostgresMaintenancePreservesConcurrentSuffixAndReceipt(t *testing.T) {
 		t.Fatal(again, e)
 	}
 	// 重放缓存的业务状态不因表示形式的发布而改变。
-	if loaded.Format != durable.RecordFormat {
-		t.Fatal("logical format changed")
+	if loaded.RunID != task.Identity().RunID || loaded.Version != task.Route().BusinessVersion || loaded.Definition != task.Route().Definition || loaded.Inputs != task.InputsFingerprint() {
+		t.Fatal("business identity changed during physical synthesis")
 	}
 }

@@ -66,7 +66,7 @@ func (tx *recordTransaction) putAttempt(id string, expected *AttemptRecord, valu
 }
 
 // deleteAttempt 仅删除精确 expected 的持久 Attempt。删除与摘要推进必须在同一
-// Format3 ChangeBatch 中完成；普通业务调用方不应使用它重置 Retry 预算。
+// 专用历史压缩 ChangeBatch 中完成；普通业务调用方不应使用它重置 Retry 预算。
 func (tx *recordTransaction) deleteAttempt(id string, expected *AttemptRecord) error {
 	if tx.err != nil {
 		return tx.err
@@ -179,16 +179,18 @@ func (s *runState) commitRecordTransactionPrepared(ctx context.Context, tx *reco
 	if err := checkCheckpointContext(ctx); err != nil {
 		return err
 	}
-	if s.record.Format == SemanticRecordFormat && (ChangeBatch{tx: tx}).OperationCount() != 0 {
-		if err := tx.ensureSemanticCommitIndex(s.record); err != nil {
-			return err
-		}
-		batch := ChangeBatch{header: changeHeaderFor(s.record, tx), tx: tx}
-		if err := batch.validateSemanticTransition(s.record); err != nil {
-			return err
+	if hasAnySemanticEvidence(s.record) {
+		if (ChangeBatch{tx: tx}).OperationCount() != 0 {
+			if err := tx.ensureSemanticCommitIndex(s.record); err != nil {
+				return err
+			}
+			batch := ChangeBatch{header: changeHeaderFor(s.record, tx), tx: tx}
+			if err := batch.validateSemanticTransition(s.record); err != nil {
+				return err
+			}
 		}
 	} else if tx.hasSemanticEvidence() {
-		return fmt.Errorf("%w: format 3 changes require an existing format 3 record and semantic evidence", ErrConflict)
+		return fmt.Errorf("%w: semantic evidence changes require an existing complete evidence component", ErrConflict)
 	}
 	if err := tx.check(s.record); err != nil {
 		return err
@@ -202,6 +204,20 @@ func (tx *recordTransaction) check(record RunRecord) error {
 	}
 	if tx.baseRevision != record.Revision {
 		return fmt.Errorf("%w: stale record transaction revision", ErrConflict)
+	}
+	// 精确旧值 CAS 不代表允许遗忘历史；内存、wire 和大小查询最终都
+	// 经过这里，普通事务必须在任何发布前拒绝 Attempt/Message 删除。
+	if !tx.historyCompression {
+		for _, op := range tx.attempts {
+			if op.remove {
+				return fmt.Errorf("%w: attempt delete requires a dedicated compression transaction", ErrConflict)
+			}
+		}
+		for _, op := range tx.messages {
+			if op.remove {
+				return fmt.Errorf("%w: message delete requires a dedicated compression transaction", ErrConflict)
+			}
+		}
 	}
 	for id, op := range tx.attempts {
 		current, exists := record.Attempts[id]

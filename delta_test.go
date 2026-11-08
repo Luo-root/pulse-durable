@@ -60,7 +60,7 @@ func (s *deltaTestSession) Apply(ctx context.Context, b ChangeBatch) (CommitAck,
 			return CommitAck{}, err
 		}
 		b.tx.apply(&legacy.record)
-		legacy.record.Format, legacy.record.Revision = RecordFormat, b.Header().Revision
+		legacy.record.Revision = b.Header().Revision
 	}
 	ack, err := b.ApplyTo(&o.record)
 	if err != nil {

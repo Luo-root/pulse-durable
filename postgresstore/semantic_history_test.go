@@ -1,5 +1,5 @@
-// 本文件验证独立 PostgreSQL 的 Format3 读取与损坏拒绝。
-// 测试显式注入已合成快照，不提供或冒称 Format2 首次物化的生产入口。
+// 本文件验证独立 PostgreSQL 的可选语义证据读取与损坏拒绝。
+// 测试显式注入已合成快照，不提供或冒称首次物化的生产入口。
 package postgresstore
 
 import (
@@ -17,7 +17,6 @@ import (
 func semanticSnapshotFixture(t *testing.T, r durable.RunRecord) durable.RunRecord {
 	t.Helper()
 	sum := func(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
-	r.Format = durable.SemanticRecordFormat
 	payload := []byte{0xff, 0, 1}
 	r.HistorySummaries = []durable.HistorySummary{{Kind: "future", ID: "evidence", SourceRevision: r.Revision, SourceDigest: sum([]byte("source")), Payload: payload, Digest: sum(payload)}}
 	for revision := uint64(1); revision <= r.Revision; revision++ {
@@ -66,7 +65,7 @@ func TestPGFormat3SnapshotLoadHistoryAndCorruption(t *testing.T) {
 	if dsn == "" {
 		t.Skip("opt-in isolated database required; not database acceptance")
 	}
-	for _, mode := range []string{"valid", "summary-digest", "index-gap", "legacy-evidence"} {
+	for _, mode := range []string{"valid", "summary-digest", "index-gap", "partial-evidence"} {
 		t.Run(mode, func(t *testing.T) {
 			resetPGSchema(t, dsn)
 			defer resetPGSchema(t, dsn)
@@ -102,8 +101,8 @@ func TestPGFormat3SnapshotLoadHistoryAndCorruption(t *testing.T) {
 				r.HistorySummaries[0].Payload[0] ^= 1
 			case "index-gap":
 				r.CommitIndex = r.CommitIndex[1:]
-			case "legacy-evidence":
-				r.Format = durable.RecordFormat
+			case "partial-evidence":
+				r.Provenance = nil
 			}
 			data, err := encodeSnapshot(r)
 			if err != nil {

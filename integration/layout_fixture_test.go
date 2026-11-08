@@ -166,7 +166,7 @@ func installHistoryFixture(t *testing.T, dir string, r durable.RunRecord) {
 		return !av && bv
 	})
 	generic := ops
-	wire, err := json.Marshal(map[string]any{"version": 1, "header": map[string]string{"batch_format": "1", "logical_format": "2", "run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": "1", "revision": "2"}, "ops": generic})
+	wire, err := json.Marshal(map[string]any{"version": durable.ChangeBatchWireVersion, "header": map[string]string{"run_id": r.RunID, "business_version": r.Version, "definition_digest": r.Definition, "inputs_digest": r.Inputs, "root_scope": r.RootScope, "expected_revision": "1", "revision": "2"}, "ops": generic})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,7 @@ func newStreamProtocol(t *testing.T) streamProtocol {
 	t.Cleanup(func() { _ = session.Close() })
 	root, _ := randomID()
 	hash, _ := def.inputsFingerprint(def.root, nil)
-	s := &runState{session: session, def: def, record: RunRecord{Format: RecordFormat, RunID: "run", Version: "1", Definition: def.fingerprint,
+	s := &runState{session: session, def: def, record: RunRecord{RunID: "run", Version: "1", Definition: def.fingerprint,
 		Inputs: hash, RootScope: root, Scopes: map[string]ScopeRecord{root: {Graph: "streams", Inputs: hash, Nodes: map[string]NodeRecord{}}}, Attempts: map[string]AttemptRecord{}}}
 	if err := s.initialize(ctx, cloneRecord(s.record)); err != nil {
 		t.Fatal(err)

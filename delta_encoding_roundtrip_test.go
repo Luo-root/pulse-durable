@@ -19,7 +19,7 @@ func TestChangeBatchWireSyntheticFiveHundredRoundTrips(t *testing.T) {
 		if err := tx.putAttempt("a", nil, value); err != nil {
 			t.Fatal(err)
 		}
-		b := ChangeBatch{header: ChangeHeader{BatchFormat: 1, LogicalFormat: 2, RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "r", ExpectedRevision: uint64(i), Revision: uint64(i + 1)}, tx: tx}
+		b := ChangeBatch{header: ChangeHeader{RunID: "r", BusinessVersion: "v", DefinitionDigest: "d", InputsDigest: "i", RootScope: "r", ExpectedRevision: uint64(i), Revision: uint64(i + 1)}, tx: tx}
 		wire, err := MarshalChangeBatch(b)
 		if err != nil {
 			t.Fatal(err)
@@ -172,8 +172,8 @@ func TestChangeBatchWireRealRuntimeManagedFiveHundredRoundsAndResume(t *testing.
 	// 这些合法恢复批次检查业务执行。
 	// 确认持久化结果是可独立解码的格式 2 记录。
 	record := store.records["wire-runtime-500"]
-	if record.Format != RecordFormat || record.Revision == 0 {
-		t.Fatalf("persisted record format/revision: %d/%d", record.Format, record.Revision)
+	if record.Revision == 0 {
+		t.Fatalf("persisted record revision: %d", record.Revision)
 	}
 	if data, err := json.Marshal(record); err != nil || len(data) == 0 {
 		t.Fatalf("persisted record encoding failed: %v", err)
