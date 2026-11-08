@@ -105,6 +105,11 @@ jobs:
           cache-dependency-path: sqlitestore/go.sum
       - name: Download SQLite module dependencies
         run: go mod download
+      - name: Check independently downloadable SQLite dependencies
+        run: |
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -race -count=1 -timeout=180s ./...
       - name: Use current checkout for source regression
         shell: bash
         run: |
@@ -194,6 +199,12 @@ jobs:
           GOWORK=off go work init "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/distributed"
           mv go.work "$work"
           echo "GOWORK=$work" >> "$GITHUB_ENV"
+      # 必须在首次安装布局前运行，不能让完整测试中的空库检查永远跳过。
+      - name: Compile PostgreSQL snapshot DDL on an empty database
+        env:
+          PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE: "yes"
+          PULSE_DISTRIBUTED_TEST_DSN: postgres://durable_test:durable-ci@127.0.0.1:5432/durable_distributed_test?sslmode=disable
+        run: go test -mod=readonly -count=1 -timeout=60s -run '^TestPostgresSnapshotDDL$' -v ./postgres
       - name: Test real PostgreSQL ownership and permissions
         env:
           PULSE_DISTRIBUTED_TEST_ALLOW_DESTRUCTIVE: "yes"
@@ -348,6 +359,11 @@ jobs:
           cache-dependency-path: postgresstore/go.sum
       - name: Download PostgreSQL module dependencies
         run: go mod download
+      - name: Check independently downloadable PostgreSQL dependencies
+        run: |
+          go build -mod=readonly ./...
+          go vet -mod=readonly ./...
+          go test -mod=readonly -race -count=1 -timeout=180s ./...
       - name: Use current checkout for source regression
         shell: bash
         run: |
