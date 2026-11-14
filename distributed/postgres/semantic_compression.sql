@@ -292,10 +292,27 @@ BEGIN
   RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic compression operation kind not allowed';
  END IF;
  -- 摘要只能替换既有可压缩前缀，不能新增/删除，也不能触碰只读证据 marker。
+ -- 并且必须保持 Kind 与稳定身份不变：只允许推进同一条摘要的应用位置。
+ -- 否则维护凭据可以把 retry_prefix 换成 message_prefix（或覆盖 marker），
+ -- 结构仍然合法但语义证据被篡改，发布后该 Run 将无法冷恢复。
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
    AND (o.value->'expected'='null'::jsonb OR o.value->'value'='null'::jsonb
-        OR o.value->'value'->>'kind' NOT IN ('retry_prefix','message_prefix'))) THEN
+        OR o.value->'value'->>'kind' NOT IN ('retry_prefix','message_prefix')
+        OR o.value->'value'->>'kind' IS DISTINCT FROM o.value->'expected'->>'kind'
+        OR o.value->'value'->>'kind' IS DISTINCT FROM o.value->>'scope'
+        OR o.value->'value'->>'id' IS DISTINCT FROM o.value->>'name'
+        OR o.value->'value'->>'id' IS DISTINCT FROM o.value->'expected'->>'id'
+        OR o.value->'value'->>'source_revision' IS DISTINCT FROM o.value->'expected'->>'source_revision'
+        OR o.value->'value'->>'source_digest' IS DISTINCT FROM o.value->'expected'->>'source_digest')) THEN
   RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary operation not allowed';
+ END IF;
+ -- 每条被替换的摘要都必须是当前 head 上真实存在的可压缩前缀；
+ -- 只读 marker 不在可压缩集合里，因此不能成为任何摘要操作的目标。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
+   AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(source->'record'->'history_summaries') s
+     WHERE s.value->>'kind'=o.value->>'scope' AND s.value->>'id'=o.value->>'name'
+       AND s.value->>'kind' IN ('retry_prefix','message_prefix'))) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary target is not a compressible prefix';
  END IF;
  IF (SELECT count(*) FROM jsonb_array_elements(b->'ops') WHERE value->>'kind'='history_summary')<>(SELECT count(*) FROM jsonb_array_elements(source->'record'->'history_summaries') WHERE value->>'kind' IN ('retry_prefix','message_prefix')) OR (SELECT count(*) FROM jsonb_array_elements(b->'ops') WHERE value->>'kind'='commit_index')<>1 THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic evidence operation set'; END IF;
  source:=semantic_apply_wire_batch(source,b); nextrev:=oldrev+1; PERFORM semantic_validate_record(source,r,nextrev);

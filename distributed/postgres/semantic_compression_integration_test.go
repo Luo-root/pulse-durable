@@ -784,3 +784,140 @@ func TestPostgresSemanticCompressionRejectsExtraBusinessOperation(t *testing.T) 
 		t.Fatalf("injected operation published state batches=%d guards=%d receipts=%d scopes=%d", batches, guards, receipts, scopes)
 	}
 }
+
+// TestPostgresSemanticCompressionRejectsSummaryKindSwap 复现独立复核实证过的
+// 攻击：删除集合与候选完全一致、CAS 前置条件正确、record proposal 自洽，但把
+// retry_prefix 摘要换成结构合法的 message_prefix。该篡改会让发布后的 Run 无法
+// 冷恢复，因此必须在发布前拒绝且零发布。
+func TestPostgresSemanticCompressionRejectsSummaryKindSwap(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
+	record, head := newSemanticRetryRun(t, c, admin, ns, "semantic-kind-swap")
+	q := d.SemanticCompressionRequest{
+		Identity: d.Identity{Namespace: ns, RunID: record.RunID}, ExpectedRevision: record.Revision,
+		ExpectedHeadChain: head, Mutation: mut("semantic-swap-commit"), MaxObjects: 100, MaxBytes: 1 << 20,
+	}
+	preparedRaw, err := c.semanticCompressionCall(ctx, semanticPhaseArgs(q, "prepare"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, _, err := decodeSemanticCompressionResult(preparedRaw, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: q.ExpectedRevision}, prepared.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := durable.PlanHistoryCompression(image, durable.HistoryCompressionRequest{RunID: q.Identity.RunID, ThroughRevision: q.ExpectedRevision, MaxObjects: q.MaxObjects, MaxBytes: q.MaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := durable.BuildHistoryCompressionBatch(image, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := durable.MarshalChangeBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var ops []map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["ops"], &ops); err != nil {
+		t.Fatal(err)
+	}
+	// 结构合法但语义错误的 message_prefix payload：摘要摘要自洽即可通过结构校验。
+	fakePayload := []byte(`{"applied_revision":"3","processing_scope":"root","processing_attempt":"x","node_id":"n","input":{"scope":"root","node_id":"n","key":"k","group":"g","generation":"1"},"through_sequence":"1","budget_digest":"` + strings.Repeat("a", 64) + `","managed_digest":"` + strings.Repeat("b", 64) + `","confirmation_ids":["` + strings.Repeat("c", 32) + `"]}`)
+	fakeHash := sha256.Sum256(fakePayload)
+	fakeDigest := hex.EncodeToString(fakeHash[:])
+	wireBytes := make([]int, len(fakePayload))
+	for i, b := range fakePayload {
+		wireBytes[i] = int(b)
+	}
+	payloadWire, err := json.Marshal(wireBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := false
+	for i := range ops {
+		var kind string
+		if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "history_summary" {
+			continue
+		}
+		var value map[string]json.RawMessage
+		if err := json.Unmarshal(ops[i]["value"], &value); err != nil {
+			t.Fatal(err)
+		}
+		value["kind"] = json.RawMessage(`"message_prefix"`)
+		value["payload"] = payloadWire
+		value["digest"] = json.RawMessage(`"` + fakeDigest + `"`)
+		nv, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ops[i]["value"] = nv
+		swapped = true
+	}
+	if !swapped {
+		t.Fatal("no history_summary operation found in the legitimate batch")
+	}
+	forgedOps, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope["ops"] = forgedOps
+	forgedWire, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 构造与篡改批次自洽的 record proposal，确保拒绝来自语义约束而非提案不一致。
+	proposed := durable.CloneRecord(image)
+	if _, err := batch.ApplyTo(&proposed); err != nil {
+		t.Fatal(err)
+	}
+	for i := range proposed.HistorySummaries {
+		if proposed.HistorySummaries[i].Kind == durable.RetryPrefixSummaryKind {
+			proposed.HistorySummaries[i].Kind = durable.MessagePrefixSummaryKind
+			proposed.HistorySummaries[i].Payload = append([]byte(nil), fakePayload...)
+			proposed.HistorySummaries[i].Digest = fakeDigest
+		}
+	}
+	recordWire, err := recordio.EncodeSnapshot(proposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := semanticPhaseArgs(q, "commit")
+	commit["source_image_digest"] = prepared.SourceImageDigest
+	commit["plan_digest"] = plan.PlanDigest
+	commit["batch"] = base64.StdEncoding.EncodeToString(forgedWire)
+	commit["batch_digest"] = digest(forgedWire)
+	commit["record"] = base64.StdEncoding.EncodeToString(recordWire)
+	commit["record_digest"] = digest(recordWire)
+	if _, err := c.semanticCompressionCall(ctx, commit, true); !errors.Is(err, d.ErrInvalid) {
+		t.Fatalf("summary kind swap accepted: %v", err)
+	}
+	var batches, guards, receipts int
+	if err := admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_guards WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3)`,
+		ns, record.RunID, q.Mutation.ID).Scan(&batches, &guards, &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if batches != 1 || guards != 0 || receipts != 0 {
+		t.Fatalf("kind swap published state batches=%d guards=%d receipts=%d", batches, guards, receipts)
+	}
+	// 权威 head 未变，Run 仍可正常冷恢复。
+	var img []byte
+	if err := admin.QueryRow(ctx, `SELECT pulse_durable_distributed.storage_image(r,r.revision,true) FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, record.RunID).Scan(&img); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: record.Revision}, img); err != nil {
+		t.Fatalf("run became unrecoverable after rejected swap: %v", err)
+	}
+}
