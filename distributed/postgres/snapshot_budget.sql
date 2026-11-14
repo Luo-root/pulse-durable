@@ -23,10 +23,31 @@ CREATE FUNCTION pulse_durable_distributed.snapshot_container_bytes(is_nil boolea
 $$;
 
 -- 显式描述当前快照/线格式；字段必须齐全且大小写精确。新增字段必须先升级预算协议。
+CREATE FUNCTION pulse_durable_distributed.snapshot_record_bytes(v jsonb,wire boolean) RETURNS bigint LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE required jsonb:='{"run_id":"text","revision":"uint","version":"text","definition":"text","inputs":"text","root_scope":"text","scopes":"scopemap?","attempts":"attemptmap?","streams":"streammap?","messages":"messagemap?","managed":"managedmap?"}'::jsonb; k text; spec text; source text; total bigint:=2; n bigint:=0;
+BEGIN
+ IF jsonb_typeof(v)<>'object' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot record'; END IF;
+ IF EXISTS(SELECT 1 FROM jsonb_object_keys(v) x WHERE NOT (required ? x OR x IN ('history_summaries','commit_index','provenance'))) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='unknown snapshot record field'; END IF;
+ FOR k,spec IN SELECT key,value FROM jsonb_each_text(required) LOOP
+  source:=k;
+  IF NOT (v ? source) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='missing snapshot record field'; END IF;
+  total:=total+snapshot_string_bytes(k)+1+snapshot_value_bytes(v->source,spec,wire); n:=n+1;
+ END LOOP;
+ IF v ? 'history_summaries' THEN total:=total+snapshot_string_bytes('history_summaries')+1+snapshot_value_bytes(v->'history_summaries','summary[]',wire); n:=n+1; END IF;
+ IF v ? 'commit_index' THEN total:=total+snapshot_string_bytes('commit_index')+1+snapshot_value_bytes(v->'commit_index','commit_entry[]',wire); n:=n+1; END IF;
+ IF v ? 'provenance' THEN total:=total+snapshot_string_bytes('provenance')+1+snapshot_value_bytes(v->'provenance','provenance',wire); n:=n+1; END IF;
+ RETURN total+greatest(n-1,0);
+END $$;
+
 CREATE FUNCTION pulse_durable_distributed.snapshot_value_bytes(v jsonb,shape text,wire boolean) RETURNS bigint LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE fields jsonb; source text; k text; spec text; x jsonb; n bigint; total bigint:=2; txt text; typ text:=jsonb_typeof(v); item record;
 BEGIN
  IF v IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='missing snapshot field'; END IF;
+ IF shape='record' THEN RETURN snapshot_record_bytes(v,wire); END IF;
+ IF shape='summary' THEN fields:='{"kind":"text","id":"text","source_revision":"uint","source_digest":"text","payload":"bytes","digest":"text"}'::jsonb;
+ ELSIF shape='commit_entry' THEN fields:='{"revision":"uint","parent_revision":"uint","batch_digest":"text"}'::jsonb;
+ ELSIF shape='provenance' THEN fields:='{"origin_run_id":"text","origin_revision":"uint","origin_record_digest":"text","compression_id":"text","digest":"text"}'::jsonb;
+ END IF;
  IF right(shape,1)='?' THEN
   IF typ='null' THEN RETURN 4; END IF;
   RETURN snapshot_value_bytes(v,left(shape,length(shape)-1),wire);
@@ -71,7 +92,7 @@ BEGIN
   END IF;
   RETURN 2+4*((n+2)/3);
  END IF;
- fields:=CASE shape
+ IF fields IS NULL THEN fields:=CASE shape
   WHEN 'attempt' THEN '{"parent":"text","node_id":"text","boundary":"text","index":"int","limit":"int","state":"text"}'::jsonb
   WHEN 'scope' THEN '{"graph":"text","path":"text","inputs":"text","nodes":"nodemap?"}'::jsonb
   WHEN 'node' THEN '{"node_id":"text","attempt":"text","reason":"text","outputs":"value[]?"}'::jsonb
@@ -84,9 +105,8 @@ BEGIN
   WHEN 'message' THEN '{"scope":"text","parent":"text","node_id":"text","input":"id","sequence":"uint","index":"int","limit":"int","state":"text"}'::jsonb
   WHEN 'managed' THEN '{"scope":"text","parent":"text","node_id":"text","state":"value[]?","values":"value[]?"}'::jsonb
   WHEN 'managed_header' THEN '{"scope":"text","parent":"text","node_id":"text"}'::jsonb
-  WHEN 'record' THEN '{"run_id":"text","revision":"uint","version":"text","definition":"text","inputs":"text","root_scope":"text","scopes":"scopemap?","attempts":"attemptmap?","streams":"streammap?","messages":"messagemap?","managed":"managedmap?"}'::jsonb
   WHEN 'snapshot' THEN '{"version":"int","record":"record"}'::jsonb
- END;
+ END; END IF;
  IF fields IS NULL OR typ<>'object' OR (SELECT count(*) FROM jsonb_object_keys(v))<>(SELECT count(*) FROM jsonb_object_keys(fields)) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot object'; END IF;
  FOR k,spec IN SELECT key,value FROM jsonb_each_text(fields) LOOP
   source:=k;
@@ -119,18 +139,106 @@ CREATE FUNCTION pulse_durable_distributed.snapshot_add_delta(ds jsonb,kind text,
  SELECT jsonb_set(ds,ARRAY[jsonb_build_array(kind,key1)::text],jsonb_build_object('kind',kind,'key1',key1,'count',coalesce((ds->(jsonb_build_array(kind,key1)::text)->>'count')::bigint,0)+dc,'bytes',coalesce((ds->(jsonb_build_array(kind,key1)::text)->>'bytes')::bigint,0)+db))
 $$;
 
+-- snapshot_evidence_budget 按与快照编码相同的口径，累加语义证据组件的字节差额。
+--
+-- 证据组件（history_summaries / commit_index / provenance）不是可删除的业务
+-- 对象，不进入 snapshot_objects；它们的字节属于 snapshot_fixed_bytes。
+-- 这里只处理这三类操作，并精确计入：
+--   1. 数组元素本身的字节；
+--   2. 元素键（摘要用 kind/id 复合键，索引/来源无键）与逗号；
+--   3. 字段从 nil 变为存在时新增的 "字段名": 开销，以及容器由 null(4) 变 [] (2)。
+-- 调用方必须已持有 run 行锁；本函数不校验业务语义，只做字节记账。
+CREATE FUNCTION pulse_durable_distributed.snapshot_evidence_budget(r pulse_durable_distributed.runs,j jsonb) RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE op jsonb; kind text; field text; shape text; e jsonb; v jsonb; delta bigint:=0; old_n bigint; new_n bigint; existing_n bigint; after_n bigint; had_field boolean; has_field boolean; before_bytes bigint; after_bytes bigint; entry_old bigint; entry_new bigint; key_bytes bigint; ops jsonb;
+BEGIN
+ ops:=coalesce(j->'ops','[]'::jsonb);
+ IF ops='null'::jsonb THEN ops:='[]'::jsonb; END IF;
+ IF NOT EXISTS(SELECT 1 FROM jsonb_array_elements(ops) x WHERE x.value->>'kind' IN ('history_summary','commit_index','provenance')) THEN RETURN 0; END IF;
+ -- 当前记录必须已经存在（initialize 之后），否则证据字段状态无从判断。
+ IF r.record IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='evidence budget requires a checkpoint'; END IF;
+ DECLARE rec jsonb:=convert_from(r.record,'UTF8')::jsonb->'record';
+ BEGIN
+  FOREACH field IN ARRAY ARRAY['history_summaries','commit_index','provenance'] LOOP
+   kind:=CASE field WHEN 'history_summaries' THEN 'history_summary' WHEN 'commit_index' THEN 'commit_index' ELSE 'provenance' END;
+   shape:=CASE field WHEN 'history_summaries' THEN 'summary' WHEN 'commit_index' THEN 'commit_entry' ELSE 'provenance' END;
+   had_field:=(rec ? field) AND rec->field<>'null'::jsonb;
+   -- 逐操作计算元素字节与键/逗号差额。
+   entry_old:=0; entry_new:=0; old_n:=0; new_n:=0;
+   FOR op IN SELECT x.value FROM jsonb_array_elements(ops) x WHERE x.value->>'kind'=kind LOOP
+    e:=op->'expected'; v:=op->'value';
+    IF field='provenance' THEN
+     IF e<>'null'::jsonb THEN entry_old:=entry_old+snapshot_value_bytes(e,shape,true); old_n:=1; END IF;
+     IF v<>'null'::jsonb THEN entry_new:=entry_new+snapshot_value_bytes(v,shape,true); new_n:=1; END IF;
+    ELSE
+     -- 数组元素：摘要键是 kind+id 两个字符串，索引键是 revision 字符串。
+     IF e<>'null'::jsonb THEN
+      key_bytes:=CASE field WHEN 'history_summaries' THEN snapshot_string_bytes(e->>'kind')+snapshot_string_bytes(e->>'id') ELSE 0 END;
+      entry_old:=entry_old+snapshot_value_bytes(e,shape,true)+key_bytes; old_n:=old_n+1;
+     END IF;
+     IF v<>'null'::jsonb THEN
+      key_bytes:=CASE field WHEN 'history_summaries' THEN snapshot_string_bytes(v->>'kind')+snapshot_string_bytes(v->>'id') ELSE 0 END;
+      entry_new:=entry_new+snapshot_value_bytes(v,shape,true)+key_bytes; new_n:=new_n+1;
+     END IF;
+    END IF;
+   END LOOP;
+   IF old_n=0 AND new_n=0 THEN CONTINUE; END IF;
+   -- 既有元素数决定逗号基准。runs.record 是基础快照、不随普通 apply 更新，
+   -- 因此不能拿它的数组长度当当前 head 的元素数：
+   --   * commit_index 的长度由不变量恒等于 revision，可精确取 r.revision；
+   --   * history_summaries 的条数没有权威增量来源，本片只支持等量替换
+   --     （压缩只推进 AppliedRevision），新增/删除摘要必须显式拒绝，
+   --     等 distributed 物化入口落地后再按容器账本支持。
+   existing_n:=0;
+   IF field='commit_index' THEN
+    existing_n:=r.revision;
+   ELSIF field='provenance' THEN
+    IF had_field THEN existing_n:=1; END IF;
+   ELSE
+    IF old_n<>new_n THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='summary count change requires a materialization entry'; END IF;
+    IF had_field THEN existing_n:=jsonb_array_length(rec->field); END IF;
+   END IF;
+   after_n:=existing_n-old_n+new_n;
+   has_field:=after_n>0;
+   IF field='provenance' THEN
+    before_bytes:=CASE WHEN had_field THEN entry_old ELSE 4 END;
+    after_bytes:=CASE WHEN has_field THEN entry_new ELSE 4 END;
+   ELSE
+    -- 数组容器：null=4；非空=2+元素字节+(元素数-1) 个逗号。
+    -- 未变元素的字节在两侧相同，相减后只剩本批差额与逗号差额。
+    before_bytes:=CASE WHEN had_field THEN 2+entry_old+greatest(existing_n-1,0) ELSE 4 END;
+    after_bytes:=CASE WHEN has_field THEN 2+entry_new+greatest(after_n-1,0) ELSE 4 END;
+   END IF;
+   -- 字段首次出现要计入 "字段名": 与一个分隔逗号。
+   IF has_field AND NOT had_field THEN
+    after_bytes:=after_bytes+snapshot_string_bytes(field)+1+1;
+   ELSIF had_field AND NOT has_field THEN
+    before_bytes:=before_bytes+snapshot_string_bytes(field)+1+1;
+   END IF;
+   delta:=delta+after_bytes-before_bytes;
+  END LOOP;
+ END;
+ RETURN delta;
+END $$;
+
 CREATE FUNCTION pulse_durable_distributed.snapshot_budget_apply(r pulse_durable_distributed.runs,j jsonb) RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 <<budget>>
-DECLARE op jsonb; v jsonb; e jsonb; seen jsonb:='{}'; deltas jsonb:='{}'; delta jsonb; kind text; shape text; k1 text; k2 text; k3 text; ck text; cp text; state boolean; old_bytes bigint; new_bytes bigint; entry_delta bigint; dc bigint; initial_children bigint; n bigint; s bigint; was_nil boolean; now_nil boolean; before_bytes bigint; after_bytes bigint; candidate bigint:=r.snapshot_bytes+length((r.revision+1)::text)-length(r.revision::text); old_exists boolean; tuple text; c snapshot_containers;
+DECLARE evidence_delta bigint; op jsonb; v jsonb; e jsonb; seen jsonb:='{}'; deltas jsonb:='{}'; delta jsonb; kind text; shape text; k1 text; k2 text; k3 text; ck text; cp text; state boolean; old_bytes bigint; new_bytes bigint; entry_delta bigint; dc bigint; initial_children bigint; n bigint; s bigint; was_nil boolean; now_nil boolean; before_bytes bigint; after_bytes bigint; candidate bigint:=r.snapshot_bytes+length((r.revision+1)::text)-length(r.revision::text); old_exists boolean; tuple text; c snapshot_containers;
 BEGIN
  IF r.snapshot_budget_version<>2 OR r.snapshot_bytes<1 OR r.snapshot_bytes>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot ledger'; END IF;
- IF jsonb_typeof(j)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(j))<>3 OR NOT(j ?& ARRAY['version','header','ops']) OR jsonb_typeof(j->'version') IS DISTINCT FROM 'number' OR j->>'version'<>'2' OR jsonb_typeof(j->'header') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(j->'header'))<>7 OR NOT(j->'header' ?& ARRAY['run_id','business_version','definition_digest','inputs_digest','root_scope','expected_revision','revision']) OR EXISTS(SELECT 1 FROM jsonb_each(j->'header') x WHERE jsonb_typeof(x.value)<>'string') OR jsonb_typeof(j->'ops') NOT IN ('array','null') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget wire envelope'; END IF;
+ IF jsonb_typeof(j)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(j))<>3 OR NOT(j ?& ARRAY['version','header','ops']) OR jsonb_typeof(j->'version') IS DISTINCT FROM 'number' OR j->>'version'<>'2' OR jsonb_typeof(j->'header') IS DISTINCT FROM 'object' OR (SELECT count(*) FROM jsonb_object_keys(j->'header')) NOT IN (7,11) OR NOT(j->'header' ?& ARRAY['run_id','business_version','definition_digest','inputs_digest','root_scope','expected_revision','revision']) OR EXISTS(SELECT 1 FROM jsonb_each(j->'header') x WHERE jsonb_typeof(x.value)<>'string') OR jsonb_typeof(j->'ops') NOT IN ('array','null') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget wire envelope'; END IF;
+ -- 语义证据组件（摘要/索引/来源）不进入逐对象账本，它们的字节属于
+ -- snapshot_fixed_bytes；这里单独按同一编码口径累加差额。
+ evidence_delta:=snapshot_evidence_budget(r,j);
+ candidate:=candidate+evidence_delta;
  IF j->'ops'='null'::jsonb THEN j:=jsonb_set(j,'{ops}','[]'::jsonb); END IF;
  IF jsonb_array_length(j->'ops')>4096 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='too many budget operations'; END IF;
  -- 先建父对象，子操作与 wire 中的排序无关。
  FOR op IN SELECT value FROM jsonb_array_elements(j->'ops') ORDER BY CASE value->>'kind' WHEN 'scope' THEN 0 WHEN 'stream' THEN 0 WHEN 'managed' THEN 0 ELSE 1 END LOOP
   IF jsonb_typeof(op)<>'object' OR NOT(op ?& ARRAY['kind','key','expected','value']) OR EXISTS(SELECT 1 FROM jsonb_object_keys(op) k WHERE k NOT IN ('kind','key','scope','name','sequence','state','expected','value')) OR jsonb_typeof(op->'kind') IS DISTINCT FROM 'string' OR jsonb_typeof(op->'key') IS DISTINCT FROM 'string' OR (op ? 'scope' AND jsonb_typeof(op->'scope')<>'string') OR (op ? 'name' AND jsonb_typeof(op->'name')<>'string') OR (op ? 'sequence' AND jsonb_typeof(op->'sequence')<>'string') OR (op ? 'state' AND jsonb_typeof(op->'state')<>'boolean') THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget operation'; END IF;
   kind:=op->>'kind'; k1:=op->>'key'; k2:=''; k3:=''; cp:=''; initial_children:=0; state:=coalesce((op->>'state')::boolean,false); v:=op->'value'; e:=op->'expected';
+  -- 证据操作已由 snapshot_evidence_budget 记账，逐对象账本必须跳过它们，
+  -- 否则会把摘要/索引误当成可删除的业务对象。
+  IF kind IN ('history_summary','commit_index','provenance') THEN CONTINUE; END IF;
   IF kind IN ('node','pending','managed_entry') THEN
    IF k1<>'' OR coalesce(op->>'scope','')='' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid compound budget key'; END IF;
    k1:=op->>'scope'; cp:=k1;
@@ -157,7 +265,7 @@ BEGIN
   IF old_exists=(e='null'::jsonb) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='budget object precondition'; END IF;
   IF e<>'null'::jsonb THEN PERFORM snapshot_value_bytes(e,shape,true); END IF;
   IF kind='scope' AND (e<>'null'::jsonb OR v->'nodes' NOT IN ('null'::jsonb,'{}'::jsonb)) THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid new scope'; END IF;
-  IF kind NOT IN ('pending','managed_entry') AND v='null'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget removal'; END IF;
+  IF kind NOT IN ('pending','managed_entry','attempt','message') AND v='null'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid budget removal'; END IF;
   IF e='null'::jsonb AND v='null'::jsonb THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='absent budget removal'; END IF;
   new_bytes:=CASE WHEN v='null'::jsonb THEN 0 ELSE snapshot_value_bytes(v,shape,true) END;
   IF kind='scope' THEN
@@ -203,7 +311,7 @@ BEGIN
  END LOOP;
  IF candidate>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD008',MESSAGE='snapshot budget exhausted'; END IF;
  IF candidate<1 THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid snapshot total'; END IF;
- UPDATE runs SET snapshot_bytes=candidate,snapshot_fixed_bytes=snapshot_fixed_bytes+length((r.revision+1)::text)-length(r.revision::text) WHERE namespace=r.namespace AND run_id=r.run_id;
+ UPDATE runs SET snapshot_bytes=candidate,snapshot_fixed_bytes=snapshot_fixed_bytes+length((r.revision+1)::text)-length(r.revision::text)+evidence_delta WHERE namespace=r.namespace AND run_id=r.run_id;
  RETURN candidate;
 END $$;
 

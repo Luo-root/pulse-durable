@@ -145,6 +145,20 @@ func PlanHistoryCompression(record RunRecord, request HistoryCompressionRequest)
 	index := indexCompressionCandidates(record)
 	for _, summary := range record.HistorySummaries {
 		plan.SummaryDigests = append(plan.SummaryDigests, summary.Digest)
+		payload, err := defaultHistorySummaryRegistry.decode(summary)
+		if err != nil {
+			return HistoryCompressionPlan{}, err
+		}
+		if !defaultHistorySummaryRegistry.compressionEnabled(summary.Kind) {
+			// 已注册的只读证据仍须验证 payload；未知 Kind 不能因为
+			// compressionEnabled 的零值而被当成只读 marker 静默跳过。
+			if err := payload.validateRecovery(); err != nil {
+				return HistoryCompressionPlan{}, err
+			}
+			key, _ := json.Marshal(summary.key())
+			plan.ProtectedObjects = append(plan.ProtectedObjects, CompressionObjectRef{Kind: "history_summary", ID: string(key)})
+			continue
+		}
 		objects, err := candidateObjectsFromVerifiedSource(record, summary, index)
 		if err != nil {
 			return HistoryCompressionPlan{}, err

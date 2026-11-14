@@ -20,5 +20,8 @@ func candidateObjectsFromVerifiedSource(record RunRecord, summary HistorySummary
 	if err != nil {
 		return nil, err
 	}
+	if !defaultHistorySummaryRegistry.compressionEnabled(summary.Kind) {
+		return nil, fmt.Errorf("%w: summary kind %q has no deletion semantics", ErrUnsupportedCapability, summary.Kind)
+	}
 	return payload.candidates(record, index)
 }

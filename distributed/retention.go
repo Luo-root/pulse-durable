@@ -114,7 +114,7 @@ func (q MutationQuery) Validate() error {
 		return ErrInvalid
 	}
 	switch q.Operation {
-	case "initialize", "apply", "finish", "release", "block", "cancel":
+	case "initialize", "apply", "finish", "release", "block", "cancel", "semantic_compress":
 		return nil
 	default:
 		return ErrInvalid

@@ -22,18 +22,20 @@ type decodedHistorySummary interface {
 }
 
 type historySummaryRegistration struct {
-	kind    string
-	handler historySummaryHandler
+	kind         string
+	handler      historySummaryHandler
+	compressible bool
 }
 
 // historySummaryRegistry 创建时复制注册集合，之后只读。调用方不能拿注册
 // 切片的别名更换算法；无可变全局 Register，避免运行中解释发生变化。
 type historySummaryRegistry struct {
-	handlers map[string]historySummaryHandler
+	handlers     map[string]historySummaryHandler
+	compressible map[string]bool
 }
 
 func newHistorySummaryRegistry(registrations ...historySummaryRegistration) (*historySummaryRegistry, error) {
-	r := &historySummaryRegistry{handlers: make(map[string]historySummaryHandler, len(registrations))}
+	r := &historySummaryRegistry{handlers: make(map[string]historySummaryHandler, len(registrations)), compressible: make(map[string]bool, len(registrations))}
 	for _, registration := range registrations {
 		if !validSemanticText(registration.kind) || registration.handler == nil || nilValue(registration.handler) {
 			return nil, fmt.Errorf("%w: invalid summary handler registration", ErrInvalid)
@@ -42,8 +44,16 @@ func newHistorySummaryRegistry(registrations ...historySummaryRegistration) (*hi
 			return nil, fmt.Errorf("%w: duplicate summary handler registration", ErrConflict)
 		}
 		r.handlers[registration.kind] = registration.handler
+		r.compressible[registration.kind] = registration.compressible
 	}
 	return r, nil
+}
+
+// compressionEnabled 只读注册表的能力标记。未注册 Kind 的零值不等于
+// 只读证据：调用方仍须先 decode；未知或损坏 payload 必须继续失败。
+// 历史物化 marker 注册为不可压缩，不能借这条分支获得删除或改写权限。
+func (r *historySummaryRegistry) compressionEnabled(kind string) bool {
+	return r != nil && r.compressible[kind]
 }
 
 func (r *historySummaryRegistry) decode(summary HistorySummary) (decodedHistorySummary, error) {
@@ -61,9 +71,9 @@ func (r *historySummaryRegistry) decode(summary HistorySummary) (decodedHistoryS
 // 规划、恢复、普通操作与专用提交共用同一实现，不维护平行的 Kind switch。
 var defaultHistorySummaryRegistry = func() *historySummaryRegistry {
 	r, err := newHistorySummaryRegistry(
-		historySummaryRegistration{RetryPrefixSummaryKind, retryPrefixSummaryHandler{}},
-		historySummaryRegistration{MessagePrefixSummaryKind, messagePrefixSummaryHandler{}},
-		historySummaryRegistration{historyEvidenceSummaryKind, historyEvidenceSummaryHandler{}},
+		historySummaryRegistration{RetryPrefixSummaryKind, retryPrefixSummaryHandler{}, true},
+		historySummaryRegistration{MessagePrefixSummaryKind, messagePrefixSummaryHandler{}, true},
+		historySummaryRegistration{historyEvidenceSummaryKind, historyEvidenceSummaryHandler{}, false},
 	)
 	if err != nil {
 		panic(err) // 仅静态内置注册表的编程错误；不处理来自持久数据的输入。

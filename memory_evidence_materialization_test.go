@@ -55,10 +55,25 @@ func TestMemoryHistoryEvidenceMaterializationBuildsClosedComponent(t *testing.T)
 	if err := ValidateSemanticEvidence(loaded); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PlanHistoryCompression(loaded, HistoryCompressionRequest{RunID: loaded.RunID, ThroughRevision: loaded.Revision, MaxObjects: 100, MaxBytes: 1 << 20}); !errors.Is(err, ErrUnsupportedCapability) {
-		// history_evidence has no deletion semantics; planning must stop rather than
-		// accidentally treating the materialization marker as a compression candidate.
-		t.Fatalf("materialization marker unexpectedly planned: %v", err)
+	plan, err := PlanHistoryCompression(loaded, HistoryCompressionRequest{RunID: loaded.RunID, ThroughRevision: loaded.Revision, MaxObjects: 100, MaxBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Rows != 0 || len(plan.DeleteObjects) != 0 {
+		t.Fatalf("materialization marker gained deletion semantics: %+v", plan)
+	}
+	if len(plan.ProtectedObjects) == 0 {
+		t.Fatal("materialization marker was not protected")
+	}
+	// 任何合法计划都会保护 provenance 与 commit_index，所以只断言「非空」
+	// 没有判别力。这里精确断言 marker 自身的保护键，才能捕获保护丢失。
+	markerKey := CompressionObjectRef{Kind: "history_summary", ID: `{"kind":"history_evidence","id":"origin"}`}
+	protected := false
+	for _, object := range plan.ProtectedObjects {
+		protected = protected || object == markerKey
+	}
+	if !protected {
+		t.Fatalf("materialization marker lost its exact protection: %+v", plan.ProtectedObjects)
 	}
 }
 

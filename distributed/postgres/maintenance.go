@@ -215,6 +215,8 @@ func (c *Coordinator) storageCall(ctx context.Context, function string, a map[st
 		query = "SELECT pulse_durable_distributed.storage_compact_abort($1::jsonb)"
 	case "storage_compact_find":
 		query = "SELECT pulse_durable_distributed.storage_compact_find($1::jsonb)"
+	case "semantic_compress":
+		query = "SELECT pulse_durable_distributed.semantic_compress($1::jsonb)"
 	default:
 		return nil, d.ErrInvalid
 	}

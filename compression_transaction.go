@@ -11,7 +11,7 @@ import (
 	"reflect"
 )
 
-// BuildHistoryCompressionBatch 根据一个只读计划构造 Format3 语义压缩批次。
+// BuildHistoryCompressionBatch 根据一个只读计划构造带语义证据的专用压缩批次。
 //
 // 构造过程会再次从 record 事实规划，并要求 PlanDigest 与当前事实一致；
 // 调用方即使能够重新计算 PlanDigest，也不能借此替换删除集合。每个
@@ -63,6 +63,9 @@ func BuildHistoryCompressionBatch(record RunRecord, plan HistoryCompressionPlan)
 	// 计划覆盖当前全部摘要。摘要不删除，而是把候选事实推进为“已应用”
 	// 见证；删除对象与这个推进必须共用同一个 recordTransaction。
 	for _, summary := range record.HistorySummaries {
+		if !defaultHistorySummaryRegistry.compressionEnabled(summary.Kind) {
+			continue
+		}
 		value, err := appliedCompressionSummary(summary, appliedRevision)
 		if err != nil {
 			return ChangeBatch{}, err
@@ -279,10 +282,19 @@ func validateHistoryCompressionBatchOperations(record RunRecord, plan HistoryCom
 			return fmt.Errorf("%w: compression contains an unplanned message delete", ErrInvalidRecord)
 		}
 	}
-	if len(tx.summaries) != len(record.HistorySummaries) {
+	compressibleSummaries := 0
+	for _, summary := range record.HistorySummaries {
+		if defaultHistorySummaryRegistry.compressionEnabled(summary.Kind) {
+			compressibleSummaries++
+		}
+	}
+	if len(tx.summaries) != compressibleSummaries {
 		return fmt.Errorf("%w: compression summary set differs from plan", ErrInvalidRecord)
 	}
 	for _, summary := range record.HistorySummaries {
+		if !defaultHistorySummaryRegistry.compressionEnabled(summary.Kind) {
+			continue
+		}
 		key := historySummaryKey{kind: summary.Kind, id: summary.ID}
 		op, ok := tx.summaries[key]
 		if !ok || op.absent || op.remove || !reflect.DeepEqual(op.expected, summary) {
@@ -318,6 +330,9 @@ func validateHistoryCompressionOperationShape(operation, planDigest string, tx *
 		}
 	}
 	for _, op := range tx.summaries {
+		if !defaultHistorySummaryRegistry.compressionEnabled(op.value.Kind) {
+			return fmt.Errorf("%w: non-compressible summary entered compression transaction", ErrInvalidRecord)
+		}
 		if op.absent || op.remove || op.value.SourceRevision >= appliedRevision || op.value.SourceRevision != op.expected.SourceRevision || op.value.SourceDigest != op.expected.SourceDigest {
 			return fmt.Errorf("%w: compression summary source changed", ErrInvalidRecord)
 		}

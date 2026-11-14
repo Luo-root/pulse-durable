@@ -41,7 +41,7 @@ func TestPostgresStorageEntrypointACLAndAbortLifecycle(t *testing.T) {
 	if err := admin.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_proc WHERE pronamespace='pulse_durable_distributed'::regnamespace AND proname='maintenance')`).Scan(&legacy); err != nil || legacy {
 		t.Fatal("legacy maintenance function exists", legacy, err)
 	}
-	for _, name := range []string{"storage_inspect", "storage_compact_begin", "storage_compact_publish", "storage_compact_abort", "storage_compact_find", "storage_lock", "storage_clock", "storage_state", "storage_image"} {
+	for _, name := range []string{"storage_inspect", "storage_compact_begin", "storage_compact_publish", "storage_compact_abort", "storage_compact_find", "storage_lock", "storage_clock", "storage_state", "storage_image", "semantic_compress"} {
 		var granted, public bool
 		if err := c.pool.QueryRow(ctx, `SELECT has_function_privilege(session_user,p.oid,'EXECUTE'), EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0) FROM pg_proc p WHERE p.pronamespace='pulse_durable_distributed'::regnamespace AND p.proname=$1`, name).Scan(&granted, &public); err != nil {
 			t.Fatal(name, err)
