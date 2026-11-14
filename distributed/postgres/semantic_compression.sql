@@ -206,7 +206,7 @@ END $$;
 
 CREATE FUNCTION pulse_durable_distributed.semantic_validate_candidates(v jsonb,b jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
-DECLARE rec jsonb:=v->'record'; s jsonb; payload jsonb; x record; expected jsonb:='[]'::jsonb; through numeric; idx numeric; seen jsonb; last_id text; count_rows bigint; actual bigint; stream jsonb; managed jsonb; seq numeric; maxidx numeric; actual_ids jsonb; kind text;
+DECLARE rec jsonb:=v->'record'; s jsonb; payload jsonb; x record; expected jsonb:='[]'::jsonb; through numeric; idx numeric; seen jsonb; last_id text; count_rows bigint; actual bigint; stream jsonb; managed jsonb; seq numeric; maxidx numeric; actual_ids jsonb; kind text; latest_state text; group_limit numeric;
 BEGIN
  FOR s IN SELECT elem.value FROM jsonb_array_elements(rec->'history_summaries') AS elem(value) WHERE elem.value->>'kind' IN ('retry_prefix','message_prefix') LOOP
   payload:=convert_from(decode(s->>'payload','base64'),'UTF8')::jsonb; kind:=s->>'kind'; seen:='{}'::jsonb;
@@ -224,7 +224,7 @@ BEGIN
   ELSE
    through:=(payload->>'through_sequence')::numeric;
    IF through<1 OR through>100000 OR payload->>'processing_scope' IS NULL OR payload->>'processing_attempt' IS NULL OR payload->>'node_id' IS NULL OR jsonb_typeof(payload->'input') IS DISTINCT FROM 'object' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid message candidate'; END IF;
-   SELECT e.v INTO stream FROM jsonb_each(rec->'streams') AS e(k,v) WHERE (e.v->'stream'->'id') - 'generation' = (payload->'input') - 'generation' AND (e.v->'stream'->'id'->>'generation')::numeric >= (payload->'input'->>'generation')::numeric LIMIT 1;
+   SELECT e.v INTO stream FROM jsonb_each(rec->'streams') AS e(k,v) WHERE (e.v->'stream'->'id') - 'generation' = (payload->'input') - 'generation' AND (e.v->'stream'->'id'->>'generation')::numeric = (payload->'input'->>'generation')::numeric LIMIT 1;
    IF stream IS NULL OR (stream->>'acked_through')::numeric<through OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(nullif(stream->'pending','null'::jsonb),'[]'::jsonb)) q WHERE (q->>'sequence')::numeric<=through) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate frontier changed'; END IF;
    managed:=rec->'managed'->((payload->>'processing_scope')||'/'||(payload->>'processing_attempt')||'/'||(payload->>'node_id'));
    IF managed IS NULL THEN
@@ -232,16 +232,22 @@ BEGIN
    END IF;
    IF managed IS NULL THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message managed witness missing'; END IF;
    FOR seq IN 1..through LOOP
-    maxidx:=0; count_rows:=0; seen:='{}'::jsonb;
+    maxidx:=0; count_rows:=0; seen:='{}'::jsonb; latest_state:=NULL; group_limit:=NULL;
     FOR x IN SELECT e.k AS key, e.v AS value FROM jsonb_each(rec->'messages') AS e(k,v) LOOP
      IF x.value->>'scope'=payload->>'processing_scope' AND x.value->>'parent'=payload->>'processing_attempt' AND x.value->>'node_id'=payload->>'node_id' AND (x.value->'input') - 'generation' = (payload->'input') - 'generation' AND (x.value->>'sequence')::numeric=seq THEN
+      -- 独立复验根包 messagePrefixForCompression 的语义不变量，不依赖记录已通过
+      -- validateStreams：generation 必须落在 [1, 当前流代际]，组内 limit 一致。
+      IF (x.value->'input'->>'generation')::numeric<1 OR (x.value->'input'->>'generation')::numeric>(stream->'stream'->'id'->>'generation')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate generation out of range'; END IF;
+      IF group_limit IS NULL THEN group_limit:=(x.value->>'limit')::numeric; ELSIF group_limit<>(x.value->>'limit')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate limit changed'; END IF;
       idx:=(x.value->>'index')::numeric; IF seen ? idx::text OR idx<1 OR idx>(x.value->>'limit')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate budget changed'; END IF;
-      seen:=seen||jsonb_build_object(idx::text,true); count_rows:=count_rows+1; IF idx>maxidx THEN maxidx:=idx; END IF;
+      seen:=seen||jsonb_build_object(idx::text,true); count_rows:=count_rows+1; IF idx>maxidx THEN maxidx:=idx; latest_state:=x.value->>'state'; END IF;
       IF idx<maxidx AND x.value->>'state' IS DISTINCT FROM 'failed' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate failure changed'; END IF;
       expected:=expected||jsonb_build_array(jsonb_build_object('kind','message','key',x.key));
      END IF;
     END LOOP;
     IF count_rows=0 OR count_rows<>maxidx THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate sequence gap'; END IF;
+    -- latest 必须已确认：与根包一致，不能把未结算（failed/active）的最新尝试当前缀删除。
+    IF latest_state IS DISTINCT FROM 'confirmed' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate latest not confirmed'; END IF;
    END LOOP;
    actual_ids:=coalesce((SELECT jsonb_agg(e.k ORDER BY e.k) FROM jsonb_each(rec->'messages') AS e(k,v) WHERE e.v->>'scope'=payload->>'processing_scope' AND e.v->>'parent'=payload->>'processing_attempt' AND e.v->>'node_id'=payload->>'node_id' AND e.v->>'state'='confirmed'),'[]'::jsonb);
    IF payload->'confirmation_ids' IS DISTINCT FROM actual_ids THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message confirmations changed'; END IF;

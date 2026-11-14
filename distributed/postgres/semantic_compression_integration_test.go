@@ -1543,3 +1543,80 @@ func TestPostgresSemanticCompressionPreservesEvidenceMarker(t *testing.T) {
 		t.Fatalf("compressed record lost evidence closure: %v", err)
 	}
 }
+
+// TestPostgresSemanticCompressionMessageCandidateIndependentValidation 直接调用
+// semantic_validate_candidates（绕过根包规划器与 validateStreams），验证消息分支
+// 在发布前独立复验语义不变量：latest 必确认、generation 落在 [1, 流代际]、组内
+// limit 一致。这些违例记录无法通过根包规划器，因此只能在此 SQL 边界验收。
+func TestPostgresSemanticCompressionMessageCandidateIndependentValidation(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	record, _ := newSemanticMessageRun(t, c, admin, ns, "semantic-msg-hardening")
+	plan, err := durable.PlanHistoryCompression(record, durable.HistoryCompressionRequest{
+		RunID: record.RunID, ThroughRevision: record.Revision, MaxObjects: 100, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := durable.BuildHistoryCompressionBatch(record, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchWire, err := durable.MarshalChangeBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 用权威快照口径构造来源记录，保证与 semantic_replay_image 的表示一致。
+	sourceOf := func(r durable.RunRecord) []byte {
+		w, e := recordio.EncodeSnapshot(r)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var env map[string]json.RawMessage
+		if e := json.Unmarshal(w, &env); e != nil {
+			t.Fatal(e)
+		}
+		v, e := json.Marshal(map[string]json.RawMessage{"record": env["record"]})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return v
+	}
+	call := func(r durable.RunRecord) error {
+		_, e := admin.Exec(ctx, "SELECT pulse_durable_distributed.semantic_validate_candidates($1::jsonb,$2::jsonb)", sourceOf(r), batchWire)
+		return e
+	}
+	if e := call(record); e != nil {
+		t.Fatalf("valid message record rejected at SQL boundary: %v", e)
+	}
+	for name, mutate := range map[string]func(*durable.RunRecord){
+		"latest-not-confirmed": func(r *durable.RunRecord) {
+			m := r.Messages[strings.Repeat("b", 32)]
+			m.State = durable.AttemptFailed
+			r.Messages[strings.Repeat("b", 32)] = m
+		},
+		"generation-zero": func(r *durable.RunRecord) {
+			m := r.Messages[strings.Repeat("b", 32)]
+			m.Input.Generation = 0
+			r.Messages[strings.Repeat("b", 32)] = m
+		},
+		"generation-future": func(r *durable.RunRecord) {
+			m := r.Messages[strings.Repeat("b", 32)]
+			m.Input.Generation = 99
+			r.Messages[strings.Repeat("b", 32)] = m
+		},
+		"limit-mismatch": func(r *durable.RunRecord) {
+			m := r.Messages[strings.Repeat("a", 32)]
+			m.Limit = 3
+			r.Messages[strings.Repeat("a", 32)] = m
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := durable.CloneRecord(record)
+			mutate(&r)
+			if e := call(r); e == nil {
+				t.Fatal("message invariant violation accepted at SQL boundary")
+			}
+		})
+	}
+}
