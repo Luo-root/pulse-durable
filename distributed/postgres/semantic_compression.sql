@@ -252,6 +252,68 @@ BEGIN
  RETURN actual;
 END $$;
 
+-- semantic_canonical_json 按 Go encoding/json 的口径重新序列化一个 jsonb 值：
+-- 对象键按**字节字典序**排列（PostgreSQL jsonb 自身按 (长度,字节) 排序，二者不同），
+-- 字符串按 Go 的 HTML 转义规则输出，数字保持整数字面量。
+-- 只用于重算 CommitIndex 绑定的 content digest；不做任何业务判定。
+CREATE FUNCTION pulse_durable_distributed.semantic_canonical_json(v jsonb) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE typ text; parts text[]; item record; out text;
+BEGIN
+ typ:=jsonb_typeof(v);
+ IF typ='object' THEN
+  SELECT coalesce(array_agg(semantic_quote(e.k)||':'||semantic_canonical_json(e.v) ORDER BY convert_to(e.k,'UTF8')),'{}') INTO parts
+  FROM jsonb_each(v) AS e(k,v);
+  RETURN '{'||array_to_string(parts,',')||'}';
+ ELSIF typ='array' THEN
+  SELECT coalesce(array_agg(semantic_canonical_json(e.v) ORDER BY e.n),'{}') INTO parts
+  FROM jsonb_array_elements(v) WITH ORDINALITY AS e(v,n);
+  RETURN '['||array_to_string(parts,',')||']';
+ ELSIF typ='string' THEN
+  RETURN semantic_quote(v#>>'{}');
+ ELSIF typ='null' THEN
+  RETURN 'null';
+ ELSE
+  -- number / boolean：jsonb 的整数字面量与 Go 一致。
+  RETURN v::text;
+ END IF;
+END $$;
+
+-- semantic_content_digest 重算「去掉 commit_index 操作后的 canonical batch」摘要。
+-- 顶层与 header/op 信封使用 Go 结构体字段顺序；嵌套 expected/value 使用字典序。
+-- 这样 SQL 能独立验证 CommitIndex 的内容绑定，而不信任调用方给出的摘要。
+CREATE FUNCTION pulse_durable_distributed.semantic_content_digest(b jsonb) RETURNS text
+LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
+DECLARE h jsonb:=b->'header'; op jsonb; ops text[]:='{}'; hf text[]; fields text[]; k text; piece text;
+BEGIN
+ -- header：固定字段顺序，omitempty 字段仅在非空时出现。
+ hf:=ARRAY[
+  semantic_quote('run_id')||':'||semantic_quote(h->>'run_id'),
+  semantic_quote('business_version')||':'||semantic_quote(h->>'business_version'),
+  semantic_quote('definition_digest')||':'||semantic_quote(h->>'definition_digest'),
+  semantic_quote('inputs_digest')||':'||semantic_quote(h->>'inputs_digest'),
+  semantic_quote('root_scope')||':'||semantic_quote(h->>'root_scope'),
+  semantic_quote('expected_revision')||':'||semantic_quote(h->>'expected_revision'),
+  semantic_quote('revision')||':'||semantic_quote(h->>'revision')];
+ FOREACH k IN ARRAY ARRAY['operation','compression_plan_digest','compression_max_objects','compression_max_bytes'] LOOP
+  IF coalesce(h->>k,'')<>'' THEN hf:=array_append(hf,semantic_quote(k)||':'||semantic_quote(h->>k)); END IF;
+ END LOOP;
+ FOR op IN SELECT e.v FROM jsonb_array_elements(b->'ops') WITH ORDINALITY AS e(v,n)
+           WHERE e.v->>'kind' IS DISTINCT FROM 'commit_index' ORDER BY e.n LOOP
+  fields:=ARRAY[semantic_quote('kind')||':'||semantic_quote(op->>'kind'),
+                semantic_quote('key')||':'||semantic_quote(coalesce(op->>'key',''))];
+  FOREACH k IN ARRAY ARRAY['scope','name','sequence'] LOOP
+   IF coalesce(op->>k,'')<>'' THEN fields:=array_append(fields,semantic_quote(k)||':'||semantic_quote(op->>k)); END IF;
+  END LOOP;
+  IF coalesce((op->>'state')::boolean,false) THEN fields:=array_append(fields,semantic_quote('state')||':true'); END IF;
+  fields:=array_append(fields,semantic_quote('expected')||':'||semantic_canonical_json(op->'expected'));
+  fields:=array_append(fields,semantic_quote('value')||':'||semantic_canonical_json(op->'value'));
+  ops:=array_append(ops,'{'||array_to_string(fields,',')||'}');
+ END LOOP;
+ piece:='{'||semantic_quote('version')||':'||(b->>'version')||','||semantic_quote('header')||':{'||array_to_string(hf,',')||'},'||semantic_quote('ops')||':['||array_to_string(ops,',')||']}';
+ RETURN encode(sha256(convert_to(piece,'UTF8')),'hex');
+END $$;
+
 CREATE FUNCTION pulse_durable_distributed.semantic_compress(a jsonb) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pulse_durable_distributed,pg_temp AS $$
 DECLARE ns text:=a->>'namespace'; rid text:=a->>'run_id'; mid text:=a->>'mutation_id'; md text:=a->>'mutation_digest'; phase text:=a->>'phase'; r pulse_durable_distributed.runs; g pulse_durable_distributed.mutation_guards; guard_found boolean:=false; receipt jsonb; image jsonb; source jsonb; b jsonb; wire bytea; record_wire bytea; oldrev numeric; nextrev numeric; parent text; next_chain text; t timestamptz; source_digest text; batch_digest text; record_digest text; deleted bigint; source_bytes bigint; final_bytes bigint; budget jsonb; result jsonb; expected text; plan_digest text;
 BEGIN
@@ -281,6 +343,7 @@ BEGIN
  IF wire IS NULL OR octet_length(wire) NOT BETWEEN 1 AND 4194304 OR encode(sha256(wire),'hex') IS DISTINCT FROM a->>'batch_digest' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic compression batch digest'; END IF;
  b:=convert_from(wire,'UTF8')::jsonb; IF b->'header'->>'operation' IS DISTINCT FROM 'history_compression' OR b->'header'->>'compression_plan_digest' IS DISTINCT FROM a->>'plan_digest' OR b->'header'->>'run_id' IS DISTINCT FROM rid OR b->'header'->>'expected_revision' IS DISTINCT FROM oldrev::text OR b->'header'->>'revision' IS DISTINCT FROM (oldrev+1)::text OR b->'header'->>'compression_max_objects' IS DISTINCT FROM a->>'max_objects' OR b->'header'->>'compression_max_bytes' IS DISTINCT FROM a->>'max_bytes' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic compression batch header'; END IF;
  deleted:=semantic_validate_candidates(source,b); IF deleted=0 THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic compression has no deletions'; END IF;
+ nextrev:=oldrev+1;
  -- 操作类别白名单：语义压缩只允许删除候选 Attempt/Message、推进可压缩摘要、
  -- 追加唯一一条 CommitIndex。maintain 权限不等于 owner 写权限，因此必须显式
  -- 拒绝任何其它业务修改操作（scope/node/stream/pending/managed/provenance 写入、
@@ -306,7 +369,35 @@ BEGIN
         OR o.value->'value'->>'source_digest' IS DISTINCT FROM o.value->'expected'->>'source_digest')) THEN
   RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary operation not allowed';
  END IF;
- -- 每条被替换的摘要都必须是当前 head 上真实存在的可压缩前缀；
+ -- 内容真实性：新 payload 必须与旧 payload 逐字段相同，只把 applied_revision
+ -- 推进到本次 applied revision。根包 withApplication 只做这一件事，因此这里
+ -- 用「去掉 applied_revision 后完全相等 + applied_revision==nextrev」等价表达，
+ -- 不需要在 SQL 里复制任何 Kind 专属语义。
+ -- 这同时封死：applied_revision 指向错误 revision、保持未应用（value==expected）、
+ -- 以及篡改 through_index/last_pruned_id 等与真实删除前缀不符的内容。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
+   AND (o.value->'value'->'payload' IS NULL OR o.value->'expected'->'payload' IS NULL
+        OR convert_from(decode(semantic_wire_bytes(o.value->'value'->'payload'),'base64'),'UTF8')::jsonb->>'applied_revision' IS DISTINCT FROM nextrev::text
+        OR (convert_from(decode(semantic_wire_bytes(o.value->'value'->'payload'),'base64'),'UTF8')::jsonb - 'applied_revision')
+           IS DISTINCT FROM
+           (convert_from(decode(semantic_wire_bytes(o.value->'expected'->'payload'),'base64'),'UTF8')::jsonb - 'applied_revision'))) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary payload is not an application advance';
+ END IF;
+ -- 一一对应：每条可压缩摘要必须恰好被命中一次。只比总数会让两个 op 重复命中
+ -- 同一条摘要、另一条在无应用见证的情况下被删除。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
+   GROUP BY o.value->>'scope', o.value->>'name' HAVING count(*)<>1) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary target is not unique';
+ END IF;
+ -- 追加的 CommitIndex 必须严格接在当前 head 之后，且键与值一致。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='commit_index'
+   AND (o.value->>'key' IS DISTINCT FROM nextrev::text
+        OR o.value->'expected' IS DISTINCT FROM 'null'::jsonb
+        OR o.value->'value'->>'revision' IS DISTINCT FROM nextrev::text
+        OR o.value->'value'->>'parent_revision' IS DISTINCT FROM oldrev::text
+        OR o.value->'value'->>'batch_digest' IS DISTINCT FROM semantic_content_digest(b))) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic commit index does not extend the head';
+ END IF;
  -- 只读 marker 不在可压缩集合里，因此不能成为任何摘要操作的目标。
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
    AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(source->'record'->'history_summaries') s

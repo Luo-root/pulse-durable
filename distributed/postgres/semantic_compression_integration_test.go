@@ -921,3 +921,318 @@ func TestPostgresSemanticCompressionRejectsSummaryKindSwap(t *testing.T) {
 		t.Fatalf("run became unrecoverable after rejected swap: %v", err)
 	}
 }
+
+// semanticForgeryCase 描述一次「删除集合与候选一致、CAS 正确、proposal 自洽」
+// 但内容被篡改的压缩提案。tamper 修改 wire ops，mutate 同步修改 record proposal，
+// 使拒绝只能来自内容真实性约束，而不是提案不一致。
+type semanticForgeryCase struct {
+	name   string
+	tamper func(t *testing.T, ops []map[string]json.RawMessage)
+	mutate func(t *testing.T, proposed *durable.RunRecord, applied uint64)
+}
+
+// TestPostgresSemanticCompressionRejectsEvidenceContentForgery 覆盖独立复核
+// 实证过的内容真实性绕过：applied_revision 指向错误 revision、保持未应用、
+// 篡改前缀事实、以及 CommitIndex 父链伪造。它们都能通过结构/身份/删除集合校验，
+// 一旦发布就会让 Run 永久不可冷恢复，因此必须在发布前拒绝且零发布。
+func TestPostgresSemanticCompressionRejectsEvidenceContentForgery(t *testing.T) {
+	setPayloadField := func(t *testing.T, raw json.RawMessage, field string, value any) json.RawMessage {
+		t.Helper()
+		var ints []int
+		if err := json.Unmarshal(raw, &ints); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, len(ints))
+		for i, n := range ints {
+			buf[i] = byte(n)
+		}
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(buf, &payload); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload[field] = encoded
+		merged, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]int, len(merged))
+		for i, b := range merged {
+			out[i] = int(b)
+		}
+		wire, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wire
+	}
+	summaryPayload := func(t *testing.T, s durable.HistorySummary) map[string]json.RawMessage {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(s.Payload, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	cases := []semanticForgeryCase{
+		{
+			name: "applied_revision_wrong",
+			tamper: func(t *testing.T, ops []map[string]json.RawMessage) {
+				for i := range ops {
+					var kind string
+					if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "history_summary" {
+						continue
+					}
+					var v map[string]json.RawMessage
+					if err := json.Unmarshal(ops[i]["value"], &v); err != nil {
+						t.Fatal(err)
+					}
+					v["payload"] = setPayloadField(t, v["payload"], "applied_revision", "999")
+					var payloadInts []int
+					if err := json.Unmarshal(v["payload"], &payloadInts); err != nil {
+						t.Fatal(err)
+					}
+					buf := make([]byte, len(payloadInts))
+					for j, n := range payloadInts {
+						buf[j] = byte(n)
+					}
+					h := sha256.Sum256(buf)
+					v["digest"] = json.RawMessage(`"` + hex.EncodeToString(h[:]) + `"`)
+					nv, err := json.Marshal(v)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ops[i]["value"] = nv
+				}
+			},
+			mutate: func(t *testing.T, proposed *durable.RunRecord, applied uint64) {
+				for i := range proposed.HistorySummaries {
+					m := summaryPayload(t, proposed.HistorySummaries[i])
+					m["applied_revision"] = json.RawMessage(`"999"`)
+					merged, err := json.Marshal(m)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h := sha256.Sum256(merged)
+					proposed.HistorySummaries[i].Payload = merged
+					proposed.HistorySummaries[i].Digest = hex.EncodeToString(h[:])
+				}
+			},
+		},
+		{
+			name: "identity_summary_unapplied",
+			tamper: func(t *testing.T, ops []map[string]json.RawMessage) {
+				for i := range ops {
+					var kind string
+					if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "history_summary" {
+						continue
+					}
+					ops[i]["value"] = ops[i]["expected"]
+				}
+			},
+			mutate: func(t *testing.T, proposed *durable.RunRecord, applied uint64) {
+				// 保持未应用：proposal 的摘要与源一致。
+				for i := range proposed.HistorySummaries {
+					m := summaryPayload(t, proposed.HistorySummaries[i])
+					m["applied_revision"] = json.RawMessage(`"0"`)
+					merged, err := json.Marshal(m)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h := sha256.Sum256(merged)
+					proposed.HistorySummaries[i].Payload = merged
+					proposed.HistorySummaries[i].Digest = hex.EncodeToString(h[:])
+				}
+			},
+		},
+		{
+			// D3：applied_revision 正确，但把前缀事实改成与真实删除集合不符。
+			name: "prefix_facts_forged",
+			tamper: func(t *testing.T, ops []map[string]json.RawMessage) {
+				for i := range ops {
+					var kind string
+					if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "history_summary" {
+						continue
+					}
+					var v map[string]json.RawMessage
+					if err := json.Unmarshal(ops[i]["value"], &v); err != nil {
+						t.Fatal(err)
+					}
+					v["payload"] = setPayloadField(t, v["payload"], "through_index", 1)
+					var ints []int
+					if err := json.Unmarshal(v["payload"], &ints); err != nil {
+						t.Fatal(err)
+					}
+					buf := make([]byte, len(ints))
+					for j, n := range ints {
+						buf[j] = byte(n)
+					}
+					h := sha256.Sum256(buf)
+					v["digest"] = json.RawMessage(`"` + hex.EncodeToString(h[:]) + `"`)
+					nv, err := json.Marshal(v)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ops[i]["value"] = nv
+				}
+			},
+			mutate: func(t *testing.T, proposed *durable.RunRecord, applied uint64) {
+				for i := range proposed.HistorySummaries {
+					m := summaryPayload(t, proposed.HistorySummaries[i])
+					m["through_index"] = json.RawMessage(`1`)
+					merged, err := json.Marshal(m)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h := sha256.Sum256(merged)
+					proposed.HistorySummaries[i].Payload = merged
+					proposed.HistorySummaries[i].Digest = hex.EncodeToString(h[:])
+				}
+			},
+		},
+		{
+			// D5 关联：CommitIndex 内容摘要与批次内容不符。
+			name: "commit_index_digest_forged",
+			tamper: func(t *testing.T, ops []map[string]json.RawMessage) {
+				for i := range ops {
+					var kind string
+					if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "commit_index" {
+						continue
+					}
+					var v map[string]json.RawMessage
+					if err := json.Unmarshal(ops[i]["value"], &v); err != nil {
+						t.Fatal(err)
+					}
+					v["batch_digest"] = json.RawMessage(`"` + strings.Repeat("f", 64) + `"`)
+					nv, err := json.Marshal(v)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ops[i]["value"] = nv
+				}
+			},
+			mutate: func(t *testing.T, proposed *durable.RunRecord, applied uint64) {
+				proposed.CommitIndex[len(proposed.CommitIndex)-1].BatchDigest = strings.Repeat("f", 64)
+			},
+		},
+		{
+			name: "commit_index_parent_forged",
+			tamper: func(t *testing.T, ops []map[string]json.RawMessage) {
+				for i := range ops {
+					var kind string
+					if err := json.Unmarshal(ops[i]["kind"], &kind); err != nil || kind != "commit_index" {
+						continue
+					}
+					var v map[string]json.RawMessage
+					if err := json.Unmarshal(ops[i]["value"], &v); err != nil {
+						t.Fatal(err)
+					}
+					v["parent_revision"] = json.RawMessage(`"999"`)
+					nv, err := json.Marshal(v)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ops[i]["value"] = nv
+				}
+			},
+			mutate: func(t *testing.T, proposed *durable.RunRecord, applied uint64) {
+				proposed.CommitIndex[len(proposed.CommitIndex)-1].ParentRevision = 999
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, admin, ns := integration(t)
+			ctx := context.Background()
+			var role string
+			if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+				t.Fatal(err)
+			}
+			setTestPermission(t, admin, ctx, role, ns, "maintain", true)
+			record, head := newSemanticRetryRun(t, c, admin, ns, "semantic-forgery")
+			q := d.SemanticCompressionRequest{
+				Identity: d.Identity{Namespace: ns, RunID: record.RunID}, ExpectedRevision: record.Revision,
+				ExpectedHeadChain: head, Mutation: mut("semantic-forgery-commit"), MaxObjects: 100, MaxBytes: 1 << 20,
+			}
+			preparedRaw, err := c.semanticCompressionCall(ctx, semanticPhaseArgs(q, "prepare"), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, _, err := decodeSemanticCompressionResult(preparedRaw, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			image, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: q.ExpectedRevision}, prepared.Image)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := durable.PlanHistoryCompression(image, durable.HistoryCompressionRequest{RunID: q.Identity.RunID, ThroughRevision: q.ExpectedRevision, MaxObjects: q.MaxObjects, MaxBytes: q.MaxBytes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, err := durable.BuildHistoryCompressionBatch(image, plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := durable.MarshalChangeBatch(batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope map[string]json.RawMessage
+			if err := json.Unmarshal(wire, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			var ops []map[string]json.RawMessage
+			if err := json.Unmarshal(envelope["ops"], &ops); err != nil {
+				t.Fatal(err)
+			}
+			tc.tamper(t, ops)
+			forgedOps, err := json.Marshal(ops)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope["ops"] = forgedOps
+			forgedWire, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proposed := durable.CloneRecord(image)
+			if _, err := batch.ApplyTo(&proposed); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, &proposed, record.Revision+1)
+			recordWire, err := recordio.EncodeSnapshot(proposed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit := semanticPhaseArgs(q, "commit")
+			commit["source_image_digest"] = prepared.SourceImageDigest
+			commit["plan_digest"] = plan.PlanDigest
+			commit["batch"] = base64.StdEncoding.EncodeToString(forgedWire)
+			commit["batch_digest"] = digest(forgedWire)
+			commit["record"] = base64.StdEncoding.EncodeToString(recordWire)
+			commit["record_digest"] = digest(recordWire)
+			if _, err := c.semanticCompressionCall(ctx, commit, true); !errors.Is(err, d.ErrInvalid) {
+				t.Fatalf("evidence content forgery accepted: %v", err)
+			}
+			var batches, guards, receipts int
+			if err := admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_guards WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3)`,
+				ns, record.RunID, q.Mutation.ID).Scan(&batches, &guards, &receipts); err != nil {
+				t.Fatal(err)
+			}
+			if batches != 1 || guards != 0 || receipts != 0 {
+				t.Fatalf("forgery published state batches=%d guards=%d receipts=%d", batches, guards, receipts)
+			}
+			var img []byte
+			if err := admin.QueryRow(ctx, `SELECT pulse_durable_distributed.storage_image(r,r.revision,true) FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, record.RunID).Scan(&img); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: record.Revision}, img); err != nil {
+				t.Fatalf("run became unrecoverable after rejected forgery: %v", err)
+			}
+		})
+	}
+}
