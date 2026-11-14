@@ -17,6 +17,7 @@ import (
 	d "github.com/Luo-root/pulse-durable/distributed"
 	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 	"github.com/Luo-root/pulse-durable/recordio"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -1582,40 +1583,51 @@ func TestPostgresSemanticCompressionMessageCandidateIndependentValidation(t *tes
 		}
 		return v
 	}
-	call := func(r durable.RunRecord) error {
-		_, e := admin.Exec(ctx, "SELECT pulse_durable_distributed.semantic_validate_candidates($1::jsonb,$2::jsonb)", sourceOf(r), batchWire)
-		return e
+	call := func(r durable.RunRecord) (int64, error) {
+		var deleted int64
+		e := admin.QueryRow(ctx, "SELECT pulse_durable_distributed.semantic_validate_candidates($1::jsonb,$2::jsonb)", sourceOf(r), batchWire).Scan(&deleted)
+		return deleted, e
 	}
-	if e := call(record); e != nil {
-		t.Fatalf("valid message record rejected at SQL boundary: %v", e)
+	if deleted, e := call(record); e != nil || deleted != 3 {
+		t.Fatalf("valid message record: deleted=%d err=%v (want deleted=3, nil)", deleted, e)
 	}
-	for name, mutate := range map[string]func(*durable.RunRecord){
-		"latest-not-confirmed": func(r *durable.RunRecord) {
+	for _, tc := range []struct {
+		name        string
+		mutate      func(*durable.RunRecord)
+		wantMessage string
+	}{
+		{"latest-not-confirmed", func(r *durable.RunRecord) {
 			m := r.Messages[strings.Repeat("b", 32)]
 			m.State = durable.AttemptFailed
 			r.Messages[strings.Repeat("b", 32)] = m
-		},
-		"generation-zero": func(r *durable.RunRecord) {
+		}, "message candidate latest not confirmed"},
+		{"generation-zero", func(r *durable.RunRecord) {
 			m := r.Messages[strings.Repeat("b", 32)]
 			m.Input.Generation = 0
 			r.Messages[strings.Repeat("b", 32)] = m
-		},
-		"generation-future": func(r *durable.RunRecord) {
+		}, "message candidate generation out of range"},
+		{"generation-future", func(r *durable.RunRecord) {
 			m := r.Messages[strings.Repeat("b", 32)]
 			m.Input.Generation = 99
 			r.Messages[strings.Repeat("b", 32)] = m
-		},
-		"limit-mismatch": func(r *durable.RunRecord) {
+		}, "message candidate generation out of range"},
+		{"limit-mismatch", func(r *durable.RunRecord) {
 			m := r.Messages[strings.Repeat("a", 32)]
 			m.Limit = 3
 			r.Messages[strings.Repeat("a", 32)] = m
-		},
+		}, "message candidate limit changed"},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			r := durable.CloneRecord(record)
-			mutate(&r)
-			if e := call(r); e == nil {
+			tc.mutate(&r)
+			_, e := call(r)
+			if e == nil {
 				t.Fatal("message invariant violation accepted at SQL boundary")
+			}
+			// 精确断言命中的是目标检查本身，防止 raise 顺序变化时被其它检查代答。
+			var pe *pgconn.PgError
+			if !errors.As(e, &pe) || pe.Code != "PD005" || pe.Message != tc.wantMessage {
+				t.Fatalf("expected PD005 %q, got %v", tc.wantMessage, e)
 			}
 		})
 	}
