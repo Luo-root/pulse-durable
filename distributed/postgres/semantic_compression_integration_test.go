@@ -15,6 +15,7 @@ import (
 
 	durable "github.com/Luo-root/pulse-durable"
 	d "github.com/Luo-root/pulse-durable/distributed"
+	"github.com/Luo-root/pulse-durable/internal/snapshotfmt"
 	"github.com/Luo-root/pulse-durable/recordio"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -65,9 +66,10 @@ func semanticTestRecordDigest(r durable.RunRecord) string {
 	return hex.EncodeToString(h[:])
 }
 
-// newSemanticRetryRun 构造带 Retry 失败前缀与闭合语义证据的权威 Run。
-// 返回的 record 是当前 head 的完整逻辑记录；head 是它的链头。
-func newSemanticRetryRun(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, id string) (durable.RunRecord, string) {
+// buildSemanticRetryRecord 构造带 Retry 失败前缀与闭合语义证据的记录，但不安装。
+// 返回的 record 是当前 head 的完整逻辑记录；head 是它的链头。拆分构造与安装，
+// 让 marker 组合夹具能在安装前向同一证据组件追加只读 marker。
+func buildSemanticRetryRecord(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, id string) (durable.RunRecord, string) {
 	t.Helper()
 	h := newSnapshotTestRun(t, c, admin, ns, id)
 
@@ -133,6 +135,13 @@ func newSemanticRetryRun(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, 
 	}
 
 	head := chainText(h.chain)
+	return record, head
+}
+
+// newSemanticRetryRun 构造并安装带 Retry 失败前缀与闭合语义证据的权威 Run。
+func newSemanticRetryRun(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, id string) (durable.RunRecord, string) {
+	t.Helper()
+	record, head := buildSemanticRetryRecord(t, c, admin, ns, id)
 	installSemanticSnapshot(t, admin, ns, record, head)
 	return record, head
 }
@@ -1234,5 +1243,303 @@ func TestPostgresSemanticCompressionRejectsEvidenceContentForgery(t *testing.T) 
 				t.Fatalf("run became unrecoverable after rejected forgery: %v", err)
 			}
 		})
+	}
+}
+
+// semanticTestStreamKey 复刻根包 streamKey 的稳定流身份（不含 Generation）。
+// 它只用于构造夹具输入，不参与产品判定。
+func semanticTestStreamKey(id durable.StreamIDRecord) string {
+	data, err := json.Marshal([4]string{id.Scope, id.NodeID, id.Key, id.Group})
+	if err != nil {
+		panic(err)
+	}
+	return digest(data)
+}
+
+// semanticTestManagedKey 复刻根包 managedKey 的 Scope/Parent/NodeID 身份。
+func semanticTestManagedKey(scope, parent, node string) string {
+	data, err := json.Marshal([3]string{scope, parent, node})
+	if err != nil {
+		panic(err)
+	}
+	return digest(data)
+}
+
+// semanticMessageFact 复刻根包 compressionMessageFact 的预算事实 JSON 形状，
+// 使夹具能按 message-prefix-facts/v1 口径重算 BudgetDigest。
+type semanticMessageFact struct {
+	ID      string                       `json:"id"`
+	Message durable.MessageAttemptRecord `json:"message"`
+}
+
+// newSemanticMessageRun 构造带已确认消息前缀与闭合语义证据的权威 Run。
+// 消息处理发生在 hex 子作用域：恢复校验（validMessageRecoveryPayload）要求
+// ProcessingScope/ProcessingAttempt/Input.Scope 与确认 ID 都是 16 字节 hex 身份，
+// 根作用域 "root" 不满足，因此这里显式建一个 hex 子作用域承载流/消息/Managed。
+// 序列 1 含一次失败重试与一次确认，序列 2 已确认，序列 3 仍未结算（保留）。
+func newSemanticMessageRun(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, id string) (durable.RunRecord, string) {
+	t.Helper()
+	h := newSnapshotTestRun(t, c, admin, ns, id)
+
+	scope := strings.Repeat("f", 32)
+	proc := strings.Repeat("e", 32)
+	failedID := strings.Repeat("a", 32)
+	firstID := strings.Repeat("b", 32)
+	secondID := strings.Repeat("c", 32)
+	futureID := strings.Repeat("d", 32)
+
+	input := durable.StreamIDRecord{Scope: scope, NodeID: "source", Key: "items", Group: "g", Generation: 2}
+	oldInput := input
+	oldInput.Generation = 1
+	skey := semanticTestStreamKey(input)
+	mkey := semanticTestManagedKey(scope, proc, "consumer")
+
+	failed := durable.MessageAttemptRecord{Scope: scope, Parent: proc, NodeID: "consumer", Input: oldInput, Sequence: 1, Index: 1, Limit: 2, State: durable.AttemptFailed}
+	first := durable.MessageAttemptRecord{Scope: scope, Parent: proc, NodeID: "consumer", Input: input, Sequence: 1, Index: 2, Limit: 2, State: durable.AttemptConfirmed}
+	second := durable.MessageAttemptRecord{Scope: scope, Parent: proc, NodeID: "consumer", Input: input, Sequence: 2, Index: 1, Limit: 2, State: durable.AttemptConfirmed}
+	future := durable.MessageAttemptRecord{Scope: scope, Parent: proc, NodeID: "consumer", Input: input, Sequence: 3, Index: 1, Limit: 2, State: durable.AttemptActive}
+
+	h.apply(t, snapshotTestBatch(t, h.r,
+		snapshotTestOp("scope", scope, "", "", "", false, nil, durable.ScopeRecord{Graph: "consumer", Inputs: h.r.Inputs}),
+		snapshotTestOp("stream", skey, "", "", "", false, nil, snapshotTestStreamHeader{Stream: durable.StreamDescriptorRecord{ID: input}, LastSequence: 3, AckedThrough: 2}),
+		snapshotTestOp("managed", mkey, "", "", "", false, nil, snapshotTestManagedHeader{Scope: scope, Parent: proc, NodeID: "consumer"}),
+		snapshotTestOp("message", failedID, "", "", "", false, nil, failed),
+		snapshotTestOp("message", firstID, "", "", "", false, nil, first),
+		snapshotTestOp("message", secondID, "", "", "", false, nil, second),
+		snapshotTestOp("message", futureID, "", "", "", false, nil, future),
+	))
+
+	record := durable.CloneRecord(h.r)
+	source := durable.CloneRecord(record)
+	source.HistorySummaries, source.CommitIndex, source.Provenance = nil, nil, nil
+	sourceDigest := semanticTestRecordDigest(source)
+
+	// 预算事实按 sequence 1..through、每 sequence 内 index 1..max 排列，
+	// 与根包 messagePrefixForCompression 的遍历顺序一致。
+	facts := []semanticMessageFact{
+		{ID: failedID, Message: record.Messages[failedID]},
+		{ID: firstID, Message: record.Messages[firstID]},
+		{ID: secondID, Message: record.Messages[secondID]},
+	}
+	budget := semanticTestDomainDigest("message-prefix-facts/v1", record.RunID, record.Revision,
+		scope, proc, "consumer", input, uint64(2), facts)
+	managedBytes, err := snapshotfmt.Encode(record.Managed[mkey])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 确认集合是已确认消息键的字典序（b < c），与根包 index.confirmations 一致。
+	// wire 口径的 uint64 必须是十进制字符串（normalizeWire 对 Uint64 强制 string）；
+	// input.generation 与 through_sequence 同理。预算摘要另走标准 JSON，不受影响。
+	payload, err := json.Marshal(map[string]any{
+		"applied_revision":   "0",
+		"processing_scope":   scope,
+		"processing_attempt": proc,
+		"node_id":            "consumer",
+		"input": map[string]any{
+			"scope": input.Scope, "node_id": input.NodeID, "key": input.Key, "group": input.Group,
+			"generation": strconv.FormatUint(input.Generation, 10),
+		},
+		"through_sequence": "2",
+		"budget_digest":    budget,
+		"managed_digest":   digest(managedBytes),
+		"confirmation_ids": []string{firstID, secondID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadHash := sha256.Sum256(payload)
+	record.HistorySummaries = []durable.HistorySummary{{
+		Kind: durable.MessagePrefixSummaryKind, ID: "messages",
+		SourceRevision: record.Revision, SourceDigest: sourceDigest,
+		Payload: payload, Digest: hex.EncodeToString(payloadHash[:]),
+	}}
+	record.CommitIndex = make([]durable.CommitIndexEntry, record.Revision)
+	for i := range record.CommitIndex {
+		record.CommitIndex[i] = durable.CommitIndexEntry{
+			Revision: uint64(i + 1), ParentRevision: uint64(i),
+			BatchDigest: strings.Repeat(fmt.Sprintf("%x", i+1), 64),
+		}
+	}
+	provenance := durable.Provenance{
+		OriginRunID: record.RunID, OriginRevision: 1,
+		OriginRecordDigest: sourceDigest, CompressionID: "semantic-compression-test",
+	}
+	provenance.Digest = semanticTestDomainDigest("provenance/v1",
+		provenance.OriginRunID, provenance.OriginRevision, provenance.OriginRecordDigest, provenance.CompressionID)
+	record.Provenance = &provenance
+	if err := durable.ValidateSemanticEvidence(record); err != nil {
+		t.Fatalf("message fixture evidence is not closed: %v", err)
+	}
+	head := chainText(h.chain)
+	installSemanticSnapshot(t, admin, ns, record, head)
+	return record, head
+}
+
+// newSemanticMarkerRun 在 Retry 前缀证据之上追加只读 history_evidence marker，
+// 验证根依赖 pin 升级后 distributed 能组合「可压缩前缀 + 只读 marker」。
+func newSemanticMarkerRun(t *testing.T, c *Coordinator, admin *pgxpool.Pool, ns, id string) (durable.RunRecord, string) {
+	t.Helper()
+	record, head := buildSemanticRetryRecord(t, c, admin, ns, id)
+	markerPayload := []byte(`{"schema":"history-evidence/v1","source":"committed-chain"}`)
+	record.HistorySummaries = append(record.HistorySummaries, durable.HistorySummary{
+		Kind: "history_evidence", ID: "origin", SourceRevision: 1,
+		SourceDigest: record.CommitIndex[0].BatchDigest, Payload: markerPayload, Digest: digest(markerPayload),
+	})
+	if err := durable.ValidateSemanticEvidence(record); err != nil {
+		t.Fatalf("marker fixture evidence is not closed: %v", err)
+	}
+	installSemanticSnapshot(t, admin, ns, record, head)
+	return record, head
+}
+
+// TestPostgresSemanticCompressionCompressesMessagePrefix 验收合法 message_prefix
+// 前缀的端到端压缩：删除已结算消息预算、保留未结算消息与 Managed/流见证、
+// 摘要推进为已应用、永久回执幂等，且冷恢复投影等价。
+func TestPostgresSemanticCompressionCompressesMessagePrefix(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
+
+	record, head := newSemanticMessageRun(t, c, admin, ns, "semantic-message")
+	q := d.SemanticCompressionRequest{
+		Identity: d.Identity{Namespace: ns, RunID: record.RunID}, ExpectedRevision: record.Revision,
+		ExpectedHeadChain: head, Mutation: mut("semantic-message-commit"),
+		MaxObjects: 100, MaxBytes: 1 << 20,
+	}
+	receipt, err := c.CompressSemanticHistory(ctx, q)
+	if err != nil {
+		t.Fatalf("message prefix compression failed: %v", err)
+	}
+	if err := receipt.Validate(q); err != nil {
+		t.Fatalf("receipt is not bound to request: %+v %v", receipt, err)
+	}
+	if receipt.DeletedObjects != 3 {
+		t.Fatalf("deleted objects=%d want 3", receipt.DeletedObjects)
+	}
+	again, err := c.CompressSemanticHistory(ctx, q)
+	if err != nil || !reflect.DeepEqual(receipt, again) {
+		t.Fatalf("retry did not return the permanent receipt: %+v vs %+v err=%v", receipt, again, err)
+	}
+
+	var revision, headChain, floor string
+	var messageRows, batchRows, guardRows, receiptRows, eventRows int
+	var ledgerValid bool
+	var snapshotBytes int64
+	if err := admin.QueryRow(ctx, `SELECT r.revision::text,r.head_chain,r.history_floor::text,r.snapshot_bytes,
+		(SELECT count(*) FROM pulse_durable_distributed.snapshot_objects o WHERE o.namespace=$1 AND o.run_id=$2 AND o.kind='message'),
+		(SELECT count(*) FROM pulse_durable_distributed.batches b WHERE b.namespace=$1 AND b.run_id=$2),
+		(SELECT count(*) FROM pulse_durable_distributed.mutation_guards g WHERE g.namespace=$1 AND g.run_id=$2 AND g.mutation_id=$3 AND g.operation='semantic_compress'),
+		(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts m WHERE m.namespace=$1 AND m.run_id=$2 AND m.mutation_id=$3),
+		(SELECT count(*) FROM pulse_durable_distributed.events e WHERE e.namespace=$1 AND e.run_id=$2 AND e.operation='semantic_compress'),
+		(s->>'snapshot_ledger_valid')::boolean
+		FROM pulse_durable_distributed.runs r CROSS JOIN LATERAL pulse_durable_distributed.snapshot_budget_summary(r) s
+		WHERE r.namespace=$1 AND r.run_id=$2`,
+		ns, record.RunID, q.Mutation.ID).Scan(&revision, &headChain, &floor, &snapshotBytes,
+		&messageRows, &batchRows, &guardRows, &receiptRows, &eventRows, &ledgerValid); err != nil {
+		t.Fatal(err)
+	}
+	if revision != fmt.Sprint(record.Revision+1) || headChain != receipt.AppliedHeadChain {
+		t.Fatalf("business head not published once: revision=%s chain=%s", revision, headChain)
+	}
+	if floor != "1" {
+		t.Fatalf("semantic compression advanced history_floor=%s", floor)
+	}
+	if messageRows != 1 || batchRows != 2 || guardRows != 1 || receiptRows != 1 || eventRows != 1 {
+		t.Fatalf("atomic publication mismatch messages=%d batches=%d guards=%d receipts=%d events=%d",
+			messageRows, batchRows, guardRows, receiptRows, eventRows)
+	}
+	if !ledgerValid {
+		t.Fatal("snapshot ledger is inconsistent after message compression")
+	}
+
+	c.DropOwnedProjection(d.Token{Identity: q.Identity})
+	var image []byte
+	if err := admin.QueryRow(ctx, `SELECT pulse_durable_distributed.storage_image(r,r.revision,true) FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, record.RunID).Scan(&image); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, reloadedChain, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: record.Revision + 1}, image)
+	if err != nil {
+		t.Fatalf("cold recovery after message compression failed: %v", err)
+	}
+	if reloadedChain != receipt.AppliedHeadChain || reloaded.Revision != record.Revision+1 {
+		t.Fatalf("cold recovery head mismatch chain=%s revision=%d", reloadedChain, reloaded.Revision)
+	}
+	if len(reloaded.Messages) != 1 || len(reloaded.CommitIndex) != int(record.Revision)+1 {
+		t.Fatalf("cold recovery projection messages=%d index=%d", len(reloaded.Messages), len(reloaded.CommitIndex))
+	}
+	if _, ok := reloaded.Messages[strings.Repeat("d", 32)]; !ok {
+		t.Fatal("cold recovery lost the unsettled future message")
+	}
+	encoded, err := recordio.EncodeSnapshot(reloaded)
+	if err != nil || int64(len(encoded)) != snapshotBytes {
+		t.Fatalf("snapshot ledger bytes=%d actual=%d err=%v", snapshotBytes, len(encoded), err)
+	}
+	if err := durable.ValidateSemanticEvidence(reloaded); err != nil {
+		t.Fatalf("compressed record lost evidence closure: %v", err)
+	}
+}
+
+// TestPostgresSemanticCompressionPreservesEvidenceMarker 验收 pin 升级启用的
+// marker 组合：压缩只消费 Retry 前缀，只读 history_evidence marker 逐字保留，
+// 冷恢复后证据仍闭合。旧 pin（缺 marker 组合）会在根包规划阶段拒绝该记录。
+func TestPostgresSemanticCompressionPreservesEvidenceMarker(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
+
+	record, head := newSemanticMarkerRun(t, c, admin, ns, "semantic-marker")
+	q := d.SemanticCompressionRequest{
+		Identity: d.Identity{Namespace: ns, RunID: record.RunID}, ExpectedRevision: record.Revision,
+		ExpectedHeadChain: head, Mutation: mut("semantic-marker-commit"),
+		MaxObjects: 100, MaxBytes: 1 << 20,
+	}
+	receipt, err := c.CompressSemanticHistory(ctx, q)
+	if err != nil {
+		t.Fatalf("mixed evidence compression failed: %v", err)
+	}
+	if err := receipt.Validate(q); err != nil {
+		t.Fatalf("receipt is not bound to request: %+v %v", receipt, err)
+	}
+	if receipt.DeletedObjects != 2 {
+		t.Fatalf("deleted objects=%d want 2 (retry prefix only)", receipt.DeletedObjects)
+	}
+
+	c.DropOwnedProjection(d.Token{Identity: q.Identity})
+	var image []byte
+	if err := admin.QueryRow(ctx, `SELECT pulse_durable_distributed.storage_image(r,r.revision,true) FROM pulse_durable_distributed.runs r WHERE namespace=$1 AND run_id=$2`, ns, record.RunID).Scan(&image); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: record.Revision + 1}, image)
+	if err != nil {
+		t.Fatalf("cold recovery after mixed compression failed: %v", err)
+	}
+	markerPayload := []byte(`{"schema":"history-evidence/v1","source":"committed-chain"}`)
+	want := durable.HistorySummary{Kind: "history_evidence", ID: "origin", SourceRevision: 1,
+		SourceDigest: record.CommitIndex[0].BatchDigest, Payload: markerPayload, Digest: digest(markerPayload)}
+	found := false
+	for _, s := range reloaded.HistorySummaries {
+		if s.Kind == "history_evidence" && s.ID == "origin" {
+			found = true
+			if !reflect.DeepEqual(s, want) {
+				t.Fatalf("read-only marker changed: %+v vs %+v", s, want)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("read-only evidence marker was dropped by compression")
+	}
+	if len(reloaded.Attempts) != 1 {
+		t.Fatalf("retry prefix not compressed: attempts=%d", len(reloaded.Attempts))
+	}
+	if err := durable.ValidateSemanticEvidence(reloaded); err != nil {
+		t.Fatalf("compressed record lost evidence closure: %v", err)
 	}
 }
