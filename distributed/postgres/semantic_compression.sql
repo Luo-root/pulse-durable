@@ -225,8 +225,8 @@ BEGIN
    through:=(payload->>'through_sequence')::numeric;
    IF through<1 OR through>100000 OR payload->>'processing_scope' IS NULL OR payload->>'processing_attempt' IS NULL OR payload->>'node_id' IS NULL OR jsonb_typeof(payload->'input') IS DISTINCT FROM 'object' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='invalid message candidate'; END IF;
    SELECT e.v INTO stream FROM jsonb_each(rec->'streams') AS e(k,v) WHERE (e.v->'stream'->'id') - 'generation' = (payload->'input') - 'generation' AND (e.v->'stream'->'id'->>'generation')::numeric >= (payload->'input'->>'generation')::numeric LIMIT 1;
-   IF stream IS NULL OR (stream->>'acked_through')::numeric<through OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(stream->'pending','[]'::jsonb)) q WHERE (q->>'sequence')::numeric<=through) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate frontier changed'; END IF;
-   managed:=rec->'managed'->(payload->>'processing_scope'||'/'||payload->>'processing_attempt'||'/'||payload->>'node_id');
+   IF stream IS NULL OR (stream->>'acked_through')::numeric<through OR EXISTS(SELECT 1 FROM jsonb_array_elements(coalesce(nullif(stream->'pending','null'::jsonb),'[]'::jsonb)) q WHERE (q->>'sequence')::numeric<=through) THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate frontier changed'; END IF;
+   managed:=rec->'managed'->((payload->>'processing_scope')||'/'||(payload->>'processing_attempt')||'/'||(payload->>'node_id'));
    IF managed IS NULL THEN
     SELECT e.v INTO managed FROM jsonb_each(coalesce(rec->'managed','{}'::jsonb)) AS e(k,v) WHERE e.v->>'scope'=payload->>'processing_scope' AND e.v->>'parent'=payload->>'processing_attempt' AND e.v->>'node_id'=payload->>'node_id' LIMIT 1;
    END IF;
@@ -234,7 +234,7 @@ BEGIN
    FOR seq IN 1..through LOOP
     maxidx:=0; count_rows:=0; seen:='{}'::jsonb;
     FOR x IN SELECT e.k AS key, e.v AS value FROM jsonb_each(rec->'messages') AS e(k,v) LOOP
-     IF x.value->>'scope'=payload->>'processing_scope' AND x.value->>'parent'=payload->>'processing_attempt' AND x.value->>'node_id'=payload->>'node_id' AND x.value->'input'=payload->'input' AND (x.value->>'sequence')::numeric=seq THEN
+     IF x.value->>'scope'=payload->>'processing_scope' AND x.value->>'parent'=payload->>'processing_attempt' AND x.value->>'node_id'=payload->>'node_id' AND (x.value->'input') - 'generation' = (payload->'input') - 'generation' AND (x.value->>'sequence')::numeric=seq THEN
       idx:=(x.value->>'index')::numeric; IF seen ? idx::text OR idx<1 OR idx>(x.value->>'limit')::numeric THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate budget changed'; END IF;
       seen:=seen||jsonb_build_object(idx::text,true); count_rows:=count_rows+1; IF idx>maxidx THEN maxidx:=idx; END IF;
       IF idx<maxidx AND x.value->>'state' IS DISTINCT FROM 'failed' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='message candidate failure changed'; END IF;
