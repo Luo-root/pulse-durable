@@ -9,8 +9,9 @@ import (
 	"testing"
 )
 
-// replayPlanFixture 构造一个带完整语义证据、根图含两个已确认节点的来源记录。
-// downstream 通过流来源引用 upstream 的成果，因此重算 upstream 必须带上它。
+// replayPlanFixture 构造一个带完整语义证据、根图含三个已确认节点的来源记录。
+// downstream 通过流来源引用 upstream 的成果：只读片不凭记录推断依赖后代，
+// 因此 downstream 仍是候选保留；真实依赖后代由执行片持图定义重算。
 func replayPlanFixture(t *testing.T) RunRecord {
 	t.Helper()
 	record, _ := format3Fixture(t)
@@ -66,14 +67,15 @@ func TestPlanDerivedReplayIsPureAndBound(t *testing.T) {
 	if plan.Executable {
 		t.Fatal("replay plan must not be executable before the execution contract lands")
 	}
-	// 目标与其依赖后代重算；无关兄弟分支成果保留。
-	if !reflect.DeepEqual(plan.RecomputeNodes, []string{"downstream", "upstream"}) {
+	// 只读片只确定目标必须重算；其余成果是候选保留，不是复用授权。
+	// 真实依赖后代由执行片持图定义重算，因此这里不得凭记录臆断 downstream。
+	if !reflect.DeepEqual(plan.RecomputeNodes, []string{"upstream"}) {
 		t.Fatalf("recompute set=%v", plan.RecomputeNodes)
 	}
-	if !reflect.DeepEqual(plan.RetainedNodes, []string{"sibling"}) {
-		t.Fatalf("retained set=%v", plan.RetainedNodes)
+	if !reflect.DeepEqual(plan.RetainedNodes, []string{"downstream", "sibling"}) {
+		t.Fatalf("candidate retained set=%v", plan.RetainedNodes)
 	}
-	if plan.Rows != 2 || plan.Cut.ThroughRevision != 2 || plan.Cut.ParentRevision != 1 {
+	if plan.Rows != 1 || plan.Cut.ThroughRevision != 2 || plan.Cut.ParentRevision != 1 {
 		t.Fatalf("cut/rows mismatch: %+v", plan.Cut)
 	}
 	if plan.Cut.BatchDigest != record.CommitIndex[1].BatchDigest {
@@ -131,15 +133,15 @@ func TestReplayPlanValidateRejectsForgedSets(t *testing.T) {
 		"executable": func(p *ReplayPlan) { p.Executable = true },
 		"target dropped": func(p *ReplayPlan) {
 			p.RecomputeNodes = []string{"downstream"}
+			p.RetainedNodes = []string{"sibling", "upstream"}
 			p.Rows = 1
 		},
 		"overlap": func(p *ReplayPlan) { p.RetainedNodes = append(p.RetainedNodes, "upstream") },
 		"unsorted": func(p *ReplayPlan) {
-			p.RecomputeNodes = []string{"upstream", "downstream"}
+			p.RetainedNodes = []string{"sibling", "downstream"}
 		},
 		"duplicate": func(p *ReplayPlan) {
-			p.RecomputeNodes = []string{"downstream", "downstream", "upstream"}
-			p.Rows = 3
+			p.RetainedNodes = []string{"downstream", "downstream", "sibling"}
 		},
 		"cut parent": func(p *ReplayPlan) { p.Cut.ParentRevision = 5 },
 		"cut digest": func(p *ReplayPlan) { p.Cut.BatchDigest = strings.Repeat("f", 64) },

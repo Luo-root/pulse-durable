@@ -82,9 +82,13 @@ func (c ReplayCut) validate(through uint64) error {
 
 // ReplayPlan 是不可执行的派生回放候选结果。
 //
-// RetainedNodes 是 cut 位置上仍然有效、可被派生 Run 复用的兄弟分支成果；
-// RecomputeNodes 是目标节点及其实际依赖后代，必须重新计算。两个集合必须
-// 互斥且有序，且并集恰好覆盖来源根图在该位置的全部已确认节点。
+// RetainedNodes 是 cut 位置上**候选保留**的兄弟分支成果；RecomputeNodes 是
+// 本只读片能确定的必须重算节点（当前为目标节点自身）。两个集合必须互斥且
+// 有序，且并集恰好覆盖来源根图在该位置的全部已确认节点。
+//
+// 候选保留不是复用授权：权威「谁依赖谁」来自图定义的 Requires/Provides，
+// 记录本身不保存读取边。执行片必须持有图定义重新计算目标的真实依赖后代，
+// 把失效成果从 RetainedNodes 移入 RecomputeNodes 后才能创建派生 Run。
 //
 // HeadDigest 使用无损字段表示绑定 nil/empty；PlanDigest 是完整性检查，
 // 不是授权。Executable=true 在执行契约完成之前一律拒绝。
@@ -203,9 +207,9 @@ func PlanDerivedReplay(record RunRecord, request ReplayRequest) (ReplayPlan, err
 			BatchDigest: entry.BatchDigest, CommitIndexDigest: replayDigest("commit-index/v1", entry),
 		},
 	}
-	// 依赖闭包：目标节点及其实际依赖后代必须重算；其余已确认成果可保留。
-	// 这里只按来源根图的显式依赖边划分，不臆造 Core 的部分端口恢复语义。
-	recompute := replayDependencyClosure(root, request.TargetNodeID)
+	// 只读片只确定目标必须重算；其余成果是**候选保留**，不是复用授权。
+	// 真实依赖后代必须由执行片在持有图定义（Requires/Provides）时重算。
+	recompute := replayRecomputeSet(request.TargetNodeID)
 	for id := range root.Nodes {
 		if recompute[id] {
 			plan.RecomputeNodes = append(plan.RecomputeNodes, id)
@@ -239,39 +243,19 @@ func PlanDerivedReplay(record RunRecord, request ReplayRequest) (ReplayPlan, err
 	return plan, nil
 }
 
-// replayDependencyClosure 沿来源根图的成果引用计算目标的依赖后代闭包。
-// 只使用记录里已持久化的流来源身份，不猜测运行时接线。
-func replayDependencyClosure(root ScopeRecord, target string) map[string]bool {
-	// producer 把「产出某个流来源的节点」映射到该来源身份。
-	producer := make(map[string]string)
-	for id, node := range root.Nodes {
-		for _, value := range node.Outputs {
-			if value.Stream != nil {
-				producer[value.Stream.Attempt] = id
-			}
-		}
-	}
-	seen := map[string]bool{target: true}
-	queue := []string{target}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		node, ok := root.Nodes[current]
-		if !ok {
-			continue
-		}
-		for _, value := range node.Outputs {
-			if value.Stream == nil {
-				continue
-			}
-			// 依赖该来源的节点必须重算；来源本身若由别的节点产出，也一并纳入。
-			if owner, ok := producer[value.Stream.Attempt]; ok && !seen[owner] {
-				seen[owner] = true
-				queue = append(queue, owner)
-			}
-		}
-	}
-	return seen
+// replayRecomputeSet 计算必须重算的节点集合。
+//
+// 重要边界：权威「谁依赖谁」来自图定义的 Requires/Provides（runState 的
+// gs.producers），**不是**记录里的 Outputs。记录只保存每个节点产出的成果，
+// 不保存读取边；因此仅凭 RunRecord 无法推导目标的依赖后代。
+//
+// 本只读片因此采取保守且确定的划分：目标节点必须重算，其余已确认成果
+// 标为「候选保留」。候选保留不是复用授权——执行片必须在持有图定义时按
+// Requires/Provides 重新计算真实依赖后代，并把失效成果移入重算集合。
+// 这样不会像「沿 Outputs 反查 producer」那样得到依赖方向错误、且随 map
+// 迭代顺序漂移的结果。
+func replayRecomputeSet(target string) map[string]bool {
+	return map[string]bool{target: true}
 }
 
 func replayDigest(domain string, values ...any) string {
