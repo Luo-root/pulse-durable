@@ -686,3 +686,101 @@ func semanticOrdinaryBatchN(t *testing.T, r durable.RunRecord, n int) durable.Ch
 	}
 	return batch
 }
+
+// TestPostgresSemanticCompressionRejectsExtraBusinessOperation 验证 maintain
+// 凭据不能借压缩批次夹带业务修改：即使删除集合与候选完全一致、CAS 前置条件
+// 正确，任何非压缩语义的操作都必须被拒绝且零发布。
+func TestPostgresSemanticCompressionRejectsExtraBusinessOperation(t *testing.T) {
+	c, admin, ns := integration(t)
+	ctx := context.Background()
+	var role string
+	if err := c.pool.QueryRow(ctx, "SELECT session_user").Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	setTestPermission(t, admin, ctx, role, ns, "maintain", true)
+	record, head := newSemanticRetryRun(t, c, admin, ns, "semantic-extra-op")
+	q := d.SemanticCompressionRequest{
+		Identity: d.Identity{Namespace: ns, RunID: record.RunID}, ExpectedRevision: record.Revision,
+		ExpectedHeadChain: head, Mutation: mut("semantic-extra-commit"), MaxObjects: 100, MaxBytes: 1 << 20,
+	}
+	preparedRaw, err := c.semanticCompressionCall(ctx, semanticPhaseArgs(q, "prepare"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, _, err := decodeSemanticCompressionResult(preparedRaw, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, _, err := buildMaintenanceImage(ctx, CompactStorageRequest{Identity: q.Identity, ThroughRevision: q.ExpectedRevision}, prepared.Image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := durable.PlanHistoryCompression(image, durable.HistoryCompressionRequest{RunID: q.Identity.RunID, ThroughRevision: q.ExpectedRevision, MaxObjects: q.MaxObjects, MaxBytes: q.MaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := durable.BuildHistoryCompressionBatch(image, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := durable.MarshalChangeBatch(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(wire, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var ops []json.RawMessage
+	if err := json.Unmarshal(envelope["ops"], &ops); err != nil {
+		t.Fatal(err)
+	}
+	// 夹带一个合法 CAS 的新 Scope 创建：删除集合不变，但这不是压缩语义。
+	scopeValue, err := json.Marshal(snapshotTestPayload(durable.ScopeRecord{Graph: "injected", Path: "p", Inputs: image.Inputs}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra, err := json.Marshal(map[string]any{
+		"kind": "scope", "key": strings.Repeat("e", 32), "expected": nil, "value": json.RawMessage(scopeValue),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "commit_index" < "scope"，追加到末尾仍保持 canonical 排序。
+	ops = append(ops, extra)
+	allOps, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope["ops"] = allOps
+	forgedWire, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposed := durable.CloneRecord(image)
+	if _, err := batch.ApplyTo(&proposed); err != nil {
+		t.Fatal(err)
+	}
+	recordWire, err := recordio.EncodeSnapshot(proposed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := semanticPhaseArgs(q, "commit")
+	commit["source_image_digest"] = prepared.SourceImageDigest
+	commit["plan_digest"] = plan.PlanDigest
+	commit["batch"] = base64.StdEncoding.EncodeToString(forgedWire)
+	commit["batch_digest"] = digest(forgedWire)
+	commit["record"] = base64.StdEncoding.EncodeToString(recordWire)
+	commit["record_digest"] = digest(recordWire)
+	if _, err := c.semanticCompressionCall(ctx, commit, true); !errors.Is(err, d.ErrInvalid) {
+		t.Fatalf("extra business operation accepted: %v", err)
+	}
+	var batches, guards, receipts, scopes int
+	if err := admin.QueryRow(ctx, `SELECT (SELECT count(*) FROM pulse_durable_distributed.batches WHERE namespace=$1 AND run_id=$2),(SELECT count(*) FROM pulse_durable_distributed.mutation_guards WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3),(SELECT count(*) FROM pulse_durable_distributed.mutation_receipts WHERE namespace=$1 AND run_id=$2 AND mutation_id=$3),(SELECT count(*) FROM pulse_durable_distributed.snapshot_objects o WHERE o.namespace=$1 AND o.run_id=$2 AND o.kind='scope')`,
+		ns, record.RunID, q.Mutation.ID).Scan(&batches, &guards, &receipts, &scopes); err != nil {
+		t.Fatal(err)
+	}
+	if batches != 1 || guards != 0 || receipts != 0 || scopes != 1 {
+		t.Fatalf("injected operation published state batches=%d guards=%d receipts=%d scopes=%d", batches, guards, receipts, scopes)
+	}
+}

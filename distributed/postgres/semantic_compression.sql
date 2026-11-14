@@ -281,8 +281,28 @@ BEGIN
  IF wire IS NULL OR octet_length(wire) NOT BETWEEN 1 AND 4194304 OR encode(sha256(wire),'hex') IS DISTINCT FROM a->>'batch_digest' THEN RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic compression batch digest'; END IF;
  b:=convert_from(wire,'UTF8')::jsonb; IF b->'header'->>'operation' IS DISTINCT FROM 'history_compression' OR b->'header'->>'compression_plan_digest' IS DISTINCT FROM a->>'plan_digest' OR b->'header'->>'run_id' IS DISTINCT FROM rid OR b->'header'->>'expected_revision' IS DISTINCT FROM oldrev::text OR b->'header'->>'revision' IS DISTINCT FROM (oldrev+1)::text OR b->'header'->>'compression_max_objects' IS DISTINCT FROM a->>'max_objects' OR b->'header'->>'compression_max_bytes' IS DISTINCT FROM a->>'max_bytes' THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic compression batch header'; END IF;
  deleted:=semantic_validate_candidates(source,b); IF deleted=0 THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic compression has no deletions'; END IF;
+ -- 操作类别白名单：语义压缩只允许删除候选 Attempt/Message、推进可压缩摘要、
+ -- 追加唯一一条 CommitIndex。maintain 权限不等于 owner 写权限，因此必须显式
+ -- 拒绝任何其它业务修改操作（scope/node/stream/pending/managed/provenance 写入、
+ -- 以及非删除的 attempt/message 写入），否则维护凭据可借压缩批次改写业务状态，
+ -- 并让只按删除记账的大小账本与真实记录分叉。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE
+   (o.value->>'kind' IN ('attempt','message') AND o.value->'value' IS DISTINCT FROM 'null'::jsonb)
+   OR (o.value->>'kind' NOT IN ('attempt','message','history_summary','commit_index'))) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic compression operation kind not allowed';
+ END IF;
+ -- 摘要只能替换既有可压缩前缀，不能新增/删除，也不能触碰只读证据 marker。
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(b->'ops') o WHERE o.value->>'kind'='history_summary'
+   AND (o.value->'expected'='null'::jsonb OR o.value->'value'='null'::jsonb
+        OR o.value->'value'->>'kind' NOT IN ('retry_prefix','message_prefix'))) THEN
+  RAISE EXCEPTION USING ERRCODE='PD001',MESSAGE='semantic summary operation not allowed';
+ END IF;
  IF (SELECT count(*) FROM jsonb_array_elements(b->'ops') WHERE value->>'kind'='history_summary')<>(SELECT count(*) FROM jsonb_array_elements(source->'record'->'history_summaries') WHERE value->>'kind' IN ('retry_prefix','message_prefix')) OR (SELECT count(*) FROM jsonb_array_elements(b->'ops') WHERE value->>'kind'='commit_index')<>1 THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic evidence operation set'; END IF;
- source:=semantic_apply_wire_batch(source,b); nextrev:=oldrev+1; PERFORM semantic_validate_record(source,r,nextrev); final_bytes:=snapshot_value_bytes(source,'snapshot',false); IF final_bytes>(a->>'max_bytes')::numeric OR final_bytes>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD008',MESSAGE='semantic compression result budget'; END IF;
+ source:=semantic_apply_wire_batch(source,b); nextrev:=oldrev+1; PERFORM semantic_validate_record(source,r,nextrev);
+ -- 交叉核对受信服务生成的完整 record proposal：它必须与 SQL 独立重放的结果
+ -- 逐字段相等。只比 batch digest 不足以发现服务端投影与后端重放的分叉。
+ IF convert_from(record_wire,'UTF8')::jsonb IS DISTINCT FROM source THEN RAISE EXCEPTION USING ERRCODE='PD005',MESSAGE='semantic compression record proposal differs'; END IF;
+ final_bytes:=snapshot_value_bytes(source,'snapshot',false); IF final_bytes>(a->>'max_bytes')::numeric OR final_bytes>16777216 THEN RAISE EXCEPTION USING ERRCODE='PD008',MESSAGE='semantic compression result budget'; END IF;
  budget:=jsonb_build_object('version',2,'header',jsonb_build_object('run_id',rid,'business_version',r.route->>'business_version','definition_digest',r.route->>'definition','inputs_digest',(convert_from(r.task,'UTF8')::jsonb)->>'inputs','root_scope',r.root_scope,'expected_revision',oldrev::text,'revision',nextrev::text),'ops',coalesce((SELECT jsonb_agg(jsonb_build_object('kind',value->>'kind','key',value->>'key','expected',value->'expected','value',NULL) ORDER BY value->>'kind',value->>'key') FROM jsonb_array_elements(b->'ops') WHERE value->>'kind' IN ('attempt','message') AND value->'value'='null'::jsonb),'[]'::jsonb));
  PERFORM snapshot_budget_apply(r,budget); UPDATE runs SET snapshot_bytes=final_bytes,snapshot_fixed_bytes=final_bytes-(SELECT coalesce(sum(snapshot_container_bytes(is_nil,entry_count,entry_bytes)) FILTER(WHERE kind IN ('scopes','attempts','streams','messages','managed')),0) FROM snapshot_containers WHERE namespace=ns AND run_id=rid),active_log_bytes=active_log_bytes+octet_length(wire),active_log_count=active_log_count+1,revision=nextrev,head_chain=encode(sha256(convert_to('pulse-durable/chain/batch/v1','UTF8')||decode('00','hex')||decode(r.head_chain,'hex')||sha256(wire)||decode(lpad(to_hex(trunc(nextrev/4294967296)::bigint),8,'0')||lpad(to_hex(mod(nextrev,4294967296)::bigint),8,'0'),'hex')),'hex'),updated_at=t,maintenance_watermark=t,last_mutation_id=mid,last_mutation_digest=md WHERE namespace=ns AND run_id=rid RETURNING head_chain INTO next_chain;
  parent:=r.head_chain; result:=jsonb_build_object('identity',jsonb_build_object('namespace',ns,'run_id',rid),'mutation',jsonb_build_object('id',mid,'digest',md),'expected_revision',oldrev::text,'applied_revision',nextrev::text,'expected_head_chain',parent,'applied_head_chain',next_chain,'deleted_objects',deleted::text,'source_bytes',source_bytes::text,'occurred_at',t,'receipt_digest',''); result:=result||jsonb_build_object('epoch',r.epoch,'revision',nextrev::text,'receipt_digest',semantic_digest('pulse-durable/distributed/semantic-compression/receipt/v1',ns,rid,mid,md,oldrev::text,nextrev::text,parent,next_chain,deleted::text,source_bytes::text,trunc(extract(epoch FROM t)*1000000)::numeric(30,0)::text));

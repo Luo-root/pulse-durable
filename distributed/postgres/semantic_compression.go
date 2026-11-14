@@ -114,11 +114,11 @@ func decodeSemanticCompressionResult(b []byte, q d.SemanticCompressionRequest) (
 
 // CompressSemanticHistory 从数据库锁内的权威 image 重建根包压缩批次。
 //
-// prepare 阶段只登记永久 mutation guard，并返回当前完整恢复 image；它不
-// 接收调用方的删除集合。根包据 image 运行 PlanHistoryCompression 和
-// BuildHistoryCompressionBatch，commit 阶段只把这份受信批次交给 SQL 做
-// 锁后身份、head、wire、预算和 CAS 复验。响应丢失时重复同一个请求会先
-// 找到永久 receipt，绝不换 mutation ID，也不把未知结果推断成未提交。
+// prepare 阶段只读返回权威恢复 image，不写 guard；根包据该 image 运行
+// PlanHistoryCompression 和 BuildHistoryCompressionBatch，commit 阶段才在
+// 同一事务里写入永久 guard 与 receipt。SQL 在锁后复验身份、head、操作类别
+// 白名单、wire、预算、精确 CAS 与完整 record proposal。响应丢失时重复同一个
+// 请求会先找到永久 receipt，绝不换 mutation ID，也不把未知结果推断成未提交。
 func (c *Coordinator) CompressSemanticHistory(ctx context.Context, q d.SemanticCompressionRequest) (d.SemanticCompressionReceipt, error) {
 	if q.Validate() != nil {
 		return d.SemanticCompressionReceipt{}, d.ErrInvalid
