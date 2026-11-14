@@ -32,7 +32,7 @@ func (registryProbePayload) restore(_ RunRecord, index *recoverySummaryIndex) er
 }
 
 func TestHistorySummaryRegistryComposesAdditionalKind(t *testing.T) {
-	registrations := []historySummaryRegistration{{"probe", &registryProbeHandler{}}}
+	registrations := []historySummaryRegistration{{kind: "probe", handler: &registryProbeHandler{}, compressible: true}}
 	registry, err := newHistorySummaryRegistry(registrations...)
 	if err != nil {
 		t.Fatal(err)
@@ -63,10 +63,10 @@ func TestHistorySummaryRegistryComposesAdditionalKind(t *testing.T) {
 func TestHistorySummaryRegistryRejectsInvalidRegistrations(t *testing.T) {
 	var typedNil *registryProbeHandler
 	for _, registrations := range [][]historySummaryRegistration{
-		{{"", &registryProbeHandler{}}},
-		{{"probe", nil}},
-		{{"probe", typedNil}},
-		{{"probe", &registryProbeHandler{}}, {"probe", &registryProbeHandler{}}},
+		{{kind: "", handler: &registryProbeHandler{}}},
+		{{kind: "probe", handler: nil}},
+		{{kind: "probe", handler: typedNil}},
+		{{kind: "probe", handler: &registryProbeHandler{}}, {kind: "probe", handler: &registryProbeHandler{}}},
 	} {
 		if _, err := newHistorySummaryRegistry(registrations...); err == nil {
 			t.Fatal("invalid summary registry accepted")

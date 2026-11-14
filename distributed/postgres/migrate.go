@@ -29,7 +29,9 @@ var retentionPolicySQL string
 //go:embed history_gc.sql
 var historyGCSQL string
 
-// ErrUnsupportedCapability 表示当前布局缺少必须的保留策略入口；不会自动迁移。
+//go:embed semantic_compression.sql
+var semanticCompressionSQL string
+
 var ErrUnsupportedCapability = errors.New("distributed postgres: unsupported retention capability")
 
 // Grant 为已有数据库角色授权，范围严格限于一个命名空间。权限
@@ -84,7 +86,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 		return scrub(e, false)
 	}
 	if !exists {
-		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL+historyPinSQL+retentionPolicySQL+historyGCSQL); e != nil {
+		if _, e = tx.Exec(ctx, schemaSQL+snapshotBudgetSQL+maintenanceSQL+semanticCompressionSQL+historyPinSQL+retentionPolicySQL+historyGCSQL); e != nil {
 			return scrub(e, false)
 		}
 		if _, e = tx.Exec(ctx, checkSQL); e != nil {
@@ -119,7 +121,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 	if !retentionReady {
 		return ErrUnsupportedCapability
 	}
-	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.history_gc_prepare(jsonb),pulse_durable_distributed.history_gc_execute(jsonb),pulse_durable_distributed.history_gc_find(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
+	if _, e = tx.Exec(ctx, `REVOKE ALL ON FUNCTION pulse_durable_distributed.api(text,jsonb),pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb),pulse_durable_distributed.retention_policy_get(jsonb),pulse_durable_distributed.retention_policy_preview(jsonb),pulse_durable_distributed.retention_candidate_preview(jsonb),pulse_durable_distributed.retention_policy_update(jsonb),pulse_durable_distributed.history_gc_prepare(jsonb),pulse_durable_distributed.history_gc_execute(jsonb),pulse_durable_distributed.semantic_compress(jsonb),pulse_durable_distributed.check_schema() FROM PUBLIC`); e != nil {
 		return scrub(e, false)
 	}
 	for _, g := range grants {
@@ -142,7 +144,7 @@ func Migrate(ctx context.Context, dsn string, grants ...Grant) error {
 			case "worker", "submit", "cancel":
 				functions += ",pulse_durable_distributed.api(text,jsonb)"
 			case "maintain":
-				functions += ",pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
+				functions += ",pulse_durable_distributed.storage_inspect(jsonb),pulse_durable_distributed.storage_compact_begin(jsonb),pulse_durable_distributed.storage_compact_publish(jsonb),pulse_durable_distributed.storage_compact_abort(jsonb),pulse_durable_distributed.storage_compact_find(jsonb),pulse_durable_distributed.semantic_compress(jsonb),pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
 			case "replay":
 				functions += ",pulse_durable_distributed.pin_create(jsonb),pulse_durable_distributed.pin_renew(jsonb),pulse_durable_distributed.pin_release(jsonb),pulse_durable_distributed.pin_find(jsonb),pulse_durable_distributed.pin_find_mutation(jsonb)"
 			case "retain":
